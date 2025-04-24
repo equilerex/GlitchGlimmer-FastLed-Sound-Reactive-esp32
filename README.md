@@ -1,17 +1,23 @@
-# GlitchGlimmer LED Controller
+# GlitchGlimmer Design & Automation Architecture
 
-**GlitchGlimmer** is a modular, highly extensible, sound-reactive LED controller platform for ESP32, designed for creative, high-performance lighting setups. It aims to serve as a reusable foundation for future projects, supporting advanced animations, responsive displays, multi-strip control, and sensor integration.
+## ✨ Overview
+GlitchGlimmer is more than just a sound-reactive LED controller. It's a fully modular, intelligent lighting system designed for immersive party and music experiences. It reacts to music in real time, shifting moods and visual behaviors based on detailed audio analysis, dynamically layering effects like a live VJ.
+
+This document explores the inner workings, design principles, and practical use cases for GlitchGlimmer, making it an ideal project for DJs, event spaces, festivals, or anyone who wants vibrant, automated visual flair.
 
 ---
 
+
 ## Features
 
-- **Sound-reactive LED animations** powered by FFT and volume analysis from a digital I2S microphone (INMP441).
-- **Modular animation architecture** allowing easy registration and dynamic switching.
-- **Hybrid animation controller** that intelligently swaps animations based on music dynamics and context.
+- Multiple LED strip output channels with randomized animations.
+- **Sound-Reactive Animations**: Utilizes FFT and volume analysis from a digital I2S microphone (e.g., INMP441) to drive LED animations.
+- **Modular Animation Architecture**: Easily register and dynamically switch between animations.
+- **Automated Animation Controller**: Intelligently swaps animations based on music dynamics and context.  Includes pulse/beat visual feedback with waveform visualization, frequency bars (bass/mid/treble), BPM, loudness, and control state indicators.
+ 
 - **Smart adaptive display system** using a widget-based layout (via `GridLayout`) for clear, beautiful visuals.
 - **Multiple screen size support** with dynamic, constraint-based layout.
-- **Cyberpunk-style color themes** with pulse/beat visual feedback.
+ 
 - **Waveform visualization**, frequency bars (bass/mid/treble), BPM, power (loudness), and control state (manual/auto).
 - **Rotary encoder input support** (planned): Twist to change values, press to switch setting, auto-return to overview.
 - **Future-proofed for**:
@@ -21,6 +27,7 @@
     - Persistent settings and user profiles.
 
 ---
+
 
 ## Use Case and Intent
 
@@ -42,100 +49,159 @@ Key priorities driving the design:
 - **WS2812 / WS2815 / APA102** LED strips
 - **Optional:** Rotary encoder with button (for future input support)
 - **Optional:** OLED/TFT display (TFT_eSPI-compatible, e.g. ILI9341)
+ 
+ 
+ 
+ 
+## 🧬 Architecture Diagram
+
+```
+  +----------------+      +-----------------------+       +------------------+
+  | Audio analyzer | ---> |  Mood+sound History   | --->  | Scene Director   |    
+  +----------------+      +-----------------------+       +------------------+
+                                                         |
+                          +----------------------------+ |
+                          |  Scene Definition          | |
+                          |  + Base Animation          | |
+                          |  + Preferred Moods         | |
+                          |  + Suggested Layers        |<+
+                          +----------------------------+
+                                  |
+                        +----------------------+
+                        |  LED Strip Controller |
+                        |  + Animation          |
+                        |  + LayerManager       |
+                        +----------------------+
+```
 
 ---
 
-## Display System
+## 🚀 Key Concepts
 
-Display layout uses a responsive, constraint-based `GridLayout` with modular widgets. Every widget (e.g., BPM, power bar, waveform) specifies its minimum size, and the layout fills available screen space optimally.
+### Audio Analysis (AudioFeatures)
+The audio engine provides real-time FFT-based audio metrics:
 
-Widget types include:
+- `volume`, 
+- `loudness`
+- `peak`
+- `average`
+- `bass`
+- `mid`
+- `treble`
+- `dynamics` (difference between peak & average)
+- `spectrumCentroid`, 
+- `dominantBand`
+- `frequency`
+- `energy` (normalized loudness & dynamics)
+- `beatDetected`, 
+- `bassHits`, 
+- `BPM`
+- `signalPresence`, 
+- `noiseFloor`
 
-- `AcronymValueWidget` – e.g. `BPM:120`, `PWR:73`
-- `VerticalBarWidget` – BASS, MID, TREB, etc. with rotated labels
-- `WaveformWidget` – Real-time audio waveform
-- `ScrollingTextWidget` – Long mode names scroll automatically
-- Future: `IconSettingWidget`, `AnimatedBeatWidget`, etc.
+### Sound History
+Uses a moving window of audio snapshots of AudioFeatures for the animations to use.
 
-Color themes and beat-pulse animations are applied via a `ThemeManager`.
 
----
 
-## Sound Analysis
+### Mood History
+Uses a moving window of stabilized "mood" snapshots aggregated from audio features to classify and track mood evolution over time:
 
-Audio input is captured via I2S and analyzed using:
+- `MoodType`: CALM, ENERGETIC, INTENSE, FLOATY
+- `MoodInfo`: includes BPM, energy, dynamics, beat presence
 
-- **RMS Volume**
-- **FFT spectrum (via ArduinoFFT)**
-- **Bass/Mid/Treble energy bands**
-- **Simple beat detection via volume change delta**
-- **Smoothed Loudness metric (PWR)**
+It helps smooth out momentary spikes and detect mood shifts, guiding long-form animation changes.
 
-These values drive both animations and display widgets.
+### Scene System
 
----
+SceneRegistry
+consisting of "scenes" 
+A `SceneDefinition` includes: 
+- `baseAnimation`: Base animation animation for a strip - will shift between a set of base animations
+- `preferredMoods`: moods this scene is suited for
+- `layerTypes`: types of additional overlays that work well for this animation
 
-## Animation System
+### Scene Director
+The conductor of the system. It:
 
-Animations are registered using the `AnimationRegistry` and can be selected manually or via the `HybridController`.
+1. Picks a new scene when a significant mood shift is detected
+2. Manages duration of scenes (min time, ideal time)
+3. Injects reactive layers (beat pops, energy flashes, ambient flows)
+4. Tracks current scene per strip
 
-Animations receive full `AudioFeatures` every frame, including:
+It uses both real-time audio and historical mood to ensure visual cohesion.
 
-- `volume`, `bass`, `mid`, `treble`, `spectrum[]`
-- `bpm`, `beatDetected`, `loudness`
+### Layer System
+Each LED strip has a `LayerManager` which stacks temporary visual effects:
 
-They also support internal parameters such as:
-- Current time
-- Frame rate
-- Brightness
-- Optional metadata (color variation, etc.)
+- Reactive: Beat flashes, energy pulses, sparkles
+- Overlay: Subtle continuous effects (scribbles, fog, trails)
+- Highlight: Dominant band strobes, flickers, shockwaves
+- Mood Arc: Visual themes tied to current mood (arcs, color flows)
+- Background: Low-opacity ambiance, waveform flow
 
----
-
-## HybridController: Smart Auto-Mode Switching
-
-The **HybridController** is the brain of GlitchGlimmer’s auto mode. Inspired by VJ setups, adaptive music visualizers, and cognitive rhythm detection, it uses a blend of logic and randomness to keep animations dynamic and musically coherent.
-
-### Switching Logic Principles:
-
-- **Every N seconds**, consider switching (default 20s)
-- **If a beat is detected**, and power is above threshold, switch chance increases
-- **If user is in manual mode**, switching is locked
-- **modeKeepReason** explains why a mode is being kept:
-    - `"BeatMatch"` – animation matches current rhythm style
-    - `"Cooldown"` – recently switched, waiting
-    - `"Manual"` – manual mode lock
-    - `"Init"` – first animation
-
-### Future Plans:
-- Assign tags or styles to animations (e.g., “calm”, “chaotic”, “bass-reactive”)
-- Use spectrum fingerprinting or ML clustering for deeper switching logic
-
----
-
-## Architecture Highlights
-
-- **Widget-driven layout** (like mini HTML/CSS components)
-- **Smart grid manager** that avoids overlap and resizes automatically
-- **All logic is encapsulated** and modular (DisplayManager, AudioProcessor, HybridController)
-- **Serial debug logging** can be toggled with `#define ENABLE_DEBUG`
-- **Minimal dynamic memory use**, most state is persisted across frames
+Layers are drawn on top of the base animation, and expire over time.
 
 ---
 
-## Developer Notes
+## 🔄 Lifecycle of Animation Switching
 
-- All code is located under `fastLed-dj-booth/`
-- Widgets in `widgets/`, animation logic in `animations/`, themes in `themes/`
-- To create your own animation: inherit from `AnimationBase` and register via `registerAnimation(...)`
-- To add a new display widget: inherit `Widget`, override `draw()`, and `getMinWidth/Height()`
+1. **Initialization**:
+    - Load all animations and visual layers via catalog.
+    - Attach mood & audio history trackers.
+
+2. **Audio Input & Analysis**:
+    - Microphone feeds samples, analyzed to produce `AudioFeatures`.
+    - History updated every frame (~25 FPS).
+
+3. **Mood Classification**:
+    - MoodSnapshot added to MoodHistory.
+    - Determines current & predicted mood.
+
+4. **Scene Transition Check**:
+    - Compare new mood to current scene's mood.
+    - If energy or BPM has shifted significantly, and min duration passed:
+        - Pick next scene matching predicted mood.
+        - Load new base animation.
+
+5. **Reactive Layer Injection**:
+    - Beat, BPM, and energy events trigger layers.
+    - Limits prevent overload (e.g., 1 layer per type).
+
+6. **Rendering**:
+    - Base animation updated.
+    - LayerManager renders active layers on top.
 
 ---
 
-## Example Usage
+## 🧑‍💻 Design Principles
 
-```cpp
-layout.addWidget(new AcronymValueWidget("BPM", (int)features.bpm));
-layout.addWidget(new VerticalBarWidget("BASS", features.bass, theme.accent1));
-layout.addWidget(new WaveformWidget(features.waveform, NUM_SAMPLES));
-layout.draw(tft);
+- **Modular & Extensible**: New animations and layers can be added by registering a class in the catalog.
+- **Low Coupling**: Audio, mood, animation, and rendering are separate concerns.
+- **Predictable Switching**: Scene changes respect timing and require meaningful mood shifts.
+- **Dynamic but Intentional**: Not every beat triggers chaos—logic curates the show.
+- **Customizable**: Change strip layouts, layer behaviors, animation parameters.
+
+---
+
+## 🎉 Why It's Perfect for Automated Party Lighting
+
+- **Hands-free Mood Matching**: GlitchGlimmer listens to the music and reacts naturally.
+- **VJ-Inspired Visuals**: Layering lets you mix a calm tunnel with beat pops or fog trails.
+- **Smart Transitions**: Doesn’t switch scenes jarringly—it waits for musical moments.
+- **Easy to Extend**: Developers can build their own animations or layers.
+- **Beautiful with Zero Tuning**: Defaults work great out of the box.
+
+---
+
+## 📄 TODO / Future Plans
+- Persistent settings & config via JSON
+- Rotary encoder input
+- Web dashboard for remote control
+- Scene scripting and timeline playback
+- Light show presets and auto-recording
+  
+
+
+
+Happy glitching! ✨
