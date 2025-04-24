@@ -1,8 +1,11 @@
 #pragma once
 
 #include <Arduino.h>
+#include "SceneRegistry.h"
+#include "../scenes/SceneDirector.h"
 
-#include "../scenes/SceneRegistry.h"
+
+struct SceneDefinition;
 
 struct SceneState {
     const SceneDefinition* activeScene = nullptr;

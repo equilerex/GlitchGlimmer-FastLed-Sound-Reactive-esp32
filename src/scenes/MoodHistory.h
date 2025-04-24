@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include "../audio/AudioFeatures.h"
 
-enum class MoodType {
+enum MoodType {
     CALM,
     ENERGETIC,
     INTENSE,
@@ -12,77 +12,87 @@ enum class MoodType {
     UNKNOWN
 };
 
-inline const char* moodToString(MoodType mood) {
+static const char* moodToString(MoodType mood) {
     switch (mood) {
-        case MoodType::CALM: return "Calm";
-        case MoodType::ENERGETIC: return "Energetic";
-        case MoodType::INTENSE: return "Intense";
-        case MoodType::FLOATY: return "Floaty";
-        default: return "Unknown";
+        case CALM: return "Calm";
+        case ENERGETIC: return "Energetic";
+        case INTENSE: return "Intense";
+        case FLOATY: return "Floaty";
+        case UNKNOWN: return "Calm";
     }
+    return "Unknown";
 }
 
-// Rich snapshot of mood-relevant audio
 struct MoodSnapshot {
-    float volume = 0;
-    float loudness = 0;
-    float peak = 0;
-    float average = 0;
-    float agcLevel = 1;
+    float volume;
+    float loudness;
+    float peak;
+    float average;
+    float agcLevel;
 
-    float bass = 0;
-    float mid = 0;
-    float treble = 0;
+    float bass;
+    float mid;
+    float treble;
 
-    float spectrumCentroid = 0;
-    int dominantBand = 0;
-    float dynamics = 0;
-    float energy = 0;
+    float spectrumCentroid;
+    int dominantBand;
+    float dynamics;
+    float energy;
 
-    bool beatDetected = false;
-    float bpm = 0;
-    int bassHits = 0;
+    bool beatDetected;
+    float bpm;
+    int bassHits;
 
-    float noiseFloor = 0;
-    bool signalPresence = false;
+    float noiseFloor;
+    bool signalPresence;
 
-    float frequency = 0;
+    float frequency;
 
-    unsigned long timestamp = 0;
+    unsigned long timestamp;
+
+    MoodSnapshot()
+        : volume(0), loudness(0), peak(0), average(0), agcLevel(1),
+          bass(0), mid(0), treble(0),
+          spectrumCentroid(0), dominantBand(0), dynamics(0), energy(0),
+          beatDetected(false), bpm(0), bassHits(0),
+          noiseFloor(0), signalPresence(false),
+          frequency(0), timestamp(0) {}
 };
 
 class MoodHistory {
 private:
     std::deque<MoodSnapshot> history;
-    size_t maxSize = 150; // ~6 seconds @ 25 FPS
+    size_t maxSize;
 
     MoodSnapshot current;
-    MoodType currentMood = MoodType::UNKNOWN;
-    MoodType predictedNextMood = MoodType::UNKNOWN;
+    MoodType currentMood;
+    MoodType predictedNextMood;
 
 public:
+    MoodHistory() : maxSize(150), currentMood(UNKNOWN), predictedNextMood(UNKNOWN) {}
+
     void update(const AudioFeatures& f) {
-        MoodSnapshot m = {
-            .volume = f.volume,
-            .loudness = f.loudness,
-            .peak = f.peak,
-            .average = f.average,
-            .agcLevel = f.agcLevel,
-            .bass = f.bass,
-            .mid = f.mid,
-            .treble = f.treble,
-            .spectrumCentroid = f.spectrumCentroid,
-            .dominantBand = f.dominantBand,
-            .dynamics = f.dynamics,
-            .energy = f.energy,
-            .beatDetected = f.beatDetected,
-            .bpm = f.bpm,
-            .bassHits = f.bassHits,
-            .noiseFloor = f.noiseFloor,
-            .signalPresence = f.signalPresence,
-            .frequency = f.frequency,
-            .timestamp = millis()
-        };
+        MoodSnapshot m;
+
+        m.volume = f.volume;
+        m.loudness = f.loudness;
+        m.peak = f.peak;
+        m.average = f.average;
+        m.agcLevel = f.agcLevel;
+        m.bass = f.bass;
+        m.mid = f.mid;
+        m.treble = f.treble;
+        m.spectrumCentroid = f.spectrumCentroid;
+        m.dominantBand = f.dominantBand;
+        m.dynamics = f.dynamics;
+        m.energy = f.energy;
+        m.beatDetected = f.beatDetected;
+        m.bpm = f.bpm;
+        m.bassHits = f.bassHits;
+        m.noiseFloor = f.noiseFloor;
+        m.signalPresence = f.signalPresence;
+        m.frequency = f.frequency;
+        m.timestamp = millis();
 
         current = m;
         history.push_back(m);
@@ -97,16 +107,15 @@ public:
     MoodType getPredictedNextMood() const { return predictedNextMood; }
     String getCurrentMoodName() const { return String(moodToString(currentMood)); }
     String getPredictedMoodName() const { return String(moodToString(predictedNextMood)); }
-
     const std::deque<MoodSnapshot>& getHistory() const { return history; }
 
 private:
     MoodType classifyMood(const MoodSnapshot& m) const {
-        if (m.energy > 0.8f && m.dynamics > 0.5f) return MoodType::INTENSE;
-        if (m.energy > 0.6f && m.bpm > 100) return MoodType::ENERGETIC;
-        if (m.energy < 0.3f && m.dynamics < 0.2f) return MoodType::CALM;
-        if (m.bpm < 80 && m.energy > 0.4f) return MoodType::FLOATY;
-        return MoodType::UNKNOWN;
+        if (m.energy > 0.8f && m.dynamics > 0.5f) return INTENSE;
+        if (m.energy > 0.6f && m.bpm > 100) return ENERGETIC;
+        if (m.energy < 0.3f && m.dynamics < 0.2f) return CALM;
+        if (m.bpm < 80 && m.energy > 0.4f) return FLOATY;
+        return UNKNOWN;
     }
 
     MoodType predictNextMood() const {
@@ -114,16 +123,21 @@ private:
 
         float avgEnergy = 0, avgBPM = 0, avgDynamics = 0;
 
-        for (const auto& m : history) {
-            avgEnergy += m.energy;
-            avgBPM += m.bpm;
-            avgDynamics += m.dynamics;
+        for (size_t i = 0; i < history.size(); ++i) {
+            avgEnergy += history[i].energy;
+            avgBPM += history[i].bpm;
+            avgDynamics += history[i].dynamics;
         }
 
         avgEnergy /= history.size();
         avgBPM /= history.size();
         avgDynamics /= history.size();
 
-        return classifyMood({.energy = avgEnergy, .bpm = avgBPM, .dynamics = avgDynamics});
+        MoodSnapshot temp;
+        temp.energy = avgEnergy;
+        temp.bpm = avgBPM;
+        temp.dynamics = avgDynamics;
+
+        return classifyMood(temp);
     }
 };

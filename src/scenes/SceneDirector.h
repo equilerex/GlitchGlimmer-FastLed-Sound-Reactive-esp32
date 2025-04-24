@@ -1,34 +1,58 @@
 #pragma once
 
 #include "../scenes/MoodHistory.h"
-#include "../scenes/SceneState.h"
 #include "../scenes/SceneRegistry.h"
-#include "../scenes/LayerManager.h"
-#include "../animations/AnimationCatalog.h"
+#include "../scenes/SceneState.h"
+
+
+struct SceneDefinition;
+struct SceneState;
+struct MoodHistory;
+
+struct MoodInfo {
+    float energy;
+    float tempo;
+    float dynamics;
+    bool beatDetected;
+};
 
 class SceneDirector {
 private:
-    SceneState state;
+    SceneState* state;
     MoodHistory& mood;
     SceneRegistry& registry;
     unsigned long lastScenePrint = 0;
 
 public:
     SceneDirector(MoodHistory& moodRef, SceneRegistry& registryRef)
-        : mood(moodRef), registry(registryRef) {}
+        : state(nullptr), mood(moodRef), registry(registryRef) {}
+
+    void attachState(SceneState* s) { state = s; }
 
     void begin() {
-        const SceneDefinition& initial = registry.pickSceneByMood(state, mood.getCurrentSnapshot());
-        state.beginScene(&initial, mood.getCurrentSnapshot());
+        if (!state) return;
+        const SceneDefinition& initial = registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
+        state->beginScene(&initial, mood.getCurrentSnapshot());
+    }
+
+    static inline MoodInfo convertToMoodInfo(const MoodSnapshot& m) {
+        return MoodInfo{
+            m.energy,
+            m.bpm,
+            m.dynamics,
+            m.beatDetected
+        };
     }
 
     void update(const AudioFeatures& features) {
+        if (!state) return;
         mood.update(features);
         const MoodSnapshot& moodNow = mood.getCurrentSnapshot();
+        const MoodSnapshot& predictedMood = mood.getPredictedNextMood();
 
-        if (state.shouldTransition(moodNow)) {
-            const SceneDefinition& next = registry.pickSceneByMood(state, mood.getPredictedSnapshot());
-            state.beginScene(&next, moodNow);
+        if (state->shouldTransition(moodNow)) {
+            const SceneDefinition& nextScene = registry.pickSceneByMood(*state, predictedMood);
+            state->beginScene(&nextScene, convertToMoodInfo(moodNow));
         }
     }
 
@@ -63,17 +87,18 @@ public:
     }
 
     void forceNextScene() {
+        if (!state) return;
         const MoodSnapshot& currentMood = mood.getCurrentSnapshot();
-        const SceneDefinition& next = registry.pickSceneByMood(state, currentMood);
-        state.beginScene(&next, currentMood);
+        const SceneDefinition& next = registry.pickSceneByMood(*state, currentMood);
+        state->beginScene(&next, currentMood);
     }
 
     const SceneDefinition* getActiveScene() const {
-        return state.activeScene;
+        return state ? state->activeScene : nullptr;
     }
 
     String getCurrentSceneName() const {
-        return state.activeScene ? String(state.activeScene->name) : "None";
+        return state && state->activeScene ? String(state->activeScene->name) : "None";
     }
 
     void log() {

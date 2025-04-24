@@ -1,4 +1,4 @@
-// ====== AlienSquirtTrailLayer.h ======
+
 #pragma once
 
 #include <FastLED.h>

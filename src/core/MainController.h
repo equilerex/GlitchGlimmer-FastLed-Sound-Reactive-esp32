@@ -12,6 +12,7 @@
 #include "../core/SettingsManager.h"
 #include "../scenes/SceneDirector.h"
 #include "../scenes/MoodHistory.h"
+#include "../config/Config.h"
 
 
 class MainController {
@@ -19,6 +20,7 @@ private:
     AudioFeatures audioFeatures;        // Must come before ledController
     AudioHistoryTracker audioHistory;   // Stores recent audio snapshots
     MoodHistory moodHistory;
+    SceneRegistry sceneRegistry;        // <-- Add this line
     SceneDirector sceneDirector;
     AudioProcessor audioProcessor;
     LEDStripController ledController;   // Uses audioFeatures and audioHistory
@@ -29,15 +31,14 @@ private:
 
 public:
     MainController()
-        : ledController(audioFeatures),
+        : sceneDirector(moodHistory, sceneRegistry),
+          ledController(audioFeatures, moodHistory, audioHistory),
           encoderInput(ENCODER_PIN_A, ENCODER_PIN_B, ENCODER_BTN_PIN, settingsManager),
           buttonInput(ledController, BUTTON_PIN_1, BUTTON_PIN_2),
           displayManager(tft)
     {}
 
     void begin() {
-
-        sceneDirector.begin();
         sceneDirector.begin();
         audioProcessor.begin();
         displayManager.begin();

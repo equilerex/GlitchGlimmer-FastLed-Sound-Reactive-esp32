@@ -12,6 +12,7 @@ struct SceneDefinition {
     std::vector<LayerType> layerTypes;
     std::vector<MoodType> preferredMoods;
     String name;
+    const SceneDefinition* activeScene = nullptr;
 
     bool supportsMood(MoodType mood) const {
         return std::find(preferredMoods.begin(), preferredMoods.end(), mood) != preferredMoods.end();

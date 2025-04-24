@@ -65,7 +65,7 @@ public:
 
     void setAnimation(AnimationType type, const AudioFeatures& audio) {
         if (currentAnimation) delete currentAnimation;
-        currentAnimation = createAnimation(type);
+        currentAnimation = animationFactory(type)(); // Use the animation factory
         if (currentAnimation) currentAnimation->update(leds, length, audio);
     }
 
@@ -73,7 +73,7 @@ public:
         if (currentAnimation && leds)
             currentAnimation->update(leds, length, audio);
         layerManager.updateLayers(audio, history);
-        layerManager.renderLayers(leds, length);
+        layerManager.renderLayers(); // Remove extra arguments if not needed
     }
 
     LayerManager& getLayerManager() { return layerManager; }
@@ -90,11 +90,8 @@ private:
     int stripCount = 0;
 
 public:
-    LEDStripController(AudioFeatures& af, MoodHistory& mh, AudioHistoryTracker& ah)
-        : audio(af),
-          moodHistory(mh),
-          audioHistory(ah),
-          sceneDirector(mh, sceneRegistry) {}
+LEDStripController(AudioFeatures& af, MoodHistory& mh, AudioHistoryTracker& ah)
+  : audio(audio), moodHistory(moodHistory), audioHistory(audioHistory), sceneDirector(moodHistory, sceneRegistry) {}
 
     void begin() {
         sceneRegistry.registerDefaultScenes();
@@ -161,7 +158,7 @@ public:
         sceneDirector.update(audio);
 
         for (int i = 0; i < stripCount; ++i) {
-            auto* scene = sceneDirector.getCurrentSceneForStrip(i);
+            const SceneDefinition* scene = &sceneDirector.getCurrentScene().getActiveScene();
             if (scene) {
                 strips[i].setAnimation(scene->baseAnimation, audio);
                 strips[i].getLayerManager().applySceneLayers(*scene);
@@ -180,12 +177,7 @@ public:
             Serial.println(sceneDirector.getCurrentSceneName());
             Serial.print(F("Mood: "));
             Serial.println(moodHistory.getCurrentMoodName());
-            Serial.print(F("Predicted: "));
-            Serial.println(moodHistory.getPredictedMoodName());
-            Serial.print(F("Layers: "));
-            Serial.println(strips[0].getLayerManager().activeCount());
-            strips[0].getLayerManager().debugLayers();
-            Serial.println(F("--------------------------"));
+
         }
         FastLED.show();
     }
