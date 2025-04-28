@@ -1,7 +1,8 @@
 # GlitchGlimmer Design & Automation Architecture
 
 ## ✨ Overview
-GlitchGlimmer is more than just a sound-reactive LED controller. It's a fully modular, intelligent lighting system designed for immersive party and music experiences. It reacts to music in real time, shifting moods and visual behaviors based on detailed audio analysis, dynamically layering effects like a live VJ.
+GlitchGlimmer is a modular, audio-reactive **light show controller** for ESP32, designed for **fully automated** operation at parties, raves, DJ sets, or home events. either integrated into your outfit, your dj table or what ever fits the mood.
+It combines **audio analysis**, **mood classification**, **scene management**, and **layer-based visual effects** to create a **dynamic, non-repetitive, music-synced light experience** — **without manual intervention**.
 
 This document explores the inner workings, design principles, and practical use cases for GlitchGlimmer, making it an ideal project for DJs, event spaces, festivals, or anyone who wants vibrant, automated visual flair.
 
@@ -56,121 +57,74 @@ Key priorities driving the design:
 ## 🧬 Architecture Diagram
 
 ```
-  +----------------+      +-----------------------+       +------------------+
-  | Audio analyzer | ---> |  Mood+sound History   | --->  | Scene Director   |    
-  +----------------+      +-----------------------+       +------------------+
-                                                         |
-                          +----------------------------+ |
-                          |  Scene Definition          | |
-                          |  + Base Animation          | |
-                          |  + Preferred Moods         | |
-                          |  + Suggested Layers        |<+
-                          +----------------------------+
-                                  |
-                        +----------------------+
-                        |  LED Strip Controller |
-                        |  + Animation          |
-                        |  + LayerManager       |
-                        +----------------------+
++------------------+      +---------------------+      +-------------------+
+| Audio Analyzer    | ---> | Mood History Buffer  | ---> | Scene Director    |
++------------------+      +---------------------+      +---------+---------+
+                                                            |
+                                                            v
++--------------------------------+      +-------------------------------+
+| Scene Definition (Catalog)     | ---> | LED Strip Controller (per strip) |
+|  - Base Animation              |      |  - Run Base Animation           |
+|  - Suggested Layer Types       |      |  - Inject Temporary Layers      |
++--------------------------------+      +-------------------------------+
 ```
 
 ---
 
-## 🚀 Key Concepts
 
-### Audio Analysis (AudioFeatures)
-The audio engine provides real-time FFT-based audio metrics:
+## 🛠️ Design Principles
 
-- `volume`, 
-- `loudness`
-- `peak`
-- `average`
-- `bass`
-- `mid`
-- `treble`
-- `dynamics` (difference between peak & average)
-- `spectrumCentroid`, 
-- `dominantBand`
-- `frequency`
-- `energy` (normalized loudness & dynamics)
-- `beatDetected`, 
-- `bassHits`, 
-- `BPM`
-- `signalPresence`, 
-- `noiseFloor`
+- **Layered Visual System:**  
+  Every visual is a "layer" that can be added and removed dynamically.
+  - *Base layer:* A core mood-driven animation
+  - *Reactive layers:* Quick overlays (beat pop, energy flows, mood arcs)
 
-### Sound History
-Uses a moving window of audio snapshots of AudioFeatures for the animations to use.
+- **Mood-Driven Scene Switching:**  
+  Scenes are not switched randomly — they respond to the **feeling** of the music based on energy, tempo, and dynamics.
 
+- **Memory Conscious Layer Pool:**  
+  Layers are **pre-allocated** and **recycled** to avoid ESP32 heap fragmentation or memory leaks.
 
-
-### Mood History
-Uses a moving window of stabilized "mood" snapshots aggregated from audio features to classify and track mood evolution over time:
-
-- `MoodType`: CALM, ENERGETIC, INTENSE, FLOATY
-- `MoodInfo`: includes BPM, energy, dynamics, beat presence
-
-It helps smooth out momentary spikes and detect mood shifts, guiding long-form animation changes.
-
-### Scene System
-
-SceneRegistry
-consisting of "scenes" 
-A `SceneDefinition` includes: 
-- `baseAnimation`: Base animation animation for a strip - will shift between a set of base animations
-- `preferredMoods`: moods this scene is suited for
-- `layerTypes`: types of additional overlays that work well for this animation
-
-### Scene Director
-The conductor of the system. It:
-
-1. Picks a new scene when a significant mood shift is detected
-2. Manages duration of scenes (min time, ideal time)
-3. Injects reactive layers (beat pops, energy flashes, ambient flows)
-4. Tracks current scene per strip
-
-It uses both real-time audio and historical mood to ensure visual cohesion.
-
-### Layer System
-Each LED strip has a `LayerManager` which stacks temporary visual effects:
-
-- Reactive: Beat flashes, energy pulses, sparkles
-- Overlay: Subtle continuous effects (scribbles, fog, trails)
-- Highlight: Dominant band strobes, flickers, shockwaves
-- Mood Arc: Visual themes tied to current mood (arcs, color flows)
-- Background: Low-opacity ambiance, waveform flow
-
-Layers are drawn on top of the base animation, and expire over time.
+- **Smooth Lifecycle Management:**  
+  Base animations **run indefinitely** until the scene changes.
+  Temporary layers **fade out** automatically after a duration.
 
 ---
 
-## 🔄 Lifecycle of Animation Switching
+## 🧠 Audio Features Tracked
 
-1. **Initialization**:
-    - Load all animations and visual layers via catalog.
-    - Attach mood & audio history trackers.
+| Feature        | Description                              |
+|----------------|------------------------------------------|
+| Volume         | Overall sound pressure                  |
+| Loudness       | Dynamic range of audio                  |
+| Peak           | Max peak volume for quick hits           |
+| Bass / Mid / Treble | Band energy levels                 |
+| BPM Estimate   | Approximate beats per minute             |
+| Beat Detection | Detected beat pulses                    |
+| Spectrum Centroid | Center of gravity for frequencies    |
+| Dominant Band  | Most powerful frequency band             |
+| Dynamics       | Audio energy variation over time         |
+| Signal Presence| Is there a signal (vs. silence)          |
 
-2. **Audio Input & Analysis**:
-    - Microphone feeds samples, analyzed to produce `AudioFeatures`.
-    - History updated every frame (~25 FPS).
+---
 
-3. **Mood Classification**:
-    - MoodSnapshot added to MoodHistory.
-    - Determines current & predicted mood.
+## 🎛️ Scene Lifecycle Example
 
-4. **Scene Transition Check**:
-    - Compare new mood to current scene's mood.
-    - If energy or BPM has shifted significantly, and min duration passed:
-        - Pick next scene matching predicted mood.
-        - Load new base animation.
+1. **Startup:**  
+   → Default mood: *Calm*  
+   → Pick a slow-moving tunnel animation
 
-5. **Reactive Layer Injection**:
-    - Beat, BPM, and energy events trigger layers.
-    - Limits prevent overload (e.g., 1 layer per type).
+2. **Music Picks Up:**  
+   → Mood shifts to *Energetic*  
+   → Scene switch: faster pulse storm animation
 
-6. **Rendering**:
-    - Base animation updated.
-    - LayerManager renders active layers on top.
+3. **Drop Hits:**  
+   → Beat detected + energy spike  
+   → Temporary flash layers injected across strips
+
+4. **Calm Breakdown:**  
+   → Mood drops to *Floaty*  
+   → Scene switch: slow neon waveform animation
 
 ---
 
@@ -184,24 +138,36 @@ Layers are drawn on top of the base animation, and expire over time.
 
 ---
 
-## 🎉 Why It's Perfect for Automated Party Lighting
 
-- **Hands-free Mood Matching**: GlitchGlimmer listens to the music and reacts naturally.
-- **VJ-Inspired Visuals**: Layering lets you mix a calm tunnel with beat pops or fog trails.
-- **Smart Transitions**: Doesn’t switch scenes jarringly—it waits for musical moments.
-- **Easy to Extend**: Developers can build their own animations or layers.
-- **Beautiful with Zero Tuning**: Defaults work great out of the box.
+## ✨ Why GlitchGlimmer?
+
+✅ Fully automated party lighting system  
+✅ Mood-aware visual performance  
+✅ Modular, expandable, clean codebase  
+✅ Great for DJs, musicians, artists, hackers  
+✅ Designed for **ESP32** + **FastLED** optimized performance
 
 ---
 
-## 📄 TODO / Future Plans
-- Persistent settings & config via JSON
-- Rotary encoder input
-- Web dashboard for remote control
-- Scene scripting and timeline playback
-- Light show presets and auto-recording
-  
+## 📜 TODOs & Future Work
+- Rotary encoder support
+- Wi-Fi remote control panel
+- User-configurable animation presets
+- Dynamic per-strip scene control
+- Mood prediction smoothing
 
+---
+
+# 📂 Folders
+
+| Folder | Purpose |
+|--------|---------|
+| src/   | Core project source code (everything important) |
+| lib/   | Optional libraries (can be ignored) |
+| include/ | Settings headers and platform defines |
+| test/  | Testing files (not yet fully active) |
+
+---
 
 
 Happy glitching! ✨
