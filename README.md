@@ -1,3 +1,5 @@
+# !work in progress, not functional.!
+
 # GlitchGlimmer Design & Automation Architecture
 
 ## ✨ Overview
