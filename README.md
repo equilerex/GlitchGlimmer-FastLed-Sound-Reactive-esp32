@@ -79,6 +79,8 @@ device pays. Allocation counts from the harness exclude it.
 JavaScript rewrite. The harness runs the real firmware code and writes the
 resulting pixels, so the recording and the firmware cannot drift apart.
 
+![The frame player showing both strips mid-scene](docs/preview.png)
+
 ```
 pio run -e native
 .pio/build/native/program --dump-frames web/data    # program.exe on Windows
