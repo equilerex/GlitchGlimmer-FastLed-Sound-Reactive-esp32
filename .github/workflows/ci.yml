@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The device build is the check that matters most, because it is the only one
   # that compiles at -std=gnu++11. Anything C++17 or newer that reaches
