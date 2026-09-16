@@ -10,6 +10,8 @@ This document explores the inner workings, design principles, and practical use 
 
 
 ## Features
+- ‐std=gnu++11 on Arduino-ESP32 3.0+.
+
 
 - Multiple LED strip output channels with randomized animations.
 - **Sound-Reactive Animations**: Utilizes FFT and volume analysis from a digital I2S microphone (e.g., INMP441) to drive LED animations.

@@ -1,20 +1,47 @@
 #include "DisplayManager.h"
-#include "../core/Debug.h" 
+#include "../core/Debug.h"
 #include "widgets/Widget.h"
 #include <TFT_eSPI.h>
 #include "../config/Config.h"
 #include "SettingIconRenderer.h"
 #include "themes/ColorTheme.h"
 #include "GridLayout.h"
+#include <memory>
 
 DisplayManager::DisplayManager(TFT_eSPI &display)
     : _tft(display), layout(DISPLAY_WIDTH, DISPLAY_HEIGHT),
       showSettingScreen(false), settingDisplayTime(0), loading(true), errorState(false) {
-    // Initialize with a default theme
+    // Constructor initialization only - don't initialize hardware here
 }
 
 void DisplayManager::setTheme(const WidgetColorTheme& newTheme) {
-    // If you want to support dynamic theme switching, you must implement it via config or getTheme().
+    // If you want to support dynamic theme switching, update widgets here
+}
+
+void DisplayManager::setupLayout() {
+    Debug::log(Debug::INFO, "Setting up display layout and widgets...");
+    const WidgetColorTheme& theme = getTheme();
+
+    // Create persistent widgets using C++11 compatible approach
+    // Instead of std::make_unique, use direct unique_ptr construction with new
+    bassBar.reset(new VerticalBarWidget("BASS", 0.0f, theme.bassColor));
+    midBar.reset(new VerticalBarWidget("MID", 0.0f, theme.midColor));
+    trebleBar.reset(new VerticalBarWidget("TREB", 0.0f, theme.trebleColor));
+    powerBar.reset(new VerticalBarWidget("PWR", 0.0f, theme.powerColor));
+    bpmWidget.reset(new AcronymValueWidget("BPM", 0));
+    powerValWidget.reset(new AcronymValueWidget("PWR", 0));
+    waveformWidget.reset(new WaveformWidget(nullptr, 0, theme, false));
+
+    // Add widgets to the layout
+    layout.addWidget(bassBar.get());
+    layout.addWidget(midBar.get());
+    layout.addWidget(trebleBar.get());
+    layout.addWidget(powerBar.get());
+    layout.addWidget(bpmWidget.get());
+    layout.addWidget(powerValWidget.get());
+    layout.addWidget(waveformWidget.get());
+
+    Debug::log(Debug::INFO, "Display layout setup complete.");
 }
 
 void DisplayManager::showStartupScreen() {
@@ -42,18 +69,30 @@ void DisplayManager::showStartupScreen() {
 }
 
 void DisplayManager::begin() {
+    // Initialize hardware
     pinMode(DISPLAY_PIN, OUTPUT);
     digitalWrite(DISPLAY_PIN, HIGH);
-    delay(1000); // Wait for 2 seconds
-    Serial.println("Display initialized");
-
+    delay(1000); // Give display time to stabilize
+    
+    // Set display rotation
     _tft.setRotation(1);
-    _tft.fillScreen(TFT_BLACK); 
+    _tft.fillScreen(TFT_BLACK);
+    
+    // Show startup screen
     showStartupScreen();
+    
+    // Initialize widgets and layout after startup screen
+    setupLayout();
+    
+    // Initial draw of the empty layout
+    _tft.fillScreen(TFT_BLACK);
+    layout.draw(_tft);
+    
+    Serial.println("Display initialized");
 }
 
-void DisplayManager::update(const AudioFeatures& features, const String& animName,
-                          int animIndex, int animCount, bool autoSwitch, const String& keepReason) {
+// Simple update method (for compatibility)
+void DisplayManager::update() {
     if (loading) return;
     if (errorState) {
         showError(errorMessage);
@@ -63,15 +102,66 @@ void DisplayManager::update(const AudioFeatures& features, const String& animNam
         drawSettingScreen();
         return;
     }
-    
+
+    // Simple display when no audio data available
+    _tft.fillScreen(TFT_BLACK);
+    _tft.setTextColor(getTheme().primary, TFT_BLACK);
+    _tft.setTextSize(2);
+    int16_t x = (_tft.width() - _tft.textWidth(currentAnimationName)) / 2;
+    int16_t y = _tft.height() / 2;
+    _tft.setCursor(x, y);
+    _tft.print(currentAnimationName);
+}
+
+// Main update with full data
+void DisplayManager::update(const AudioFeatures& features, const String& animName) {
+    if (loading) return;
+    if (errorState) {
+        showError(errorMessage);
+        return;
+    }
+    if (showSettingScreen) {
+        drawSettingScreen();
+        return;
+    }
+
+    // Store current animation name
     currentAnimationName = animName;
-    updateAudioVisualization(features, animIndex, animCount, autoSwitch, keepReason);
     
-    // Add animation name display
+    // Draw main dashboard using the persistent widgets
+    drawMainScreen(features, animName);
+}
+
+// Legacy method (forwards to drawMainScreen)
+void DisplayManager::updateAudioVisualization(const AudioFeatures& features) {
+    // Forward to new method for backwards compatibility
+    drawMainScreen(features, currentAnimationName);
+}
+
+// New method that updates existing widgets rather than recreating them
+void DisplayManager::drawMainScreen(const AudioFeatures& features, const String& animName) {
+    // Update data in existing widgets
+    if (bassBar) bassBar->setValue(features.bass);
+    if (midBar) midBar->setValue(features.mid);
+    if (trebleBar) trebleBar->setValue(features.treble);
+    if (powerBar) powerBar->setValue(features.loudness / 100.0f);
+
+    if (bpmWidget) bpmWidget->setValue(static_cast<int>(features.bpm), features.beatDetected);
+    if (powerValWidget) powerValWidget->setValue(static_cast<int>(features.loudness));
+
+    if (waveformWidget) {
+        waveformWidget->updateData(features.waveform, NUM_SAMPLES, features.beatDetected);
+    }
+
+    // Clear screen and redraw the entire layout
+    _tft.fillScreen(TFT_BLACK);
+    layout.draw(_tft);
+
+    // Add animation name display separately
     _tft.setTextColor(getTheme().primary, TFT_BLACK);
     _tft.setTextSize(1);
     _tft.setCursor(5, 5);
-    _tft.print(currentAnimationName);
+    _tft.print(animName);
 }
 
 void DisplayManager::showSetting(const String& name, int value) {
@@ -108,7 +198,7 @@ void DisplayManager::drawSettingScreen() {
     _tft.setCursor((_tft.width() - nameWidth) / 2, 40);
     _tft.print(icon);
 
-    int size = (4 + round((pulse - 1.0) * 8));
+    int size = (4 + round((pulse -.0) * 8));
     _tft.setTextSize(size);
     _tft.setTextColor(getTheme().primary, TFT_BLACK);
     String valStr = String(activeSettingValue);
@@ -120,30 +210,6 @@ void DisplayManager::drawSettingScreen() {
     _tft.setTextColor(getTheme().secondary, TFT_BLACK);
     _tft.setCursor((_tft.width() - _tft.textWidth("press knob for more")) / 2, _tft.height() - 16);
     _tft.print("press knob for more");
-}
-
-void DisplayManager::updateAudioVisualization(const AudioFeatures& features, 
-                                            int animIndex, int animCount, 
-                                            bool autoSwitch, String keepReason) {
- 
-
-    _tft.fillScreen(TFT_BLACK);
-    layout = GridLayout(_tft.width(), _tft.height());
-
-    layout.addWidget(new VerticalBarWidget("BASS", features.bass, getTheme().bassColor));
-    layout.addWidget(new VerticalBarWidget("MID", features.mid, getTheme().midColor));
-    layout.addWidget(new VerticalBarWidget("TREB", features.treble, getTheme().trebleColor));
-    layout.addWidget(new VerticalBarWidget("PWR", features.loudness / 100.0f, getTheme().powerColor));
-
-    layout.addWidget(new AcronymValueWidget("BPM", static_cast<int>(features.bpm), features.beatDetected));
-    layout.addWidget(new AcronymValueWidget("PWR", static_cast<int>(features.loudness)));
-    layout.addWidget(new AcronymValueWidget("IDX", animIndex ? animIndex + 1 : 0));
-    layout.addWidget(new AcronymValueWidget("TOT", animCount ? animCount : 0));
-    layout.addWidget(new AcronymValueWidget("AUTO", autoSwitch));
-    layout.addWidget(new AcronymValueWidget("KEEP", String(keepReason)));
-
-    layout.addWidget(new WaveformWidget(features.waveform, NUM_SAMPLES, getTheme(), features.beatDetected));
-    layout.draw(_tft);
 }
 
 void DisplayManager::showError(const String& message) {

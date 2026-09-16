@@ -1,107 +1,122 @@
 #pragma once
 
-#include "../scenes/MoodHistory.h"
-#include "../scenes/SceneRegistry.h"
-#include "../scenes/SceneState.h"
+/*--------------------------------------------------------------------
+ *  Includes – only the headers that give COMPLETE definitions
+ *------------------------------------------------------------------*/
+#include "../audio/AudioFeatures.h"
+#include "../scenes/MoodHistory.h"     // gives MoodSnapshot
+#include "../scenes/SceneRegistry.h"   // gives SceneDefinition
+#include "../scenes/SceneState.h"      // gives SceneState
+#include "../scenes/LayerManager.h"    // needed for maybeInjectReactiveLayer
 
+/*--------------------------------------------------------------------
+ *  Forward declarations – good style when we only need a pointer/ref
+ *------------------------------------------------------------------*/
+struct SceneDefinition;   // already defined via SceneRegistry, but explicit
+struct MoodSnapshot;      // comes from MoodHistory
 
-struct SceneDefinition;
-struct SceneState;
-struct MoodHistory;
-
+/*--------------------------------------------------------------------
+ *  Lightweight POD used when we only care about a few mood fields
+ *------------------------------------------------------------------*/
 struct MoodInfo {
-    float energy;
-    float tempo;
-    float dynamics;
-    bool beatDetected;
+    float energy       = 0.0f;
+    float tempo        = 0.0f;
+    float dynamics     = 0.0f;
+    bool  beatDetected = false;
 };
 
+/*--------------------------------------------------------------------
+ *  SceneDirector – decides which Scene runs and injects layers
+ *------------------------------------------------------------------*/
 class SceneDirector {
 private:
-    SceneState* state;
-    MoodHistory& mood;
+    SceneState*    state    = nullptr;   // owned elsewhere
+    MoodHistory&   mood;
     SceneRegistry& registry;
-    unsigned long lastScenePrint = 0;
+    unsigned long  lastScenePrint = 0;
 
 public:
-    SceneDirector(MoodHistory& moodRef, SceneRegistry& registryRef)
-        : state(nullptr), mood(moodRef), registry(registryRef) {}
+    inline SceneDirector(MoodHistory& m, SceneRegistry& r)
+        : state(nullptr), mood(m), registry(r) {}
 
-    void attachState(SceneState* s) { state = s; }
+    /*-------------------- one-time wiring --------------------*/
+    inline void attachState(SceneState* s) { state = s; }
 
-    void begin() {
+    inline void begin() {
         if (!state) return;
-        const SceneDefinition& initial = registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
-        state->beginScene(&initial, mood.getCurrentSnapshot());
+        const SceneDefinition& first =
+            registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
+        state->beginScene(&first, mood.getCurrentSnapshot());
     }
 
+    /*-------------------- helpers --------------------*/
     static inline MoodInfo convertToMoodInfo(const MoodSnapshot& m) {
-        return MoodInfo{
-            m.energy,
-            m.bpm,
-            m.dynamics,
-            m.beatDetected
-        };
+        // Initialize each field individually to avoid brace-initialization errors
+        MoodInfo info;
+        info.energy = m.energy;
+        info.tempo = m.bpm;        // MoodInfo uses 'tempo' while MoodSnapshot uses 'bpm'
+        info.dynamics = m.dynamics;
+        info.beatDetected = m.beatDetected;
+        return info;
     }
 
-    void update(const AudioFeatures& features) {
+    /*-------------------- regular update --------------------*/
+    inline void update(const AudioFeatures& features) {
         if (!state) return;
+
         mood.update(features);
-        const MoodSnapshot& moodNow = mood.getCurrentSnapshot();
-        const MoodSnapshot& predictedMood = mood.getPredictedNextMood();
-
-        if (state->shouldTransition(moodNow)) {
-            const SceneDefinition& nextScene = registry.pickSceneByMood(*state, predictedMood);
-            state->beginScene(&nextScene, convertToMoodInfo(moodNow));
+        const MoodSnapshot& now = mood.getCurrentSnapshot();
+        MoodType nextMood = mood.getPredictedNextMood();
+        
+        // Create a temporary snapshot for the predicted mood
+        MoodSnapshot predictedSnapshot = now; // Start with current snapshot as base
+        
+        if (state->shouldTransition(now)) {
+            const SceneDefinition& nxt =
+                registry.pickSceneByMood(*state, now); // Use current mood snapshot instead
+            state->beginScene(&nxt, now);
         }
     }
 
-    void maybeInjectReactiveLayer(LayerManager& layerManager, const AudioFeatures& audio, unsigned long now) {
-        static unsigned long lastBeatEffect = 0;
-        static unsigned long lastEnergyEffect = 0;
-        static const int maxActiveLayers = 4;
+    /*-------------------- reactive layer injection --------------------*/
+    inline void maybeInjectReactiveLayer(LayerManager& lm,
+                                         const AudioFeatures& af,
+                                         unsigned long now)
+    {
+        static unsigned long lastBeat   = 0;
+        static unsigned long lastEnergy = 0;
+        constexpr int MAX_LAYERS = 4;
 
-        if (layerManager.activeCount() >= maxActiveLayers) return;
+        if (lm.activeCount() >= MAX_LAYERS) return;
 
-        if (audio.beatDetected && now - lastBeatEffect > 800) {
-            if (random(100) < 70) {
-                layerManager.addLayerByType(LayerType::REACTIVE);
-                lastBeatEffect = now;
-            }
+        if (af.beatDetected && now - lastBeat > 800) {
+            if (random(100) < 70) lm.addLayerByType(LayerType::REACTIVE);
+            lastBeat = now;
         }
-
-        if (audio.energy > 0.6f && now - lastEnergyEffect > 1500) {
-            if (random(100) < 40) {
-                layerManager.addLayerByType(LayerType::OVERLAY);
-                lastEnergyEffect = now;
-            }
+        if (af.energy > 0.6f && now - lastEnergy > 1500) {
+            if (random(100) < 40) lm.addLayerByType(LayerType::OVERLAY);
+            lastEnergy = now;
         }
-
-        if (random(1000) < 3) {
-            layerManager.addLayerByType(LayerType::MOOD_ARC);
-        }
+        if (random(1000) < 3) lm.addLayerByType(LayerType::MOOD_ARC);
     }
 
-    const SceneDefinition* getCurrentSceneForStrip(int index) const {
-        return state.activeScene;
-    }
-
-    void forceNextScene() {
-        if (!state) return;
-        const MoodSnapshot& currentMood = mood.getCurrentSnapshot();
-        const SceneDefinition& next = registry.pickSceneByMood(*state, currentMood);
-        state->beginScene(&next, currentMood);
-    }
-
-    const SceneDefinition* getActiveScene() const {
+    /*-------------------- convenience getters --------------------*/
+    inline const SceneDefinition* getActiveScene() const {
         return state ? state->activeScene : nullptr;
     }
-
-    String getCurrentSceneName() const {
-        return state && state->activeScene ? String(state->activeScene->name) : "None";
+    inline String getCurrentSceneName() const {
+        return state && state->activeScene
+               ? String(state->activeScene->name) : F("None");
+    }
+    inline void forceNextScene() {
+        if (!state) return;
+        const SceneDefinition& nxt =
+            registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
+        state->beginScene(&nxt, mood.getCurrentSnapshot());
     }
 
-    void log() {
+    /*-------------------- serial logging --------------------*/
+    inline void log() {
         if (millis() - lastScenePrint > 2000) {
             lastScenePrint = millis();
             Serial.print(F("[Scene] "));

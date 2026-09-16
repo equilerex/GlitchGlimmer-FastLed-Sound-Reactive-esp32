@@ -1,91 +1,57 @@
 #pragma once
 
 #include <vector>
-#include <FastLED.h>
-
+#include <memory>
+#include <deque>
+#include <cstdint>
 #include "LayerTypes.h"
-#include "../audio/AudioFeatures.h"
-#include "../audio/AudioSnapshot.h"
-#include "../animations/VisualLayer.h"
+#include "../animations/VisualLayer.h"  // Include the full definition of VisualLayer
 
+// Forward declarations to minimize header dependencies
+struct AudioFeatures;
+struct AudioSnapshot;
+struct SceneDefinition;
+struct CRGB;
+
+// LayerManager: manages and composites multiple visual layers onto the LED buffer
 class LayerManager {
 public:
     struct LayerInstance {
-        VisualLayer* layer = nullptr;
-        unsigned long startTime = 0;
-        unsigned long duration = 0;
+        std::unique_ptr<VisualLayer> layer;
+        unsigned long startMs;
+        unsigned long durMs;
         LayerType type;
-        bool active = true;
-
-        bool isExpired(unsigned long now) const {
-            return duration > 0 && (now - startTime > duration);
-        }
+        bool active;
+        bool expired(unsigned long now) const; // moved to .cpp
     };
+
+    LayerManager();                                    // ctor initializes internal state
+    void setLEDs(CRGB* buf, size_t count);             // assign LED buffer and size
+    void clearLayers();                                // remove all layers
+
+    void updateLayers(const AudioFeatures& now,
+                      const std::deque<AudioSnapshot>& hist); // update and prune
+
+    void renderLayers(uint8_t globalFade = 10);        // fade & blend each layer
+
+    void addLayer(VisualLayer* raw,
+                  LayerType type = LayerType::OVERLAY,
+                  unsigned long duration = 0);        // takes ownership of layer
+
+    int activeCount() const;                           // currently live layers
+    bool hasActiveLayerOfType(LayerType t) const;      // check for type
+    int countLayersOfType(LayerType t) const;          // count by type
+
+    template<typename... Args>
+    void addLayerByType(LayerType t, Args&&... args);  // instantiates layer by enum
+
+    void applySceneLayers(const SceneDefinition& sd);  // add layers for a scene
 
 private:
     std::vector<LayerInstance> layers;
-    CRGB* leds = nullptr;
-    int ledCount = 0;
-
-public:
-    void setLEDs(CRGB* buffer, int count) {
-        leds = buffer;
-        ledCount = count;
-    }
-
-    void clearLayers() {
-        for (auto& l : layers) {
-            delete l.layer;
-        }
-        layers.clear();
-    }
-
-    void updateLayers(const AudioFeatures& audio, const std::deque<AudioSnapshot>& history) {
-        unsigned long now = millis();
-        for (auto& l : layers) {
-            if (l.active && l.layer) {
-                l.layer->update(audio, history);
-            }
-        }
-        // Clean up expired layers
-        layers.erase(std::remove_if(layers.begin(), layers.end(),
-            [now](const LayerInstance& l) {
-                if (l.isExpired(now)) {
-                    delete l.layer;
-                    return true;
-                }
-                return false;
-            }), layers.end());
-    }
-
-    void renderLayers() {
-        if (!leds) return;
-        for (auto& l : layers) {
-            if (l.active && l.layer) {
-                l.layer->render(leds, ledCount);
-            }
-        }
-    }
-
-    void addLayer(VisualLayer* layer, LayerType type = LayerType::OVERLAY, unsigned long durationMs = 0) {
-        LayerInstance inst;
-        inst.layer = layer;
-        inst.startTime = millis();
-        inst.duration = durationMs;
-        inst.type = type;
-        inst.active = true;
-        layers.push_back(inst);
-    }
-
-    int countLayersOfType(LayerType t) const {
-        return std::count_if(layers.begin(), layers.end(), [t](const LayerInstance& l) {
-            return l.type == t;
-        });
-    }
-
-    bool hasActiveLayerOfType(LayerType t) const {
-        return std::any_of(layers.begin(), layers.end(), [t](const LayerInstance& l) {
-            return l.type == t;
-        });
-    }
+    CRGB* leds;
+    size_t ledCnt;
+    std::vector<CRGB> scratch;
 };
+
+// Note: all method implementations have been moved to LayerManager.cpp

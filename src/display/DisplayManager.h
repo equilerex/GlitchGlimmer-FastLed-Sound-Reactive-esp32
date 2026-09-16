@@ -2,8 +2,9 @@
 
 #include <TFT_eSPI.h>
 #include <vector>
+#include <memory> // Required for std::unique_ptr
 #include "../audio/AudioFeatures.h"
-#include "widgets/Widget.h"
+#include "widgets/Widget.h" // Include base class
 #include "themes/ColorTheme.h"
 #include "GridLayout.h"
 #include "../config/Config.h"
@@ -43,19 +44,27 @@ public:
         tft.setCursor(centerX - hintWidth / 2, tft.height() - 16);
         tft.print(hint);
     }
+
+    int getMinWidth() const override { return 120; }
+    int getMinHeight() const override { return 80; }
 };
-#pragma once
 
-#include <TFT_eSPI.h>
-#include "../audio/AudioProcessor.h"
-#include "../display/GridLayout.h"
-#include "../display/themes/ColorTheme.h"
-
- 
-class DisplayManager  {
+class DisplayManager {
 private:
     TFT_eSPI& _tft;
     GridLayout layout;
+
+    // --- Pointers to persistent widgets ---
+    // Using unique_ptr for automatic memory management
+    std::unique_ptr<VerticalBarWidget> bassBar;
+    std::unique_ptr<VerticalBarWidget> midBar;
+    std::unique_ptr<VerticalBarWidget> trebleBar;
+    std::unique_ptr<VerticalBarWidget> powerBar;
+    std::unique_ptr<AcronymValueWidget> bpmWidget;
+    std::unique_ptr<AcronymValueWidget> powerValWidget;
+    std::unique_ptr<WaveformWidget> waveformWidget;
+    // Add pointer for SettingIconWidget if used persistently
+    std::unique_ptr<SettingIconWidget> settingIconWidget;
 
     // Setting screen state
     bool showSettingScreen = false;
@@ -67,15 +76,27 @@ private:
     String errorMessage;
     String currentAnimationName;
 
+    // --- Private Helper Methods ---
+    void setupLayout(); // New method to initialize layout and widgets
+    void drawMainScreen(const AudioFeatures& features, const String& animName); // Simplified signature
+
 public:
-DisplayManager(TFT_eSPI& display);
+    DisplayManager(TFT_eSPI& display);
+    ~DisplayManager() = default; // Add default destructor for unique_ptr cleanup
 
     void setTheme(const WidgetColorTheme& newTheme);
     void begin();
     void showStartupScreen();
-    void update(const AudioFeatures& features, const String& animName,
-                int animIndex, int animCount, bool autoSwitch, const String& keepReason);
-    void updateAudioVisualization(const AudioFeatures& features, int animIndex, int animCount, bool autoSwitch, String keepReason);
+    
+    // Simplified update methods
+    void update(const AudioFeatures& features, const String& animName);
+    
+    // No-parameter update for when no audio data is available
+    void update();
+    
+    // Legacy method for compatibility
+    void updateAudioVisualization(const AudioFeatures& features);
+    
     void showSetting(const String& name, int value);
     void drawSettingScreen();
     void showError(const String& message);

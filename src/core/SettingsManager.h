@@ -1,65 +1,97 @@
 #pragma once
 
 #include <Arduino.h>
-#include <map>
-#include "Debug.h"
-#include "../config/Config.h"
 
-enum class Setting {
-    BRIGHTNESS = DEFAULT_BRIGHTNESS,
-    SPEED,
-    HUE,
-    SATURATION,
-    COUNT
-};
-
-class SettingsManager {
-public:
-    SettingsManager() {
-        values[Setting::BRIGHTNESS] = 128;
-        values[Setting::SPEED] = 100;
-        values[Setting::HUE] = 0;
-        values[Setting::SATURATION] = 255;
-        currentSetting = Setting::BRIGHTNESS;  
-    }
-
-    int get(Setting setting) const {
-        auto it = values.find(setting);
-        return it != values.end() ? it->second : 0;
-    }
-
-    void set(Setting setting, int value) {
-        values[setting] = value;
-        Debug::logf(Debug::DEBUG, "SettingsManager: Set %s (%d) to %d\n", settingName(setting).c_str(), static_cast<int>(setting), value);
-    }
-
-    void adjust(int delta) {
-        values[currentSetting] = constrain(values[currentSetting] + delta, 0, 255);
-        Debug::logf(Debug::DEBUG, "SettingsManager: Adjusted %s (%d) to %d\n", settingName(currentSetting).c_str(), static_cast<int>(currentSetting), values[currentSetting]);
-    }
-
-    void next() {
-        currentSetting = static_cast<Setting>((static_cast<int>(currentSetting) + 1) % static_cast<int>(Setting::COUNT));
-        Debug::logf(Debug::DEBUG, "SettingsManager: Switched to setting %s (%d)", settingName(currentSetting).c_str(), static_cast<int>(currentSetting));
-    }
-
-    Setting getCurrentSetting() const {
-        return currentSetting;
-    }
-
-    static String settingName(Setting setting) {
-        switch (setting) {
-            case Setting::BRIGHTNESS: return "BRIGHTNESS";
-            case Setting::SPEED: return "SPEED";
-            case Setting::HUE: return "HUE";
-            case Setting::SATURATION: return "SATURATION";
-            default: return "UNKNOWN";
-        }
-    }
-
+// Helper class for an individual setting
+class Setting {
 private:
-    std::map<Setting, int> values;
-    Setting currentSetting;
+    String name;
+    int value;
+    int minValue;
+    int maxValue;
+    
+public:
+    Setting(const String& name, int defaultValue, int min, int max) 
+        : name(name), value(defaultValue), minValue(min), maxValue(max) {}
+    
+    String getName() const { return name; }
+    int getValue() const { return value; }
+    
+    void setValue(int newValue) {
+        value = constrain(newValue, minValue, maxValue);
+    }
+    
+    void adjust(int direction) {
+        setValue(value + direction);
+    }
 };
 
-extern SettingsManager settingsManager;
+// Settings manager to handle multiple settings
+class SettingsManager {
+private:
+    // Fixed-size array of setting names and values for simplicity
+    static const int maxSettings = 5;
+    String settingNames[maxSettings] = {"BRIGHT", "SPEED", "HUE", "SAT", "VAL"};
+    int settingValues[maxSettings] = {50, 50, 50, 50, 50}; // Default values
+    int currentSettingIndex = 0;
+    
+public:
+    SettingsManager() {}
+    
+    // Cycle to the next setting
+    void next() {
+        currentSettingIndex = (currentSettingIndex + 1) % maxSettings;
+        #ifdef DEBUG_SETTINGS
+        Serial.print("Setting changed to: ");
+        Serial.println(getCurrentSetting());
+        #endif
+    }
+    
+    // Cycle to the previous setting
+    void previous() {
+        currentSettingIndex = (currentSettingIndex > 0) ? 
+            (currentSettingIndex - 1) : (maxSettings - 1);
+        #ifdef DEBUG_SETTINGS
+        Serial.print("Setting changed to: ");
+        Serial.println(getCurrentSetting());
+        #endif
+    }
+    
+    // Adjust the current setting by the specified amount
+    void adjust(int direction) {
+        settingValues[currentSettingIndex] = constrain(
+            settingValues[currentSettingIndex] + direction, 
+            0, 100);
+        #ifdef DEBUG_SETTINGS
+        Serial.print("Setting ");
+        Serial.print(getCurrentSetting());
+        Serial.print(" adjusted to: ");
+        Serial.println(getValue(getCurrentSetting()));
+        #endif
+    }
+    
+    // Get the current setting's name
+    String getCurrentSetting() {
+        return settingNames[currentSettingIndex];
+    }
+    
+    // Get a setting's value by name
+    int getValue(const String& name) {
+        // Find the setting by name
+        for (int i = 0; i < maxSettings; i++) {
+            if (settingNames[i] == name) {
+                return settingValues[i];
+            }
+        }
+        // If not found, return current setting value
+        return settingValues[currentSettingIndex];
+    }
+    
+    // Get setting value by index directly (for internal use)
+    int getValueByIndex(int index) {
+        if (index >= 0 && index < maxSettings) {
+            return settingValues[index];
+        }
+        return 0;
+    }
+};

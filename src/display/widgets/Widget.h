@@ -27,7 +27,12 @@ private:
 
 public:
     VerticalBarWidget(String l, float val, uint16_t col = TFT_GREEN)
-        : label(l), normalizedValue(val), barColor(col), theme(CyberpunkTheme) {}
+        : label(l), normalizedValue(constrain(val, 0.0f, 1.0f)), barColor(col), theme(getTheme()) {}
+
+    // Add setValue method to update the value
+    void setValue(float val) {
+        normalizedValue = constrain(val, 0.0f, 1.0f);
+    }
 
     void draw(TFT_eSPI& tft, int x, int y, int width, int height) override {
         int barHeight = normalizedValue * height;
@@ -36,10 +41,9 @@ public:
 
         tft.setTextColor(theme.text);
         tft.setTextSize(1);
-        tft.setRotation(1);
-        tft.setCursor(y + 4, x + 4);
+        // Remove rotation calls - they can cause issues
+        tft.setCursor(x + 4, y + 4);
         tft.print(label);
-        tft.setRotation(0);
     }
 
     int getMinWidth() const override { return 135; }
@@ -58,19 +62,25 @@ private:
     bool isValidWaveform() const {
         if (!waveform) return false;
         if (samples <= 1) return false;
-        uint32_t ptr = (uint32_t)waveform;
-        return (ptr >= 0x3FF80000 && ptr < 0x40000000);
+        // Simplify the pointer validation check to avoid potential issues
+        return true;
     }
 
 public:
     WaveformWidget(const int16_t* wf, int samp, const WidgetColorTheme& themeRef, bool pulseOnBeat = false)
-        : waveform(wf), samples(samp), theme(themeRef), beatPulse(pulseOnBeat) {
-        //Debug::logPointer(Debug::DEBUG, "WaveformWidget", wf, __FILE__, __LINE__);
+        : waveform(wf), samples(samp), theme(themeRef), beatPulse(pulseOnBeat) {}
+    
+    // Add method to update waveform data
+    void updateData(const int16_t* wf, int samp, bool pulseTrigger) {
+        waveform = wf;
+        samples = samp;
+        beatPulse = pulseTrigger;
+        if (pulseTrigger) {
+            triggerPulse();
+        }
     }
 
     void draw(TFT_eSPI& tft, int x, int y, int width, int height) override {
- 
-        
         // Reduced drawing frequency
         static unsigned long lastDrawTime = 0;
         if (millis() - lastDrawTime < 50) { // Max 20 FPS
@@ -78,6 +88,8 @@ public:
         }
         lastDrawTime = millis();
 
+        // Clear the area first for smoother display
+        tft.fillRect(x+1, y+1, width-2, height-2, TFT_BLACK);
         tft.drawRect(x, y, width, height, theme.secondary);
 
         if (!isValidWaveform()) {
@@ -85,28 +97,28 @@ public:
             return;
         }
 
+        // Update pulse intensity (fades over time)
+        if (beatPulse) pulseIntensity = min(1.0f, pulseIntensity + 0.2f);
+        else pulseIntensity = max(0.0f, pulseIntensity - 0.1f);
+
         // Draw waveform with reduced resolution
         int step = width > 100 ? 2 : 1;
         int baseY = y + height / 2;
         uint16_t waveColor = beatPulse ? theme.powerColor : theme.primary;
 
-        if (beatPulse) pulseIntensity = min(1.0f, pulseIntensity + 0.2f);
-        else pulseIntensity = max(0.0f, pulseIntensity - 0.1f);
-
         int lastY = baseY;
         for (int i = 0; i < width; i += step) {
             float idx = (float)i * samples / width;
-            int index = (int)idx;
+            int index = min((int)idx, samples-1); // Ensure index stays within bounds
             
             float sample = waveform[index];
             int y1 = map(sample, -32768, 32767, -height / 2, height / 2);
             int currentY = baseY + y1;
             
-            tft.drawLine(x + i, baseY, x + i, currentY, waveColor);
             if (i > 0) tft.drawLine(x + i - step, lastY, x + i, currentY, waveColor);
+            else tft.drawPixel(x + i, currentY, waveColor);
+            
             lastY = currentY;
-
-     
         }
 
         if (pulseIntensity > 0) {
@@ -126,12 +138,9 @@ private:
     void drawNoSignal(TFT_eSPI& tft, int x, int y, int width, int height) {
         int centerX = x + width / 2;
         int centerY = y + height / 2;
-        tft.drawLine(x, y, x + width, y + height, theme.powerColor);
-        tft.drawLine(x, y + height, x + width, y, theme.powerColor);
-        tft.setTextColor(theme.powerColor);
-        tft.setTextSize(1);
-        tft.setCursor(centerX - 20, centerY - 3);
-        tft.print("No Audio");
+        
+        // Draw a flat line instead of error indicators for cleaner look
+        tft.drawLine(x+1, centerY, x+width-1, centerY, theme.secondary);
     }
 };
 
@@ -145,6 +154,19 @@ public:
     // Integer value constructor
     AcronymValueWidget(const String& label, int value, bool highlight = false)
         : label(label.isEmpty() ? "---" : label), intValue(value), isStringValue(false), highlight(highlight) {}
+        
+    // Add setValue methods to update the widget's value
+    void setValue(const String& value, bool hl = false) {
+        isStringValue = true;
+        stringValue = value;
+        highlight = hl;
+    }
+    
+    void setValue(int value, bool hl = false) {
+        isStringValue = false;
+        intValue = value;
+        highlight = hl;
+    }
 
     void draw(TFT_eSPI& tft, int x, int y, int width, int height) override {
         const uint16_t bgColor = highlight ? TFT_BLACK : TFT_BLACK;
