@@ -97,8 +97,14 @@ Then open `http://127.0.0.1:8000`. A specific moment can be linked directly
 with `?scenario=device&frame=500&paused=1`.
 
 Recordings are generated rather than committed, which is why the steps above
-come before the page works. The Pages workflow builds them on every push to
-`main` and publishes `web/`.
+come before the page works.
+
+`.github/workflows/pages.yml` is written to build them on every push to `main`
+and publish `web/`, but it cannot do that yet: Pages is not switched on in this
+repository's settings, so `actions/configure-pages` fails and the workflow shows
+red on every push. Turning it on (Settings, Pages, Source, GitHub Actions) is
+the only thing standing between that workflow and a published copy of the page.
+Until then the local steps above are the way to look at it.
 
 ## Layout
 
