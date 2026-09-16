@@ -6,6 +6,7 @@
   <component name="CidrRootsConfiguration">
     <libraryRoots>
       <file path="$USER_HOME$/Documents/Arduino/libraries/Button2/src" />
+      <file path="$USER_HOME$/Documents/Arduino/libraries/TFT_eSPI" />
       <file path="$USER_HOME$/Documents/Arduino/libraries/arduinoFFT-master/src" />
     </libraryRoots>
     <excludeRoots>

@@ -9,6 +9,8 @@ public:
     static constexpr float intensity = 1.0f;
 
     void update(CRGB* leds, int count, const AudioFeatures& f) override {
+        if (count <= 0) return;
+
         static uint8_t hue = 0;
         if (f.beatDetected || f.bassHits > 0) hue += 32;
 

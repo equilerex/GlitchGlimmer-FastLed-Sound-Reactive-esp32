@@ -187,7 +187,15 @@ public:
             tft.setCursor(valueX, valueY);
             tft.print(stringValue);
         } else {
-            valueX = x + (width - String(intValue).length() * 12) / 2;
+            // Digit count, computed rather than measured. This built a String
+            // from the int purely to call length() on it, which heap-allocated a
+            // temporary on every draw for a width that is a function of the
+            // number's magnitude.
+            int digits = 1;
+            for (int v = intValue; v <= -10 || v >= 10; v /= 10) ++digits;
+            if (intValue < 0) ++digits;
+
+            valueX = x + (width - digits * 12) / 2;
             tft.setCursor(valueX, valueY);
             tft.print(intValue);
         }

@@ -75,6 +75,7 @@ private:
     bool errorState = false;
     String errorMessage;
     String currentAnimationName;
+    String drawnAnimName;
 
     // --- Private Helper Methods ---
     void setupLayout(); // New method to initialize layout and widgets

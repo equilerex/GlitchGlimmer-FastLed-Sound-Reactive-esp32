@@ -9,13 +9,15 @@
 // AudioProcessor: captures audio via I2S and performs FFT-based feature extraction
 class AudioProcessor {
 private:
-    // Audio sample buffers for FFT and waveform
-    double vReal[NUM_SAMPLES];
-    double vImag[NUM_SAMPLES];
+    // Audio sample buffers for FFT and waveform.
+    // float, not double: the ESP32 has a single-precision FPU and no double unit,
+    // so double runs in software and costs roughly an order of magnitude more.
+    float vReal[NUM_SAMPLES];
+    float vImag[NUM_SAMPLES];
     int16_t buffer[NUM_SAMPLES];
 
     // FFT engine instance
-    ArduinoFFT<double>* FFT;
+    ArduinoFFT<float>* FFT;
 
     // State for smoothing, level detection, and beat timing
     float gainSmoothing   = 0.85f;

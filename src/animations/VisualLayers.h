@@ -2,7 +2,7 @@
 #pragma once
 
 #include <FastLED.h>
-#include <deque>
+#include <cmath>
 
 #include "../animations/VisualLayer.h"
 #include "../audio/AudioFeatures.h"
@@ -17,21 +17,35 @@ class EnergyPulseRiverLayer : public VisualLayer {
     uint8_t hue = 0;
 
 public:
-    void update(const AudioFeatures& audio, const std::deque<AudioSnapshot>& snapshots) override {
+    void update(const AudioFeatures& audio, const AudioHistory& snapshots) override {
         speed = audio.energy * 0.5f;
         position += speed;
         hue = (uint8_t)(audio.energy * 255);
     }
 
     void render(CRGB* leds, int count) override {
+        if (count <= 0) return;
+
+        // Reduced here, where the period is known. render() is the only place
+        // that sees `count`, and the wave's period is exactly `count`, so
+        // fmod(position, count) is identical to the unwrapped expression while
+        // keeping the accumulator bounded. update() moves position by up to
+        // energy * 0.5 a frame, which on real audio is hundreds, so left
+        // unreduced this reaches float's precision limit within minutes.
+        position = fmodf(position, float(count));
+
         for (int i = 0; i < count; ++i) {
-            float phase = fmod(position + i * 0.1f, count);
+            float phase = fmodf(position + i * 0.1f, float(count));
             uint8_t bright = 128 + 127 * sin8((uint8_t)(phase));
             leds[i] += CHSV(hue, 255, bright);
         }
     }
 
     const char* getName() const override { return "EnergyPulseRiverLayer"; }
+
+    // Test seam. The wrap lives in render(), where count is known, so this is
+    // only meaningful after a render. Bound is `count`.
+    float debugPosition() const { return position; }
 };
 
 // === Layer 5: Dominant Band Fire Trail ===
@@ -40,7 +54,7 @@ class DominantBandFireTrailLayer : public VisualLayer {
     float heat = 0.0f;
 
 public:
-    void update(const AudioFeatures& audio, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& audio, const AudioHistory&) override {
         center = map(audio.dominantBand, 0, NUM_SAMPLES / 2, 0, 255);
         heat = audio.bass + audio.treble;
     }
@@ -61,7 +75,7 @@ class NoiseFloorMistLayer : public VisualLayer {
     uint8_t baseHue = 160;
 
 public:
-    void update(const AudioFeatures& audio, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& audio, const AudioHistory&) override {
         baseHue = 160 + audio.noiseFloor * 80;
     }
 
@@ -77,7 +91,7 @@ public:
 // === Layer 7: Dynamics Flicker Storm ===
 class DynamicsFlickerStormLayer : public VisualLayer {
 public:
-    void update(const AudioFeatures& audio, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& audio, const AudioHistory&) override {
         opacity = audio.dynamics * 1.0f;
     }
 
@@ -96,7 +110,7 @@ class TriwaveBeatLayer : public VisualLayer {
     bool direction = true;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         if (now.beatDetected) direction = !direction;
     }
 
@@ -116,7 +130,7 @@ public:
 
 class EnergySpiralLayer : public VisualLayer {
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         // No dynamic state needed, just reacts
     }
 
@@ -136,7 +150,7 @@ class DominantBandTrailLayer : public VisualLayer {
     float decay = 0.9f;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         pos = map(now.dominantBand, 0, NUM_SAMPLES / 2, 0, LED_0_NUM - 1); // assuming LED_0_NUM is longest strip
     }
 
@@ -172,7 +186,7 @@ public:
         lastUpdateTime = 0;
     }
 
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         // Only update at most every 50ms to avoid rapid memory accesses
         unsigned long currentTime = millis();
         if (currentTime - lastUpdateTime < 50) {
@@ -219,7 +233,7 @@ public:
         spectrumCentroid = 0;
     }
 
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         ripplePhase += 0.1f;
         spectrumCentroid = now.spectrumCentroid;
     }
@@ -241,7 +255,15 @@ class BassShockwaveLayer : public VisualLayer {
     int frame = 999;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    BassShockwaveLayer() {
+        name = "BassShockwave";
+        // Accent layer, so it sits on top of the base instead of replacing it. On an
+        // additive layer this value is how much light the wave contributes; past
+        // roughly 0.8 the ring clips to white and stops reading as a ring.
+        opacity = 0.7f;
+    }
+
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         if (now.beatDetected && now.bass > 0.8f) {
             frame = 0;
         } else {
@@ -267,8 +289,12 @@ class WormholeVortexLayer : public VisualLayer {
     float offset = 0;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
+        // Wrapped at 255/40, which is this layer's own hue period: render() takes
+        // fmod(angle * 40, 255), so subtracting that multiple leaves the output
+        // bit-identical while keeping the accumulator bounded.
         offset += now.dynamics * 0.5f;
+        if (offset >= 6.375f) offset = fmodf(offset, 6.375f);
     }
 
     void render(CRGB* leds, int count) override {
@@ -284,7 +310,7 @@ public:
 
 class EnergyFogLayer : public VisualLayer {
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         energy = now.energy; // Store energy from audio features
     }
 
@@ -304,7 +330,7 @@ class LoudnessLightningLayer : public VisualLayer {
     float lastLoudness = 0;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         lastLoudness = now.loudness;
     }
 
@@ -324,7 +350,7 @@ class MoodMemoryArcLayer : public VisualLayer {
     float avgMood = 0;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>& history) override {
+    void update(const AudioFeatures& now, const AudioHistory& history) override {
         if (history.size() < 10) return;
         float moodSum = 0;
         for (int i = 0; i < 10; ++i) {
@@ -347,7 +373,7 @@ private:
     float treble = 0.0f;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         treble = now.treble;
     }
 
@@ -373,7 +399,7 @@ public:
         opacity = 0.6f;
     }
 
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>& history) override {
+    void update(const AudioFeatures& now, const AudioHistory& history) override {
         pos = now.spectrumCentroid / float(NUM_SAMPLES / 2); // normalized 0–1
     }
 
@@ -396,7 +422,7 @@ public:
         opacity = 0.4f;
     }
 
-    void update(const AudioFeatures&, const std::deque<AudioSnapshot>&) override {}
+    void update(const AudioFeatures&, const AudioHistory&) override {}
 
     void render(CRGB* leds, int count) override {
         int bands = 16;
@@ -426,7 +452,7 @@ public:
         opacity = 0.5f;
     }
 
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         unsigned long nowMillis = millis();
         float interval = now.bpm > 0.0f ? 60000.0f / now.bpm : 500.0f;
 
@@ -462,7 +488,7 @@ public:
         opacity = 0.7f;
     }
 
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>&) override {
+    void update(const AudioFeatures& now, const AudioHistory&) override {
         if (now.beatDetected) {
             cooldown = 10;
         } else if (cooldown > 0) {
@@ -488,7 +514,7 @@ class BPMBeatFlashLayer : public VisualLayer {
         float lastBPM = 0;
     
     public:
-        void update(const AudioFeatures& now, const std::deque<AudioSnapshot>& snapshots) override {
+        void update(const AudioFeatures& now, const AudioHistory& snapshots) override {
             if (now.beatDetected) {
                 flashTime = 5;
                 lastBPM = now.bpm;
@@ -517,9 +543,12 @@ private:
     float hueBase = 0;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>& snapshots) override {
+    void update(const AudioFeatures& now, const AudioHistory& snapshots) override {
         hueBase = now.spectrumCentroid * 2;  // Map to hue
+        // Wrapped at 256, the modulus render() already applies. Letting it grow
+        // also pushed (int)flow past INT_MAX, which is undefined on conversion.
         flow += now.volume * 3.0f;
+        if (flow >= 256.0f) flow -= 256.0f;
     }
 
     void render(CRGB* leds, int count) override {

@@ -14,11 +14,9 @@ void setup() {
     Serial.begin(115200);
     delay(1000); // Let serial settle
     
-    // Set ESP32 CPU speed if running too fast
-    #ifdef CONFIG_ESP32_DEFAULT_CPU_FREQ_240
-    setCpuFrequencyMhz(160); // Lower CPU frequency for stability
-    #endif
-    
+    // CPU frequency comes from the build config. Do not downclock here: the
+    // FFT and display work both need the cycles, and 240 MHz is the board default.
+
     Debug::log(Debug::INFO, "Booting...");
     
     // Allocate more stack for the main task
@@ -46,7 +44,17 @@ void loop() {
     
     // Update the controller with error protection
     if (isMemoryHealthy()) {
-        controller.update();
+        // Defence in depth, not the fix. The two history buffers no longer
+        // allocate and the misplaced handlers that used to sit around memcpy are
+        // gone, so nothing in this call is expected to throw. But loop() has no
+        // caller: an exception escaping it reaches std::terminate and reboots the
+        // board, and a dropped frame is cheaper than a reboot.
+        try {
+            controller.update();
+        } catch (...) {
+            Debug::log(Debug::ERROR, "Exception escaped controller.update()");
+            safeDelay(100);
+        }
     } else {
         // If memory looks compromised, just wait and try again later
         safeDelay(100);

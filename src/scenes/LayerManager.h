@@ -2,14 +2,12 @@
 
 #include <vector>
 #include <memory>
-#include <deque>
 #include <cstdint>
 #include "LayerTypes.h"
 #include "../animations/VisualLayer.h"  // Include the full definition of VisualLayer
 
 // Forward declarations to minimize header dependencies
 struct AudioFeatures;
-struct AudioSnapshot;
 struct SceneDefinition;
 struct CRGB;
 
@@ -30,7 +28,7 @@ public:
     void clearLayers();                                // remove all layers
 
     void updateLayers(const AudioFeatures& now,
-                      const std::deque<AudioSnapshot>& hist); // update and prune
+                      const AudioHistory& hist); // update and prune
 
     void renderLayers(uint8_t globalFade = 10);        // fade & blend each layer
 
@@ -52,6 +50,10 @@ private:
     CRGB* leds;
     size_t ledCnt;
     std::vector<CRGB> scratch;
+    // Per-instance, not a function-local static. There is one LayerManager per
+    // strip, so a static here was one buffer shared by every strip, resized
+    // twice per frame when the strips differ in length.
+    std::vector<CRGB> layerBuf;
 };
 
 // Note: all method implementations have been moved to LayerManager.cpp

@@ -67,10 +67,6 @@
 
 
 
-// ==== MEMORY MANAGEMENT ====
-#define ENABLE_HEAP_MONITORING true
-#define MIN_FREE_HEAP         32768    // 32KB minimum free heap
-
 // ==== ENCODER ====
 #define ENCODER_PIN_A      39
 #define ENCODER_PIN_B      38

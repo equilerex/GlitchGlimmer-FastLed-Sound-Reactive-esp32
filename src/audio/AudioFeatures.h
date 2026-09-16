@@ -28,7 +28,7 @@ struct AudioFeatures {
 
     int16_t* waveform = nullptr;    // Pointer to time-domain samples
     size_t waveformSize = 0;        // Size of waveform buffer
-    double spectrum[NUM_SAMPLES / 2] = {};  // FFT magnitudes
+    float spectrum[NUM_SAMPLES / 2] = {};   // FFT magnitudes
 
     float centroid = 0.0f;          //  ??
     float frequency = 0.0f;         //  frequency

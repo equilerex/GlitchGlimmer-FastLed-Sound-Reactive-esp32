@@ -8,13 +8,13 @@
 
 class AlienPulseAnimation : public Animation {
 private:
-    float hueShift = 0;
-    float lastEnergy = 0;
     float wavePhase = 0;
     float flashStrength = 0;
 
 public:
     void update(CRGB* leds, int n, const AudioFeatures& audio) override {
+        if (n <= 0) return;
+
         // Basic color hue from spectrum centroid
         float baseHue = fmod(audio.spectrumCentroid * 2.0f, 255.0f);
 
@@ -35,8 +35,16 @@ public:
             float spectrumMod = audio.spectrum[i % (NUM_SAMPLES / 2)] * 2.0f;
             float energyPulse = powf(audio.energy / 1800.0f, 1.5f);
             CRGB c = blendColor;
-            c.fadeToBlackBy((1.0f - spectrumMod) * 80);
-            leds[i] = c.lerp8(CRGB::Black, (1.0f - wobble * energyPulse) * 255);
+            // Both arguments are clamped at zero. fadeToBlackBy takes a uint8_t,
+            // and both expressions go negative on real audio: spectrum bins pass
+            // 0.5 (so 1 - spectrumMod does) and energy passes 1800, which takes
+            // energyPulse past 1 and the lerp fraction with it. A negative float
+            // converted to uint8_t wraps to near-maximum, so these faded to black
+            // when they were meant to barely fade at all.
+            const float fadeAmt = (1.0f - spectrumMod) * 80.0f;
+            const float lerpAmt = (1.0f - wobble * energyPulse) * 255.0f;
+            c.fadeToBlackBy(uint8_t(constrain(fadeAmt, 0.0f, 255.0f)));
+            leds[i] = c.lerp8(CRGB::Black, uint8_t(constrain(lerpAmt, 0.0f, 255.0f)));
         }
 
         // Beat flash
@@ -52,8 +60,13 @@ public:
             }
         }
 
-        // Slow hue shift
-        hueShift += audio.frequency * 0.001f;
+        // Slow phase advance, wrapped. Unbounded it loses float precision over a
+        // long run, and this one adds roughly 0.1 a frame.
         wavePhase += audio.volume * 0.1f + 0.01f;
+        if (wavePhase >= 6.2831853f) wavePhase -= 6.2831853f;
     }
+
+    // Test seam. The soak drives this for 20000 frames and asserts the value
+    // never leaves one sine period, which is the invariant the wrap establishes.
+    float debugWavePhase() const { return wavePhase; }
 };

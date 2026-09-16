@@ -285,12 +285,20 @@ void MainController::begin() {
 }
 
 void MainController::update() {
+    // Drain the I2S DMA ring on every pass, before the frame gate below.
+    // The ring holds 8 x 64 samples, about 11.6ms of audio, so reading it only
+    // once per 33ms frame throws away most of the signal and leaves the FFT
+    // analysing a stale slice.
+    if (audioProcessor && ESP.getFreeHeap() > 20 * 1024) {
+        audioProcessor->captureAudio();
+    }
+
     static unsigned long lastFrame = 0;
     const unsigned long frameInterval = 33; // Target ~30 FPS for display updates
     unsigned long now = millis();
     if (now - lastFrame < frameInterval) return;
     lastFrame = now;
-    
+
     // Use local error tracking to isolate component failures
     bool hasErrors = false;
 
@@ -318,13 +326,12 @@ void MainController::update() {
         buttonInput->update();
     }
 
-    // Process Audio - Critical component
+    // Process Audio - Critical component.
+    // Capture already happened above; this is the frame-rate analysis pass.
     if (audioProcessor) {
-        // Check if audio processor pointers are valid
         if (ESP.getFreeHeap() > 20 * 1024) { // Only process audio if we have enough memory
-            audioProcessor->captureAudio();
             audioFeatures = audioProcessor->analyzeAudio();
-            
+
             if (audioHistory) {
                 audioHistory->addSnapshot(audioFeatures);
             }
@@ -371,15 +378,22 @@ void MainController::update() {
 
     // Update Display - Non-critical
     if (displayManager) {
-        // Add safety check around animation name query
-        String animName = "Unknown";
-        
-        if (sceneDirector) {
-            // Defensive coding
-            animName = sceneDirector->getCurrentSceneName();
+        // Re-query the name only when the scene actually changes.
+        // getCurrentSceneName() returns a String by value and this ran every
+        // frame, so it built and discarded a heap-backed string per frame for a
+        // name that changes every twenty seconds.
+        static String lastAnimName = "Unknown";
+        static int    lastSceneChangeCount = -1;
+
+        if (ledController) {
+            const int changes = ledController->getSceneChangeCount();
+            if (changes != lastSceneChangeCount) {
+                lastAnimName = ledController->getCurrentSceneName();
+                lastSceneChangeCount = changes;
+            }
         }
-        
-        displayManager->update(audioFeatures, animName);
+
+        displayManager->update(audioFeatures, lastAnimName);
     }
     
     // Log error summary only once per interval to avoid flooding Serial

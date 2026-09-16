@@ -1,7 +1,6 @@
 #pragma once
 
 #include <FastLED.h>
-#include <deque>
 #include <Arduino.h>  // Added for String type
 #include "../audio/AudioFeatures.h"
 #include "../audio/AudioSnapshot.h"
@@ -20,7 +19,7 @@ public:
     // Optional category tagging
     bool persistent = false;
 
-    virtual void update(const AudioFeatures& now, const std::deque<AudioSnapshot>& history) = 0;
+    virtual void update(const AudioFeatures& now, const AudioHistory& history) = 0;
     virtual void render(CRGB* leds, int count) = 0;
     virtual const char* getName() const { return name.c_str(); }  // Default implementation returns the name
 

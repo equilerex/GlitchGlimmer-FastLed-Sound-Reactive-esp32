@@ -7,9 +7,11 @@
 #include "SceneRegistry.h"
 #include "../animations/VisualLayers.h"
 
-// Verify that VisualLayer is properly defined with these essential members
-// static_assert(std::is_member_function_pointer<decltype(&VisualLayer::update)>::value, "VisualLayer::update is not defined properly");
-// static_assert(std::is_member_function_pointer<decltype(&VisualLayer::render)>::value, "VisualLayer::render is not defined properly");
+namespace {
+// Ceiling on active layers. Scene layers live until the scene changes, so this is
+// the real bound on per-frame compositing cost.
+constexpr size_t kMaxLayers = 4;
+}
 
 // Constructor: initialize pointers and counters
 LayerManager::LayerManager()
@@ -38,7 +40,7 @@ void LayerManager::clearLayers() {
 // Update each active layer with current audio features and historical snapshots
 // Then prune any layers whose duration has expired
 void LayerManager::updateLayers(const AudioFeatures& now,
-                                const std::deque<AudioSnapshot>& hist) {
+                                const AudioHistory& hist) {
     unsigned long ts = millis();
     // Call update() on each active VisualLayer
     for (auto& inst : layers) {
@@ -56,7 +58,7 @@ void LayerManager::updateLayers(const AudioFeatures& now,
     );
 }
 
-// Render all layers onto the LED buffer using alpha blending
+// Fade the strip for trails, then add each layer's light on top of it
 void LayerManager::renderLayers(uint8_t globalFade) {
     // Enhanced safety checks
     if (!leds || ledCnt == 0 || ledCnt > 1000) {
@@ -70,80 +72,55 @@ void LayerManager::renderLayers(uint8_t globalFade) {
         scratch.resize(ledCnt, CRGB::Black);
     }
 
-    // Apply global fade to avoid pixel burn-in - safely
-    try {
-        fadeToBlackBy(leds, ledCnt, globalFade);
-    } catch (...) {
-        Serial.println("Exception in fadeToBlackBy");
-        return;
-    }
+    // Apply global fade to avoid pixel burn-in
+    fadeToBlackBy(leds, ledCnt, globalFade);
 
-    // Copy current LED state to scratch as base for blending - safely
-    try {
-        memcpy(scratch.data(), leds, sizeof(CRGB) * ledCnt);
-    } catch (...) {
-        Serial.println("Exception in memcpy to scratch");
-        return;
-    }
+    // Copy current LED state to scratch as base for blending
+    memcpy(scratch.data(), leds, sizeof(CRGB) * ledCnt);
 
     // Make sure layerBuf exists and is the right size
-    static std::vector<CRGB> layerBuf;
     if (layerBuf.size() != ledCnt) {
         layerBuf.resize(ledCnt, CRGB::Black);
     } else {
         std::fill(layerBuf.begin(), layerBuf.end(), CRGB::Black);
     }
 
-    // Render each layer into layerBuf, then blend over scratch - with extra safety
-    int layerCount = 0;
+    // Composite the layers additively. Every layer renders into a black buffer, so
+    // its unlit pixels are black -- blending that buffer over the base with
+    // nblend(scratch, layerBuf, 255) would repaint the base black wherever the
+    // layer drew nothing, which is why the animation kept disappearing. Stacking
+    // emitters adds light; opacity scales how much light the layer contributes.
     for (auto& inst : layers) {
         if (!inst.active || !inst.layer) continue;
 
-        // Limit to 3 layers max for performance
-        if (layerCount >= 3) break;
-        layerCount++;
+        // Opacity is this layer's share of the light. Zero means it contributes
+        // nothing, so skip the render entirely rather than blending black.
+        uint8_t alpha = uint8_t(inst.layer->opacity * 255.0f);
+        if (alpha == 0) continue;
 
-        // Reset layer buffer to black
         std::fill(layerBuf.begin(), layerBuf.end(), CRGB::Black);
+        inst.layer->render(layerBuf.data(), ledCnt);
 
-        // Get the layer opacity once to avoid repeated access
-        float opacity = inst.layer->opacity;
-        if (opacity <= 0.0f) continue; // Skip fully transparent layers
-
-        // Safely call layer render method
-        try {
-            inst.layer->render(layerBuf.data(), ledCnt);
-        } catch (...) {
-            Serial.println("Exception in layer render");
-            continue;
-        }
-
-        // Blend with alpha from layer opacity
-        uint8_t alpha = uint8_t(opacity * 255);
-        if (alpha == 0) continue; // Skip if fully transparent
-
-        // Safely blend pixels
-        try {
-            for (size_t i = 0; i < ledCnt; ++i) {
-                nblend(scratch[i], layerBuf[i], alpha);
-            }
-        } catch (...) {
-            Serial.println("Exception in nblend");
-            continue;
+        // nscale8_video, not nscale8: it rounds dim values up, so an accent fades
+        // out smoothly instead of lingering then dumping to black.
+        for (size_t i = 0; i < ledCnt; ++i) {
+            scratch[i] += layerBuf[i].nscale8_video(alpha);
         }
     }
 
-    // Commit blended result back to LEDs - safely
-    try {
-        memcpy(leds, scratch.data(), sizeof(CRGB) * ledCnt);
-    } catch (...) {
-        Serial.println("Exception in memcpy to leds");
-        return;
-    }
+    // Commit blended result back to LEDs
+    memcpy(leds, scratch.data(), sizeof(CRGB) * ledCnt);
 }
 
 // Instantiate a new layer and add to the active list
 void LayerManager::addLayer(VisualLayer* raw, LayerType type, unsigned long duration) {
+    // Cap here rather than at render time. A layer past the cap still gets an
+    // update() every frame, so refusing it at insertion is the honest limit.
+    if (raw == nullptr || layers.size() >= kMaxLayers) {
+        delete raw;
+        return;
+    }
+
     LayerInstance inst;
     inst.layer.reset(raw);     // take ownership
     inst.startMs = millis();
@@ -179,7 +156,10 @@ int LayerManager::countLayersOfType(LayerType t) const {
 // Apply a scene's layer types by instantiating each via factory template
 void LayerManager::applySceneLayers(const SceneDefinition& sd) {
     for (LayerType t : sd.layerTypes) {
-        addLayerByType(t); // duration=0 => live until expired
+        // Scene layers live until the scene changes, so they never expire on their
+        // own. Guard the add or repeated calls stack duplicates onto the heap.
+        if (hasActiveLayerOfType(t)) continue;
+        addLayerByType(t); // durMs=0 => lives until clearLayers() on scene change
     }
 }
 

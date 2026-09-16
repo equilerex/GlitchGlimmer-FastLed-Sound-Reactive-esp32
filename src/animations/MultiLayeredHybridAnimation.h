@@ -1,7 +1,6 @@
 #pragma once
 
 #include <FastLED.h>
-#include <deque>
 #include "../audio/AudioFeatures.h"
 #include "../audio/AudioHistoryTracker.h"
 #include "../animations/AlienPulse.h"
@@ -29,13 +28,13 @@ public:
         for (int i = 0; i < 3; ++i) delete layers[i];
     }
 
-    // Add this override to satisfy the base class
+    // There is no history-consuming variant here. An earlier version kept a
+    // function-local static deque to feed a second overload that never read it,
+    // which leaked its first node per process and made this the only animation
+    // in the catalog with a nonzero steady-state live count.
     void update(CRGB* leds, int n, const AudioFeatures& now) override {
-        static std::deque<AudioSnapshot> dummyHistory;
-        update(leds, n, now, dummyHistory);
-    }
+        if (n <= 0) return;
 
-    void update(CRGB* leds, int n, const AudioFeatures& now, const std::deque<AudioSnapshot>& history) {
         fill_solid(leds, n, CRGB::Black);
 
         unsigned long nowTime = millis();

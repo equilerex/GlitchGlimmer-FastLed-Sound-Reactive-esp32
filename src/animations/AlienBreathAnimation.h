@@ -9,6 +9,8 @@ public:
     static constexpr float intensity = 0.4f;
 
     void update(CRGB* leds, int count, const AudioFeatures& f) override {
+        if (count <= 0) return;
+
         float breath = sinf(millis() * 0.001f) * 0.5f + 0.5f;
         CRGB color = CHSV(160 + f.spectrumCentroid * 0.2f, 200, 80 + breath * 80);
         fill_solid(leds, count, color);

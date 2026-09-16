@@ -32,7 +32,6 @@
 
 #include <FastLED.h>
 #include <array>
-#include <deque>
 #include "../config/Config.h"
 #include "../audio/AudioFeatures.h"
 #include "../audio/AudioHistoryTracker.h"
@@ -73,12 +72,22 @@ struct LEDStrip {
     Animation*   currentAnim  = nullptr;
     AnimationType currentType = AnimationType::NONE;   // *** NEW ***
     LayerManager  layerMgr;
+    const SceneDefinition* currentScene = nullptr;
 
     ~LEDStrip() { delete currentAnim; layerMgr.clearLayers(); }
 
     inline void init(int len, CRGB* buf) {
         length = len;  leds = buf;
         layerMgr.setLEDs(leds, length);
+    }
+
+    // Rebuild the layer list only when the scene actually changes. Scene layers
+    // have no duration, so building them every frame allocates without bound.
+    inline void setScene(const SceneDefinition& scene) {
+        if (&scene == currentScene) return;
+        currentScene = &scene;
+        layerMgr.clearLayers();
+        layerMgr.applySceneLayers(scene);
     }
 
     // creates a new object only when the type changes
@@ -91,7 +100,7 @@ struct LEDStrip {
     }
 
     inline void update(const AudioFeatures& af,
-                       const std::deque<AudioSnapshot>& hist)
+                       const AudioHistory& hist)
     {
         if (currentAnim) currentAnim->update(leds, length, af);
         layerMgr.updateLayers(af, hist);
@@ -112,14 +121,8 @@ public:
     : audio(af),
       moodHistory(mh),
       audioHistory(ah),
-      sceneDirector(moodHistory, sceneRegistry),
-      lastMemoryCheck(0),
-      memoryCheckInterval(10000) // Check memory every 10 seconds
+      sceneDirector(moodHistory, sceneRegistry)
     {
-#if defined(ENABLE_HEAP_MONITORING) && ENABLE_HEAP_MONITORING == true
-        // Initialize memory monitoring
-        minHeapSeen = ESP.getFreeHeap();
-#endif
     }
 
     // -----------------------------------------------------------------------------
@@ -127,6 +130,9 @@ public:
     // -----------------------------------------------------------------------------
     inline void begin() {
         sceneRegistry.registerDefaultScenes();
+        // SceneDirector holds a pointer, not an instance, so something has to own
+        // the state. Without this, state stays null and every scene call early-returns.
+        sceneDirector.attachState(&sceneState);
         sceneDirector.begin();
 
         #ifdef LED_0_PIN
@@ -168,13 +174,11 @@ public:
     //  Per-frame update – call from loop()
     //­­­­­­­­­­­­­­­­­------------------------------------------------------------
     inline void update() {
-        // Only fade LEDs if there are valid LEDs registered with FastLED
-        if (FastLED.leds() != nullptr && FastLED.size() > 0) {
-            fadeToBlackBy(FastLED.leds(), FastLED.size(), 5);
-        }
-
+        // No fade here. renderLayers() already fades each strip's own buffer, and
+        // FastLED.leds() addresses only the first registered controller -- so this
+        // decayed strip 0 twice per frame and never touched any other strip.
         moodHistory.update(audio);
-        sceneDirector.update(audio);
+        sceneDirector.update();
 
         const SceneDefinition* scenePtr = sceneDirector.getActiveScene();
         if (scenePtr != nullptr) {
@@ -182,7 +186,7 @@ public:
 
             for (int i = 0; i < stripCount; ++i) {
                 strips[i].setAnimation(scene.baseAnimation, audio);
-                strips[i].layers().applySceneLayers(scene);       // custom helper
+                strips[i].setScene(scene);                        // rebuild only on change
                 strips[i].update(audio, audioHistory.getHistory());
             }
         }
@@ -197,44 +201,32 @@ public:
     inline void switchAllAnimations() { sceneDirector.forceNextScene(); }
     inline int  getStripCount() const { return stripCount; }
 
+    // The live director is this one, not any other instance -- only this object
+    // holds the SceneState that makes the director do anything.
+    inline String getCurrentSceneName() const { return sceneDirector.getCurrentSceneName(); }
+
+    // Test seams. The layer list and the scene clock are the two things the host
+    // harness under sim/ has to observe, and both are otherwise private.
+    inline int layerCount(int strip) const {
+        return (strip >= 0 && strip < stripCount) ? strips[strip].layerMgr.activeCount() : -1;
+    }
+    inline int getSceneChangeCount() const { return sceneState.sceneChangeCount; }
+
 private:
     AudioFeatures&       audio;
     MoodHistory&         moodHistory;
     AudioHistoryTracker& audioHistory;
     SceneRegistry        sceneRegistry;
+    SceneState           sceneState;      // owned here; SceneDirector only points at it
     SceneDirector        sceneDirector;
 
     LEDStrip strips[10];
     int      stripCount = 0;
 
-    // Memory monitoring
-    unsigned long lastMemoryCheck;
-    const unsigned long memoryCheckInterval;
-#if defined(ENABLE_HEAP_MONITORING) && ENABLE_HEAP_MONITORING == true
-    int minHeapSeen;
-
-    // Monitor memory and report if it gets too low
-    inline void checkMemory() {
-        unsigned long now = millis();
-        if (now - lastMemoryCheck >= memoryCheckInterval) {
-            lastMemoryCheck = now;
-
-            int currentHeap = ESP.getFreeHeap();
-            if (currentHeap < minHeapSeen) {
-                minHeapSeen = currentHeap;
-            }
-
-            // Report critical memory condition
-            if (currentHeap < MIN_FREE_HEAP) {
-                Serial.println(F("WARNING: Memory critically low!"));
-                Serial.print(F("Free heap: "));
-                Serial.println(currentHeap);
-            }
-        }
-    }
-#else
-    inline void checkMemory() {} // No-op if monitoring disabled
-#endif
+    // No heap monitor here. checkMemory() had no call sites and its low-water
+    // mark was write-only, and loop() already gates on ESP.getFreeHeap() every
+    // frame with a logged warning every 5s. A second health check with a
+    // different threshold would only give two answers to one question.
 
     // optional serial debug every second
     inline void debugPrint() {

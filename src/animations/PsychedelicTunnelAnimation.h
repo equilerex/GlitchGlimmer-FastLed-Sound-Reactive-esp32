@@ -9,6 +9,8 @@ public:
     static constexpr float intensity = 0.8f;
 
     void update(CRGB* leds, int count, const AudioFeatures& f) override {
+        if (count <= 0) return;
+
         float waveSpeed = f.spectrumCentroid * 0.2f + f.bass * 0.8f;
         uint8_t baseHue = millis() / 10;
         for (int i = 0; i < count; i++) {

@@ -20,7 +20,21 @@ There is no locking anywhere. `grep` finds zero `beginTransaction` / `endTransac
 
 What exists instead is a single `loop()` doing everything in series with no FreeRTOS tasks in `src/` at all. The problem is wall-clock monopoly, not arbitration. Every symptom below follows from that plus one hard bug.
 
+## Correction after the fixes
+
+Added once the fixes landed, because finding 1 was wrong about causality and the error was load-bearing.
+
+Finding 1 calls the per-frame layer leak the crash. It is a real defect in the code, but it never ran. `SceneDirector::attachState` had no call sites anywhere in `src/`, so `state` stayed null in every director instance. `begin()` and `update()` both early-return on `!state`, and `getActiveScene()` returns `state ? state->activeScene : nullptr`, so it returned null on every call. `LEDStripController.h:190` guards the whole per-strip block on `scenePtr != nullptr`, which means `setAnimation`, `setScene`, `applySceneLayers` and `strips[i].update()` never executed at all. The leak's allocation site was unreachable.
+
+The consequence is larger than the retraction. With that block dead, the only per-frame LED work was a `fadeToBlackBy` over `FastLED.leds()`, which addresses the first registered controller only, plus `FastLED.show()`. Strip 0 faded black to black and strip 1 was never written. The installation as committed draws nothing. Whatever crashed on hardware was therefore not this revision, and that crash still has no cause. Finding 2 describes the heap-gate ordering accurately but inherits the same problem, since the leak it blames never depleted the heap.
+
+The layer defects are real, they were just dormant rather than firing. Every scene carried the identical `{OVERLAY, REACTIVE}` preset, `BassShockwaveLayer` had no constructor and so inherited `opacity = 1.0f`, and `renderLayers` capped rendering at 3 layers while `updateLayers` updated all of them. The reported symptom, the animation vanishing as layers stack, is explained by the compositor rather than by accumulation. Layers render additively into a black buffer, and `nblend(scratch, layerBuf, alpha)` at alpha 255 replaces the destination, so each layer painted the base black wherever it drew nothing. That is a compositing bug producing the same visible result as the leak the audit blamed, which is likely why the two were conflated.
+
+Findings 3, 4 and 5 were all verified against code that does execute, and stand unchanged.
+
 ## Findings
+
+> Finding 1's causal claim is retracted, see the correction above. The defect described is real but was unreachable.
 
 ### 1. Layers are re-added every frame and never freed (CRITICAL, verified)
 

@@ -11,6 +11,8 @@ private:
 
 public:
     void update(CRGB* leds, int n, const AudioFeatures& audio) override {
+        if (n <= 0) return;
+
         // Base color from spectrum centroid (shifted a bit)
         uint8_t baseHue = fmod(audio.spectrumCentroid * 2.0 + hueOffset, 255);
 
@@ -27,7 +29,12 @@ public:
         for (int i = 0; i < n; ++i) {
             float offset = sin8((i * audio.treble * 8) + millis() / 10) / 255.0;
             uint8_t hue = baseHue + offset * 32;
-            uint8_t brightness = baseBrightness - (i % 16);
+            // Clamped after the subtraction, not before. baseBrightness bottoms
+            // out at 10 and (i % 16) reaches 15, so five pixels in every sixteen
+            // used to wrap to near-maximum instead of dimming.
+            int dimmed = int(baseBrightness) - (i % 16);
+            if (dimmed < 10) dimmed = 10;
+            uint8_t brightness = uint8_t(dimmed);
             leds[i] = CHSV(hue, 255, brightness);
         }
 
@@ -76,6 +83,13 @@ public:
         }
 
         // Advance hue slowly
+        // Wrapped rather than left to grow. At roughly 9 units a second this
+        // passes float's exact-integer range in a few days of continuous running,
+        // after which the increments stop landing.
         hueOffset += audio.loudness / 100.0f;
+        if (hueOffset >= 255.0f || hueOffset < 0.0f) hueOffset = fmodf(hueOffset, 255.0f);
     }
+
+    // Test seam, as on AlienPulse: bound is one hue period.
+    float debugHueOffset() const { return hueOffset; }
 };

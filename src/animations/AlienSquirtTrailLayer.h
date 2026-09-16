@@ -2,7 +2,6 @@
 #pragma once
 
 #include <FastLED.h>
-#include <deque>
 #include "../audio/AudioFeatures.h"
 #include "../audio/AudioSnapshot.h"
 #include "../config/Config.h"
@@ -20,7 +19,7 @@ private:
     float spawnCooldown = 0;
 
 public:
-    void update(const AudioFeatures& now, const std::deque<AudioSnapshot>& history) {
+    void update(const AudioFeatures& now, const AudioHistory& history) {
         spawnCooldown -= 1.0f;
 
         // Trigger new squirt on beat

@@ -153,11 +153,16 @@ void DisplayManager::drawMainScreen(const AudioFeatures& features, const String&
         waveformWidget->updateData(features.waveform, NUM_SAMPLES, features.beatDetected);
     }
 
-    // Clear screen and redraw the entire layout
-    _tft.fillScreen(TFT_BLACK);
+    // No screen clear: each widget repaints its own rect. Clearing here costs a
+    // full-screen SPI write every frame for pixels that are immediately redrawn.
     layout.draw(_tft);
 
-    // Add animation name display separately
+    // Animation name sits on top of the first widget's rect, so it ghosts when
+    // the name changes unless the old text is painted out first.
+    if (animName != drawnAnimName) {
+        _tft.fillRect(0, 0, 120, 12, TFT_BLACK);
+        drawnAnimName = animName;
+    }
     _tft.setTextColor(getTheme().primary, TFT_BLACK);
     _tft.setTextSize(1);
     _tft.setCursor(5, 5);

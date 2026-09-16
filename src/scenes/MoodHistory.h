@@ -1,8 +1,8 @@
 #pragma once
 
-#include <deque>
 #include <Arduino.h>
 #include "../audio/AudioFeatures.h"
+#include "../audio/SnapshotRing.h"
 
 enum MoodType {
     CALM,
@@ -61,15 +61,19 @@ struct MoodSnapshot {
 
 class MoodHistory {
 private:
-    std::deque<MoodSnapshot> history;
-    size_t maxSize;
+    // 150 snapshots at 76 bytes, one contiguous block. This was a std::deque,
+    // which took and returned a 456-byte node every six frames and was one of
+    // the loop's two throw paths. Nothing outside this class ever read the
+    // container, only predictNextMood() below, and its sums are
+    // order-independent, so a ring preserves the behaviour exactly.
+    SnapshotRing<MoodSnapshot, 150> history;
 
     MoodSnapshot current;
     MoodType currentMood;
     MoodType predictedNextMood;
 
 public:
-    MoodHistory() : maxSize(150), currentMood(UNKNOWN), predictedNextMood(UNKNOWN) {}
+    MoodHistory() : currentMood(UNKNOWN), predictedNextMood(UNKNOWN) {}
 
     void update(const AudioFeatures& f) {
         MoodSnapshot m;
@@ -96,7 +100,6 @@ public:
 
         current = m;
         history.push_back(m);
-        if (history.size() > maxSize) history.pop_front();
 
         currentMood = classifyMood(m);
         predictedNextMood = predictNextMood();
@@ -107,7 +110,7 @@ public:
     MoodType getPredictedNextMood() const { return predictedNextMood; }
     String getCurrentMoodName() const { return String(moodToString(currentMood)); }
     String getPredictedMoodName() const { return String(moodToString(predictedNextMood)); }
-    const std::deque<MoodSnapshot>& getHistory() const { return history; }
+    size_t size() const { return history.size(); }
 
 private:
     MoodType classifyMood(const MoodSnapshot& m) const {

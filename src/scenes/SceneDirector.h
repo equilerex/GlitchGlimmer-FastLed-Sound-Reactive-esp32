@@ -61,16 +61,17 @@ public:
     }
 
     /*-------------------- regular update --------------------*/
-    inline void update(const AudioFeatures& features) {
+    inline void update() {
         if (!state) return;
 
-        mood.update(features);
+        // No mood.update() here, and no AudioFeatures argument to take one with.
+        // `mood` is a reference to LEDStripController's own MoodHistory, and
+        // LEDStripController::update() already advanced it a few lines earlier,
+        // so this second call pushed the same snapshot twice per frame. The
+        // argument is gone rather than ignored so the double update cannot come
+        // back by accident.
         const MoodSnapshot& now = mood.getCurrentSnapshot();
-        MoodType nextMood = mood.getPredictedNextMood();
-        
-        // Create a temporary snapshot for the predicted mood
-        MoodSnapshot predictedSnapshot = now; // Start with current snapshot as base
-        
+
         if (state->shouldTransition(now)) {
             const SceneDefinition& nxt =
                 registry.pickSceneByMood(*state, now); // Use current mood snapshot instead
