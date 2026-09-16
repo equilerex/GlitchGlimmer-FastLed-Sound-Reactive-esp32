@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlitchGlimmer</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>GlitchGlimmer</h1>
+  <p class="sub">
+    Sound-reactive LED firmware for ESP32. Two strips, driven through the real
+    scene director and layer compositor.
+  </p>
+</header>
+
+<main>
+  <div class="strip-panel">
+    <canvas id="view" aria-label="Recorded LED strip output"></canvas>
+    <div id="error" class="error" hidden></div>
+  </div>
+
+  <div class="hud">
+    <div class="hud-cell">
+      <span class="hud-label">Scene</span>
+      <span class="hud-value" id="scene">&mdash;</span>
+    </div>
+    <div class="hud-cell">
+      <span class="hud-label">Mood</span>
+      <span class="hud-value" id="mood">&mdash;</span>
+    </div>
+    <div class="hud-cell">
+      <span class="hud-label">Time</span>
+      <span class="hud-value" id="time">0.0s</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="play" class="primary" type="button">Pause</button>
+    <input id="scrub" type="range" min="0" max="0" value="0" step="1"
+           aria-label="Scrub through the recording">
+  </div>
+
+  <div class="scenarios">
+    <span class="hud-label">Recording</span>
+    <div id="buttons" class="button-row"></div>
+    <p class="note" id="note"></p>
+  </div>
+
+  <section class="about">
+    <h2>What you are looking at</h2>
+    <p>
+      These frames are not a JavaScript rewrite of the animations. The host
+      harness in <code>src/sim_main.cpp</code> compiles the same
+      <code>LEDStripController</code>, <code>SceneDirector</code> and layer code
+      the firmware ships, drives it with a scripted audio timeline over a clock
+      the harness owns, and records the resulting pixels. The page replays those
+      bytes, so the recording and the firmware cannot drift apart.
+    </p>
+    <p>
+      It is a recording rather than a live simulation: the audio timeline is
+      fixed, and nothing here runs the FFT, the I2S driver or the display.
+    </p>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

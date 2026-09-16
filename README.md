@@ -1,177 +1,119 @@
-# !work in progress, not functional.!
+# GlitchGlimmer
 
-# GlitchGlimmer Design & Automation Architecture
+Sound-reactive LED firmware for an ESP32. An I2S microphone feeds an FFT, the
+spectrum drives a mood classifier, and the mood picks a scene. Each scene is a
+base animation plus reactive layers that fade in over it. Two LED strips run
+independently, and a small TFT shows the current scene, mood and levels.
 
-## ✨ Overview
-GlitchGlimmer is a modular, audio-reactive **light show controller** for ESP32, designed for **fully automated** operation at parties, raves, DJ sets, or home events. either integrated into your outfit, your dj table or what ever fits the mood.
-It combines **audio analysis**, **mood classification**, **scene management**, and **layer-based visual effects** to create a **dynamic, non-repetitive, music-synced light experience** — **without manual intervention**.
+## Status
 
-This document explores the inner workings, design principles, and practical use cases for GlitchGlimmer, making it an ideal project for DJs, event spaces, festivals, or anyone who wants vibrant, automated visual flair.
+Both build environments are green and the host harness passes 101 checks. The
+firmware **has not been run on hardware**. Everything below the build is
+verified by simulation and by reading the code, not by watching a strip.
 
----
+Two known gaps are worth stating up front rather than discovering later:
 
+- The mood classifier's thresholds are written against a 0..1 energy scale, but
+  on device `AudioFeatures::energy` is a raw sum of 255 FFT magnitudes, in the
+  hundreds to thousands. `CALM` is therefore unreachable on hardware. The host
+  harness scripted its energy in the 0..1 range, so it does not show this.
+  `_architecture/BACKLOG.md` carries it.
+- Audio tuning macros in `src/config/Config.h` (`BEAT_THRESHOLD`,
+  `MIN_BEAT_INTERVAL` and others) have no call sites. The values that actually
+  run are hardcoded elsewhere, and `MIN_BEAT_INTERVAL` disagrees with its
+  hardcoded counterpart.
 
-## Features
-- ‐std=gnu++11 on Arduino-ESP32 3.0+.
+## Hardware
 
+| Part | Wiring |
+|---|---|
+| ESP32 board | TTGO T1 (TTGO T-Display) |
+| TFT | ST7789V 240x135, SPI on MOSI 19, SCLK 18, CS 5, DC 16, RST 23, backlight 4 |
+| I2S microphone | INMP441, WS 26, SCK 27, SD 32 |
+| LED strip 0 | WS2812B on GPIO 25, 100 pixels |
+| LED strip 1 | WS2812B on GPIO 33, 10 pixels |
+| Encoder | A 39, B 38, button 17 |
+| Buttons | 0 and 35 |
 
-- Multiple LED strip output channels with randomized animations.
-- **Sound-Reactive Animations**: Utilizes FFT and volume analysis from a digital I2S microphone (e.g., INMP441) to drive LED animations.
-- **Modular Animation Architecture**: Easily register and dynamically switch between animations.
-- **Automated Animation Controller**: Intelligently swaps animations based on music dynamics and context.  Includes pulse/beat visual feedback with waveform visualization, frequency bars (bass/mid/treble), BPM, loudness, and control state indicators.
- 
-- **Smart adaptive display system** using a widget-based layout (via `GridLayout`) for clear, beautiful visuals.
-- **Multiple screen size support** with dynamic, constraint-based layout.
- 
-- **Waveform visualization**, frequency bars (bass/mid/treble), BPM, power (loudness), and control state (manual/auto).
-- **Rotary encoder input support** (planned): Twist to change values, press to switch setting, auto-return to overview.
-- **Future-proofed for**:
-    - Multiple LED strip output channels with independent animations.
-    - Sensor inputs (e.g., motion, light, touch).
-    - Wi-Fi / Bluetooth control (e.g., remote web UI).
-    - Persistent settings and user profiles.
+Pins and counts live in `src/config/Config.h`. The display is configured in
+`include/tft_setup.h`.
 
----
+## Build
 
-
-## Use Case and Intent
-
-GlitchGlimmer is not just a one-off controller — it’s designed to become your **go-to LED control platform** for all kinds of embedded art and lighting projects. Whether you're building a rave booth, ambient wall art, motion-reactive hallway lights, or a DJ stage setup, this platform can scale with your creativity.
-
-Key priorities driving the design:
-
-- **Reusability:** All components are designed as modular building blocks.
-- **Performance:** Memory-conscious layout and minimal allocations.
-- **Aesthetic control:** Pixel-perfect display layout and beat-synced animations.
-- **Developer friendliness:** Clean APIs, detailed debug logging, and expandability.
-
----
-
-## Hardware Requirements
-
-- **ESP32-WROOM** or similar
-- **INMP441 I2S microphone** (wired to default I2S pins)
-- **WS2812 / WS2815 / APA102** LED strips
-- **Optional:** Rotary encoder with button (for future input support)
-- **Optional:** OLED/TFT display (TFT_eSPI-compatible, e.g. ILI9341)
- 
- 
- 
- 
-## 🧬 Architecture Diagram
+PlatformIO is the build system. Neither command below needs a board attached,
+since no environment sets `upload_port` and only `-t upload` opens a port.
 
 ```
-+------------------+      +---------------------+      +-------------------+
-| Audio Analyzer    | ---> | Mood History Buffer  | ---> | Scene Director    |
-+------------------+      +---------------------+      +---------+---------+
-                                                            |
-                                                            v
-+--------------------------------+      +-------------------------------+
-| Scene Definition (Catalog)     | ---> | LED Strip Controller (per strip) |
-|  - Base Animation              |      |  - Run Base Animation           |
-|  - Suggested Layer Types       |      |  - Inject Temporary Layers      |
-+--------------------------------+      +-------------------------------+
+pio run                      # the firmware, via default_envs
+pio run -e ttgo-t1           # the same thing, spelled out
+pio run -e ttgo-t1 -t upload # needs the board connected
 ```
 
----
+The device environment compiles at `-std=gnu++11`, which is what catches any
+C++17 or newer construct reaching device-reachable code. Current size is RAM
+8.2 percent and flash 32.6 percent.
 
+## Tests
 
-## 🛠️ Design Principles
+`src/sim_main.cpp` is a host harness. It compiles the real `LEDStripController`,
+`SceneDirector`, `LayerManager`, `SceneRegistry` and every layer against a stub
+Arduino core in `sim/stubs/`, then drives them over a clock the harness owns and
+asserts on the result. It needs a host C++ compiler on `PATH` and nothing else.
 
-- **Layered Visual System:**  
-  Every visual is a "layer" that can be added and removed dynamically.
-  - *Base layer:* A core mood-driven animation
-  - *Reactive layers:* Quick overlays (beat pop, energy flows, mood arcs)
+```
+pio run -e native -t exec
+```
 
-- **Mood-Driven Scene Switching:**  
-  Scenes are not switched randomly — they respond to the **feeling** of the music based on energy, tempo, and dynamics.
+101 checks cover the scene and layer lifecycle over 3000 frames, a sweep of all
+eight catalog animations at two strip lengths, every reachable layer factory,
+device-scale audio with a populated spectrum and waveform, and a soak of the
+float phase accumulators for 20000 frames each.
 
-- **Memory Conscious Layer Pool:**  
-  Layers are **pre-allocated** and **recycled** to avoid ESP32 heap fragmentation or memory leaks.
+One thing the harness cannot see: `sim/stubs/Arduino.h` aliases `String` to
+`std::string`, whose small-string optimisation hides the per-frame churn the
+device pays. Allocation counts from the harness exclude it.
 
-- **Smooth Lifecycle Management:**  
-  Base animations **run indefinitely** until the scene changes.
-  Temporary layers **fade out** automatically after a duration.
+## Visualisation
 
----
+`web/` is a player for frame recordings the harness produces. It is not a
+JavaScript rewrite. The harness runs the real firmware code and writes the
+resulting pixels, so the recording and the firmware cannot drift apart.
 
-## 🧠 Audio Features Tracked
+```
+pio run -e native
+.pio/build/native/program --dump-frames web/data
+python -m http.server 8000 --directory web
+```
 
-| Feature        | Description                              |
-|----------------|------------------------------------------|
-| Volume         | Overall sound pressure                  |
-| Loudness       | Dynamic range of audio                  |
-| Peak           | Max peak volume for quick hits           |
-| Bass / Mid / Treble | Band energy levels                 |
-| BPM Estimate   | Approximate beats per minute             |
-| Beat Detection | Detected beat pulses                    |
-| Spectrum Centroid | Center of gravity for frequencies    |
-| Dominant Band  | Most powerful frequency band             |
-| Dynamics       | Audio energy variation over time         |
-| Signal Presence| Is there a signal (vs. silence)          |
+Then open `http://127.0.0.1:8000`. A specific moment can be linked directly
+with `?scenario=device&frame=500&paused=1`.
 
----
+Recordings are generated rather than committed, which is why the steps above
+come before the page works. The Pages workflow builds them on every push to
+`main` and publishes `web/`.
 
-## 🎛️ Scene Lifecycle Example
+## Layout
 
-1. **Startup:**  
-   → Default mood: *Calm*  
-   → Pick a slow-moving tunnel animation
+| Path | Contents |
+|---|---|
+| `src/` | Firmware. `main.ino` holds `setup()` and `loop()`, `sim_main.cpp` is the host harness |
+| `src/audio/` | I2S capture, FFT, feature extraction, history rings |
+| `src/scenes/` | Scene registry and director, mood history, layer manager and pool |
+| `src/animations/` | The eight catalog animations and the compositing layers |
+| `src/display/` | TFT layout, widgets and themes |
+| `include/` | `tft_setup.h`, the TFT_eSPI display configuration |
+| `sim/stubs/` | Arduino core stubs used only by the host build |
+| `web/` | The frame player |
+| `_architecture/` | Working notes. `TODO.md` is the live set, `BACKLOG.md` is unscheduled work, `plans/` holds the audit and the fix plan |
 
-2. **Music Picks Up:**  
-   → Mood shifts to *Energetic*  
-   → Scene switch: faster pulse storm animation
+## Where to start reading
 
-3. **Drop Hits:**  
-   → Beat detected + energy spike  
-   → Temporary flash layers injected across strips
+`_architecture/TODO.md` has the current measured state and is the shortest route
+into how the code got here. `_architecture/BACKLOG.md` lists what is known broken
+or unmeasured. The two files in `_architecture/plans/` are the defect audit and
+the plan that fixed it.
 
-4. **Calm Breakdown:**  
-   → Mood drops to *Floaty*  
-   → Scene switch: slow neon waveform animation
-
----
-
-## 🧑‍💻 Design Principles
-
-- **Modular & Extensible**: New animations and layers can be added by registering a class in the catalog.
-- **Low Coupling**: Audio, mood, animation, and rendering are separate concerns.
-- **Predictable Switching**: Scene changes respect timing and require meaningful mood shifts.
-- **Dynamic but Intentional**: Not every beat triggers chaos—logic curates the show.
-- **Customizable**: Change strip layouts, layer behaviors, animation parameters.
-
----
-
-
-## ✨ Why GlitchGlimmer?
-
-✅ Fully automated party lighting system  
-✅ Mood-aware visual performance  
-✅ Modular, expandable, clean codebase  
-✅ Great for DJs, musicians, artists, hackers  
-✅ Designed for **ESP32** + **FastLED** optimized performance
-
----
-
-## 📜 TODOs & Future Work
-- Rotary encoder support
-- Wi-Fi remote control panel
-- User-configurable animation presets
-- Dynamic per-strip scene control
-- Mood prediction smoothing
-
----
-
-# 📂 Folders
-
-| Folder | Purpose |
-|--------|---------|
-| src/   | Core project source code (everything important) |
-| lib/   | Optional libraries (can be ignored) |
-| include/ | Settings headers and platform defines |
-| test/  | Testing files (not yet fully active) |
-
----
-
-
-Happy glitching! ✨
+The scene pipeline is worth reading in this order: `src/audio/AudioProcessor.cpp`
+produces `AudioFeatures`, `src/scenes/MoodHistory.h` classifies a mood from it,
+`src/scenes/SceneRegistry.cpp` maps mood to a scene, and
+`src/scenes/LayerManager.cpp` composites the result.

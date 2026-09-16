@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The device build is the check that matters most, because it is the only one
+  # that compiles at -std=gnu++11. Anything C++17 or newer that reaches
+  # device-reachable code passes the native build and fails here.
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio
+      - run: pio run -e ttgo-t1
+
+  # The host harness drives the real controller, scene director and layer stack
+  # over a clock it owns, and asserts on the result. It needs nothing but a
+  # host C++ compiler, which the runner already has.
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio
+      - run: pio run -e native -t exec

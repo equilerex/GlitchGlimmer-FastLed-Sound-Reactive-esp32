@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1163,15 +1164,195 @@ void enableVt() {}
 
 } // namespace
 
+// -----------------------------------------------------------------------------
+//  Frame dump for the web player
+//
+//  web/ plays back what this build actually produced rather than a JavaScript
+//  reimplementation of the animations, so the recording and the firmware cannot
+//  drift apart. What it is not: a live simulation. Each scenario is recorded once
+//  here at the same 33 ms step the rest of the harness uses, and the page replays
+//  the bytes. Re-run this after any change to the animations or the compositor.
+//
+//  Layout, per frame, oldest byte first: LED_0_NUM then LED_1_NUM pixels, three
+//  bytes each in CRGB order. The static_assert below is what keeps the reader in
+//  web/app.js honest.
+// -----------------------------------------------------------------------------
+namespace {
+
+static_assert(sizeof(CRGB) == 3, "the frame format assumes three bytes per pixel");
+
+struct ScenarioSpec {
+    const char* id;
+    const char* label;
+    const char* note;
+    int         frames;
+    bool        deviceScale;   // fillDeviceAudio rather than scriptedAudio
+};
+
+const ScenarioSpec kScenarios[] = {
+    { "device", "Device-scale audio",
+      "Five phases of silence, quiet, bass-heavy, mid-forward and bright material "
+      "at the magnitudes AudioProcessor produces on hardware, with a populated "
+      "spectrum and waveform.",
+      1200, true },
+    { "moods",  "Mood rotation",
+      "Four moods in rotation on the 0 to 1 scale the classifier's thresholds were "
+      "written against, so the director has more than one scene to pick between.",
+      1200, false },
+};
+
+struct SceneEvent {
+    int         frame;
+    std::string scene;
+    std::string mood;
+};
+
+std::string jsonEscape(const std::string& in) {
+    std::string out;
+    for (char c : in) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
+bool writeScenario(const std::string& dir, const ScenarioSpec& spec,
+                   std::vector<SceneEvent>& events, bool verbose) {
+    AudioFeatures       audio;
+    MoodHistory         mood;
+    AudioHistoryTracker history;
+    LEDStripController  ctrl(audio, mood, history);
+    ctrl.begin();
+
+    std::vector<int16_t> wave(NUM_SAMPLES, 0);
+    std::vector<float>   spectrum(NUM_SAMPLES / 2, 0.0f);
+
+    const std::string path = dir + "/" + spec.id + ".bin";
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (f == nullptr) {
+        std::printf("  cannot open %s for writing\n", path.c_str());
+        return false;
+    }
+
+    int lastChangeCount = -1;
+    for (int frame = 0; frame < spec.frames; ++frame) {
+        if (spec.deviceScale) fillDeviceAudio(frame, audio, wave.data(), spectrum.data());
+        else                  audio = scriptedAudio(frame);
+
+        simAdvance(33);
+        history.addSnapshot(audio);
+        ctrl.update();
+
+        std::fwrite(ledStrip_0, 1, sizeof(CRGB) * LED_0_NUM, f);
+        std::fwrite(ledStrip_1, 1, sizeof(CRGB) * LED_1_NUM, f);
+
+        const int changeCount = ctrl.getSceneChangeCount();
+        if (changeCount != lastChangeCount) {
+            lastChangeCount = changeCount;
+            events.push_back({ frame, ctrl.getCurrentSceneName(),
+                                      mood.getCurrentMoodName() });
+        }
+
+        if (verbose && frame % 120 == 0) {
+            std::printf("  %-7s frame %4d/%d  scene=%-22s mood=%s\n",
+                        spec.id, frame, spec.frames,
+                        ctrl.getCurrentSceneName().c_str(),
+                        mood.getCurrentMoodName().c_str());
+        }
+    }
+
+    std::fclose(f);
+    if (verbose) {
+        std::printf("  %-7s wrote %s, %d frames, %zu scene events\n",
+                    spec.id, path.c_str(), spec.frames, events.size());
+    }
+    return true;
+}
+
+bool writeManifest(const std::string& dir,
+                   const std::vector<std::pair<const ScenarioSpec*,
+                                               std::vector<SceneEvent>>>& results) {
+    const std::string path = dir + "/manifest.json";
+    FILE* m = std::fopen(path.c_str(), "wb");
+    if (m == nullptr) {
+        std::printf("  cannot open %s for writing\n", path.c_str());
+        return false;
+    }
+
+    std::fprintf(m, "{\n  \"fps\": 30,\n  \"leds0\": %d,\n  \"leds1\": %d,\n",
+                 LED_0_NUM, LED_1_NUM);
+    std::fprintf(m, "  \"bytesPerFrame\": %zu,\n", sizeof(CRGB) * (LED_0_NUM + LED_1_NUM));
+    std::fprintf(m, "  \"scenarios\": [\n");
+
+    for (size_t s = 0; s < results.size(); ++s) {
+        const ScenarioSpec&    spec   = *results[s].first;
+        const std::vector<SceneEvent>& events = results[s].second;
+
+        std::fprintf(m, "    {\n");
+        std::fprintf(m, "      \"id\": \"%s\",\n", jsonEscape(spec.id).c_str());
+        std::fprintf(m, "      \"label\": \"%s\",\n", jsonEscape(spec.label).c_str());
+        std::fprintf(m, "      \"note\": \"%s\",\n", jsonEscape(spec.note).c_str());
+        std::fprintf(m, "      \"frames\": %d,\n", spec.frames);
+        std::fprintf(m, "      \"file\": \"%s.bin\",\n", spec.id);
+        std::fprintf(m, "      \"events\": [");
+        for (size_t e = 0; e < events.size(); ++e) {
+            std::fprintf(m, "%s\n        {\"frame\": %d, \"scene\": \"%s\", \"mood\": \"%s\"}",
+                         e == 0 ? "" : ",",
+                         events[e].frame,
+                         jsonEscape(events[e].scene).c_str(),
+                         jsonEscape(events[e].mood).c_str());
+        }
+        std::fprintf(m, "\n      ]\n    }%s\n", s + 1 == results.size() ? "" : ",");
+    }
+
+    std::fprintf(m, "  ]\n}\n");
+    std::fclose(m);
+    std::printf("  wrote %s\n", path.c_str());
+    return true;
+}
+
+int dumpFrames(const char* outDir, bool verbose) {
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
+    if (ec) {
+        std::printf("cannot create %s: %s\n", outDir, ec.message().c_str());
+        return 1;
+    }
+
+    std::printf("Recording frames into %s\n", outDir);
+    std::vector<std::pair<const ScenarioSpec*, std::vector<SceneEvent>>> results;
+    for (const ScenarioSpec& spec : kScenarios) {
+        std::vector<SceneEvent> events;
+        if (!writeScenario(outDir, spec, events, verbose)) return 1;
+        results.emplace_back(&spec, std::move(events));
+    }
+
+    if (!writeManifest(outDir, results)) return 1;
+    std::printf("Done. Serve web/ with any static file server and open index.html\n");
+    return 0;
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
-    bool verbose = true;
+    bool        verbose = true;
+    const char* dumpDir = nullptr;
+
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--plain") == 0) colour  = false;
         if (std::strcmp(argv[i], "--quiet") == 0) verbose = false;
+        if (std::strcmp(argv[i], "--dump-frames") == 0 && i + 1 < argc) {
+            dumpDir = argv[++i];
+        }
     }
 
     enableVt();
     randomSeed(20260916);
+
+    // Recording shares the stub layer and the real controller with the checks, but
+    // not their result: there is nothing to assert about a frame dump, so it runs
+    // on its own and skips the watchdog and the checks entirely.
+    if (dumpDir != nullptr) return dumpFrames(dumpDir, verbose);
 
     std::thread watchdog(watchdogMain);
 

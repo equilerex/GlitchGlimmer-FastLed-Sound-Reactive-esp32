@@ -19,6 +19,10 @@ The loop no longer has a throw path. Both history buffers were `std::deque`, whi
 
 Nine further defects are fixed, among them self-transitioning scenes, C++20 designated initializers under `gnu++11`, a function-local static scratch buffer shared across strips, and six unwrapped float phase accumulators. Two defects surfaced while fixing those and are recorded rather than fixed: `WormholeVortexLayer` and `CentroidColorFlowLayer` are never instantiated anywhere, and the mood classifier's thresholds are written against a 0..1 range while the device `energy` field is a raw FFT magnitude sum in the thousands. Nothing has run on hardware, and that is the open item. It is also worth repeating that the harness's allocation counts exclude `String`, because `sim/stubs/Arduino.h` aliases it to `std::string` and small-string optimisation hides the churn the device would pay.
 
+The repository was then made buildable by someone who is not this machine's owner, and given somewhere to look at the output. Three of the four libraries `src/` includes were reaching the build through a `lib_extra_dirs` absolute path into a global Arduino libraries directory, so a fresh clone found only FastLED. All four are now named in `lib_deps`, which also means the TFT_eSPI on the build machine and the one CI downloads are the same version. TFT_eSPI's display settings followed the same problem one level down, since they lived in the library's own `User_Setup_Select.h` rather than in the repo. `TFT_eSPI.h` checks `__has_include(<tft_setup.h>)` before it reads that file, so `include/tft_setup.h` now carries the panel configuration and wins. Both environments build from a clean tree with nothing but PlatformIO installed.
+
+`web/` is a player for frame recordings the harness writes with `--dump-frames`. It is a recording rather than a live simulation, so the audio timeline is fixed and nothing there runs the FFT, the I2S driver or the display. What it does have is fidelity: the pixels are the firmware's own output, produced by the same code the harness drives, which is why recordings are generated rather than committed and why the Pages workflow is the only source of the published data.
+
 ## Checklist
 
 - [x] Build graphify knowledge graph (`graphify-out/`)
@@ -51,5 +55,11 @@ Nine further defects are fixed, among them self-transitioning scenes, C++20 desi
 - [x] Sweep every animation and layer — eight catalog animations at n=100 and n=8, eight layer factories, device-scale audio with a populated spectrum and waveform, and a per-animation runaway budget
 - [x] Soak the accumulators — 20000 frames per site, asserting each stays inside one period via a test seam, since precision exhaustion itself is not reachable in a harness
 - [x] Set `default_envs` and document both build commands, stating that neither needs a board attached (`platformio.ini`)
+- [x] Make the build independent of this machine — name all four libraries in `lib_deps` and move the TFT_eSPI panel config into `include/tft_setup.h`, so `lib_extra_dirs` is gone
+- [x] Record frames from the real firmware and replay them in a browser — `--dump-frames` in `sim_main.cpp`, and `web/` as a dependency-free player
+- [x] Verify the player rather than assuming it — headless `--screenshot` does not capture canvas content, so the check is a `getImageData` readback plus a `toDataURL` dump decoded to PNG
+- [x] Run both environments in CI, since the device build is the only thing that compiles at `-std=gnu++11` and catches newer constructs reaching device code
+- [x] Replace the README, which still opened with "not functional", and drop the stock PlatformIO placeholder files under `include/`, `lib/` and `test/`
+- [ ] Enable Pages once in the repository settings, Source set to GitHub Actions, for `.github/workflows/pages.yml` to publish
 - [ ] Flash and confirm on hardware: strips animate at all, no crash under scene changes, stable heap, screen free of flicker, mic responsive
 - [ ] Write `ARCHITECTURE.md` — deferred until the loop is confirmed working on hardware
