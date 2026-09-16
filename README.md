@@ -60,6 +60,12 @@ C++17 or newer construct reaching device-reachable code. Current size is RAM
 Arduino core in `sim/stubs/`, then drives them over a clock the harness owns and
 asserts on the result. It needs a host C++ compiler on `PATH` and nothing else.
 
+On Linux that is already true. On Windows it is the one thing that is not
+installed for you, since PlatformIO ships a cross-compiler for the device
+environment but not a host one. Any 64-bit mingw-w64 `g++` works, from MSYS2 or
+from `winget install BrechtSanders.WinLibs.POSIX.UCRT`. Put its `bin` on `PATH`
+and the command below works unchanged.
+
 ```
 pio run -e native -t exec
 ```
