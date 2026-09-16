@@ -64,7 +64,9 @@ On Linux that is already true. On Windows it is the one thing that is not
 installed for you, since PlatformIO ships a cross-compiler for the device
 environment but not a host one. Any 64-bit mingw-w64 `g++` works, from MSYS2 or
 from `winget install BrechtSanders.WinLibs.POSIX.UCRT`. Put its `bin` on `PATH`
-and the command below works unchanged.
+and the command below works unchanged. Leave it there for the Visualisation
+steps as well: the binary needs the same DLLs to run that it needed to link,
+and without them it exits with no output rather than an error.
 
 ```
 pio run -e native -t exec
