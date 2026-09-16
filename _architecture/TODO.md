@@ -60,6 +60,7 @@ The repository was then made buildable by someone who is not this machine's owne
 - [x] Verify the player rather than assuming it — headless `--screenshot` does not capture canvas content, so the check is a `getImageData` readback plus a `toDataURL` dump decoded to PNG
 - [x] Run both environments in CI, since the device build is the only thing that compiles at `-std=gnu++11` and catches newer constructs reaching device code
 - [x] Replace the README, which still opened with "not functional", and drop the stock PlatformIO placeholder files under `include/`, `lib/` and `test/`
+- [x] Put a captured frame in the README (`docs/preview.png`), since the visualisation section described a page that needs a build before it can be seen
 - [ ] Enable Pages once in the repository settings, Source set to GitHub Actions, for `.github/workflows/pages.yml` to publish
 - [ ] Flash and confirm on hardware: strips animate at all, no crash under scene changes, stable heap, screen free of flicker, mic responsive
 - [ ] Write `ARCHITECTURE.md` — deferred until the loop is confirmed working on hardware
