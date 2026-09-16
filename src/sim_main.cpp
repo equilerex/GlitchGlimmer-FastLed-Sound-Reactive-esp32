@@ -1207,6 +1207,25 @@ struct SceneEvent {
     std::string mood;
 };
 
+struct ScenarioResult {
+    std::vector<SceneEvent> events;
+    // A recording can open on silence, and the device scenario does: its first
+    // phase is quiet by design and the strips stay near black for thirteen
+    // seconds. Opening the page there reads as broken, so the recorder picks the
+    // first frame that is meaningfully lit and the player starts there. Frame 0
+    // wins whenever it is already bright.
+    int startFrame = 0;
+};
+
+// Mean channel value of one frame, in 0..255.
+float frameBrightness(const CRGB* a, int na, const CRGB* b, int nb) {
+    unsigned long sum = 0;
+    for (int i = 0; i < na; ++i) sum += a[i].r + a[i].g + a[i].b;
+    for (int i = 0; i < nb; ++i) sum += b[i].r + b[i].g + b[i].b;
+    const int pixels = na + nb;
+    return pixels == 0 ? 0.0f : static_cast<float>(sum) / (pixels * 3);
+}
+
 std::string jsonEscape(const std::string& in) {
     std::string out;
     for (char c : in) {
@@ -1217,7 +1236,7 @@ std::string jsonEscape(const std::string& in) {
 }
 
 bool writeScenario(const std::string& dir, const ScenarioSpec& spec,
-                   std::vector<SceneEvent>& events, bool verbose) {
+                   ScenarioResult& out, bool verbose) {
     AudioFeatures       audio;
     MoodHistory         mood;
     AudioHistoryTracker history;
@@ -1234,6 +1253,7 @@ bool writeScenario(const std::string& dir, const ScenarioSpec& spec,
         return false;
     }
 
+    std::vector<float> brightness(spec.frames, 0.0f);
     int lastChangeCount = -1;
     for (int frame = 0; frame < spec.frames; ++frame) {
         if (spec.deviceScale) fillDeviceAudio(frame, audio, wave.data(), spectrum.data());
@@ -1246,11 +1266,14 @@ bool writeScenario(const std::string& dir, const ScenarioSpec& spec,
         std::fwrite(ledStrip_0, 1, sizeof(CRGB) * LED_0_NUM, f);
         std::fwrite(ledStrip_1, 1, sizeof(CRGB) * LED_1_NUM, f);
 
+        brightness[frame] = frameBrightness(ledStrip_0, LED_0_NUM,
+                                            ledStrip_1, LED_1_NUM);
+
         const int changeCount = ctrl.getSceneChangeCount();
         if (changeCount != lastChangeCount) {
             lastChangeCount = changeCount;
-            events.push_back({ frame, ctrl.getCurrentSceneName(),
-                                      mood.getCurrentMoodName() });
+            out.events.push_back({ frame, ctrl.getCurrentSceneName(),
+                                          mood.getCurrentMoodName() });
         }
 
         if (verbose && frame % 120 == 0) {
@@ -1262,16 +1285,28 @@ bool writeScenario(const std::string& dir, const ScenarioSpec& spec,
     }
 
     std::fclose(f);
+
+    float peak = 0.0f;
+    for (float v : brightness) peak = v > peak ? v : peak;
+    if (peak > 0.0f) {
+        const float want = peak * 0.25f;
+        for (int frame = 0; frame < spec.frames; ++frame) {
+            if (brightness[frame] >= want) { out.startFrame = frame; break; }
+        }
+    }
+
     if (verbose) {
-        std::printf("  %-7s wrote %s, %d frames, %zu scene events\n",
-                    spec.id, path.c_str(), spec.frames, events.size());
+        std::printf("  %-7s wrote %s, %d frames, %zu scene events, "
+                    "starts at %d (peak mean %.1f)\n",
+                    spec.id, path.c_str(), spec.frames, out.events.size(),
+                    out.startFrame, peak);
     }
     return true;
 }
 
 bool writeManifest(const std::string& dir,
                    const std::vector<std::pair<const ScenarioSpec*,
-                                               std::vector<SceneEvent>>>& results) {
+                                               ScenarioResult>>& results) {
     const std::string path = dir + "/manifest.json";
     FILE* m = std::fopen(path.c_str(), "wb");
     if (m == nullptr) {
@@ -1286,13 +1321,14 @@ bool writeManifest(const std::string& dir,
 
     for (size_t s = 0; s < results.size(); ++s) {
         const ScenarioSpec&    spec   = *results[s].first;
-        const std::vector<SceneEvent>& events = results[s].second;
+        const std::vector<SceneEvent>& events = results[s].second.events;
 
         std::fprintf(m, "    {\n");
         std::fprintf(m, "      \"id\": \"%s\",\n", jsonEscape(spec.id).c_str());
         std::fprintf(m, "      \"label\": \"%s\",\n", jsonEscape(spec.label).c_str());
         std::fprintf(m, "      \"note\": \"%s\",\n", jsonEscape(spec.note).c_str());
         std::fprintf(m, "      \"frames\": %d,\n", spec.frames);
+        std::fprintf(m, "      \"startFrame\": %d,\n", results[s].second.startFrame);
         std::fprintf(m, "      \"file\": \"%s.bin\",\n", spec.id);
         std::fprintf(m, "      \"events\": [");
         for (size_t e = 0; e < events.size(); ++e) {
@@ -1320,11 +1356,11 @@ int dumpFrames(const char* outDir, bool verbose) {
     }
 
     std::printf("Recording frames into %s\n", outDir);
-    std::vector<std::pair<const ScenarioSpec*, std::vector<SceneEvent>>> results;
+    std::vector<std::pair<const ScenarioSpec*, ScenarioResult>> results;
     for (const ScenarioSpec& spec : kScenarios) {
-        std::vector<SceneEvent> events;
-        if (!writeScenario(outDir, spec, events, verbose)) return 1;
-        results.emplace_back(&spec, std::move(events));
+        ScenarioResult result;
+        if (!writeScenario(outDir, spec, result, verbose)) return 1;
+        results.emplace_back(&spec, std::move(result));
     }
 
     if (!writeManifest(outDir, results)) return 1;

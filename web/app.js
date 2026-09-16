@@ -217,7 +217,7 @@ async function start() {
     button.type = 'button';
     button.textContent = item.label;
     button.dataset.id = item.id;
-    button.addEventListener('click', () => selectScenario(item.id));
+    button.addEventListener('click', () => selectScenario(item.id, item.startFrame));
     buttons.appendChild(button);
   }
 
@@ -244,12 +244,18 @@ async function start() {
   // screenshot: ?scenario=device&frame=500
   const params = new URLSearchParams(window.location.search);
   const wanted = manifest.scenarios.find(s => s.id === params.get('scenario'));
-  const startFrame = Number(params.get('frame'));
-  const paused = params.get('paused') === '1';
+  const wantedId = wanted ? wanted.id : manifest.scenarios[0].id;
+  const chosen = manifest.scenarios.find(s => s.id === wantedId);
 
-  setPlaying(!paused);
-  await selectScenario(wanted ? wanted.id : manifest.scenarios[0].id,
-                       Number.isFinite(startFrame) ? startFrame : 0);
+  // No frame in the URL means the recording decides, because a scenario can open
+  // on silence and starting there would show a black strip for several seconds.
+  // Tested with has() rather than on the parsed number, since Number(null) is 0
+  // and would pass the finite check while meaning "no frame was asked for".
+  const startFrame = params.has('frame') ? Number(params.get('frame'))
+                                         : chosen.startFrame;
+
+  setPlaying(params.get('paused') !== '1');
+  await selectScenario(wantedId, Number.isFinite(startFrame) ? startFrame : 0);
   requestAnimationFrame(tick);
 }
 

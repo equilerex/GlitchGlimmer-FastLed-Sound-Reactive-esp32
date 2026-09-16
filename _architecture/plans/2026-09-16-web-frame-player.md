@@ -95,3 +95,19 @@ replaces it, and nothing in the repository should still be planning toward
 The `probe()` function added to `web/app.js` to settle the blank-canvas question
 was removed once it had answered. It was scaffolding for the investigation, not
 part of the player.
+
+Reading the recorded brightness after the page was working showed a defect the
+verification above did not catch, because every check so far had pinned a frame
+explicitly. The `device` scenario's first phase is silence by design, so its
+first 400 frames average a mean channel value under 10 out of 255 and the page
+opened on thirteen seconds of near-black. The recorder now measures each frame
+and puts the first one at or above a quarter of the scenario's peak into the
+manifest as `startFrame`, which the player uses when the URL names no frame.
+That resolves to 400 of 1200 for `device` and 0 for `moods`, the same frame the
+brightness measurement picked by hand.
+
+Writing that turned up a second defect in the existing deep-link code.
+`Number(null)` is `0` and `Number.isFinite(0)` is true, so the missing-frame
+case parsed to zero and passed the finite check. Every load started at frame 0
+regardless of the default, which is why the original player appeared to work
+while ignoring its own fallback. The parameter is now tested with `has()`.
