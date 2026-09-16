@@ -81,7 +81,7 @@ resulting pixels, so the recording and the firmware cannot drift apart.
 
 ```
 pio run -e native
-.pio/build/native/program --dump-frames web/data
+.pio/build/native/program --dump-frames web/data    # program.exe on Windows
 python -m http.server 8000 --directory web
 ```
 
