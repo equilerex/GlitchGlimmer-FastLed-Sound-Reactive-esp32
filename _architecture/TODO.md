@@ -59,6 +59,7 @@ The repository was then made buildable by someone who is not this machine's owne
 - [x] Record frames from the real firmware and replay them in a browser — `--dump-frames` in `sim_main.cpp`, and `web/` as a dependency-free player
 - [x] Verify the player rather than assuming it — headless `--screenshot` does not capture canvas content, so the check is a `getImageData` readback plus a `toDataURL` dump decoded to PNG
 - [x] Run both environments in CI, since the device build is the only thing that compiles at `-std=gnu++11` and catches newer constructs reaching device code
+- [x] Prove portability from a bare clone rather than by cleaning `.pio` — cloned to a different path, built both environments with nothing but PlatformIO and a host compiler, and the frames it recorded hash byte-identical to this machine's
 - [x] Replace the README, which still opened with "not functional", and drop the stock PlatformIO placeholder files under `include/`, `lib/` and `test/`
 - [x] Put a captured frame in the README (`docs/preview.png`), since the visualisation section described a page that needs a build before it can be seen
 - [ ] Enable Pages once in the repository settings, Source set to GitHub Actions, for `.github/workflows/pages.yml` to publish
