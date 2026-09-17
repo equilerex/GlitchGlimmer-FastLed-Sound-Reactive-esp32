@@ -98,6 +98,16 @@ export class Trace {
   static SKIP = new Set(['t', 'source', 'scene', 'mood', 'predicted',
                          'elapsed', 'minMs', 'idealMs', 'moodChanges']);
 
+  // Drop the recorded ranges. Called when the page changes which input it is
+  // analysing. The ranges are the whole point of the snapshot, and a range is a
+  // statistic of one signal: a demo run and a microphone run share no scale, so
+  // the min and max of one say nothing about the other and reporting the union
+  // describes neither. A range that spans both is also exactly what makes a
+  // reading look wrong, since the microphone's values all sit at the bottom of it.
+  resetRange() {
+    this.range.clear();
+  }
+
   track(sample) {
     // A counter, not a measurement, so a min and max over it says nothing. Held
     // as the latest value instead. It comes from the firmware and not from the

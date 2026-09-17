@@ -35,10 +35,11 @@ let leds = null;
 let spectrum = null;
 let running = false;
 let rafId = 0;
-let source = 'demo';        // 'demo' or 'mic'
+let source = 'mic';         // 'demo' or 'mic', and mic unless someone asks
 let audioContext = null;
 let analyser = null;
 let stream = null;
+let micOpened = false;      // the stream is open, so the microphone is what is wanted
 let noteText = null;        // set when the automatic microphone attempt could not start
 
 const demo = { time: 0, bassPhase: 0, midPhase: 0, noise: 1 };
@@ -60,6 +61,46 @@ function micFailure(err) {
   }
   if (err.name === 'NotFoundError') return 'No microphone was found on this device.';
   return 'Could not open the microphone: ' + err.name + ' ' + err.message;
+}
+
+// Reload when a new build lands.
+//
+// The module is fetched once, at load, so a rebuild is invisible to a page that is
+// already running, and reloading by hand after every edit is the slowest part of
+// changing an animation. tools/build-wasm.sh writes live/build.json on a successful
+// build, and this polls it and reloads when the value moves. The response is asked
+// for with no-store so the poll is never answered from the cache, and the query
+// parameter keeps any intermediary from treating the requests as one resource.
+//
+// Self-limiting on purpose. A page without that file, which is every deployed copy
+// because the stamp is not committed, stops after a single request and costs
+// nothing from then on. That is also why there is no flag to switch it off.
+//
+// A failed fetch is ignored rather than fatal: the file is briefly unreadable while
+// it is being replaced, and the next poll a second and a half later will see it.
+function watchForRebuild() {
+  let known = null;
+
+  async function poll() {
+    let build;
+    try {
+      const res = await fetch('live/build.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) return false;
+      ({ build } = await res.json());
+    } catch (err) {
+      return true;
+    }
+    if (known === null) {
+      known = build;
+    } else if (build !== known) {
+      location.reload();
+    }
+    return true;
+  }
+
+  poll().then((keepPolling) => {
+    if (keepPolling) setInterval(poll, 1500);
+  });
 }
 
 async function loadWasm() {
@@ -122,6 +163,7 @@ async function openMic() {
   analyser.fftSize = engine.sampleCount;
   analyser.smoothingTimeConstant = 0;      // the firmware does its own smoothing
   node.connect(analyser);
+  micOpened = true;
 }
 
 function closeMic() {
@@ -130,12 +172,24 @@ function closeMic() {
   stream = null;
   audioContext = null;
   analyser = null;
+  micOpened = false;
 }
 
 // A synthetic stand-in for music, so the view does something without a microphone
 // and without a permission prompt: a 55 Hz pulse under a drifting mid tone with a
 // hiss on top, shaped so all three of the firmware's bands see a signal. The noise
 // is a seeded generator rather than Math.random, so a run is reproducible.
+//
+// Scaled to the amplitude the microphone actually reports. Written at full scale it
+// produced volume 0.3 and peak 0.85 against the microphone's 0.006 and 0.017, so
+// every absolute reading on the page was fifty times what the same page showed on
+// the microphone and the microphone looked broken by comparison. It is not: the
+// level, the dynamics and the band drives are all measured against a recent
+// reference and are the same on either source, and only the absolute fields move.
+// A demo that disagrees with the microphone about those teaches the wrong thing
+// about which readings to trust, and this view exists to be trusted while tuning.
+const DEMO_GAIN = 0.02;
+
 function fillDemo(samples) {
   const step = 1 / SAMPLE_RATE;
   for (let i = 0; i < samples.length; ++i) {
@@ -150,7 +204,7 @@ function fillDemo(samples) {
     const bass = Math.sin(demo.bassPhase) * (0.30 + 0.55 * pulse);
     const mid = Math.sin(demo.midPhase) * 0.18 * (0.4 + 0.6 * pulse);
     const treble = (demo.noise / 2147483647 * 2 - 1) * 0.05 * (0.2 + 0.8 * pulse);
-    samples[i] = bass + mid + treble;
+    samples[i] = (bass + mid + treble) * DEMO_GAIN;
   }
 }
 
@@ -172,6 +226,9 @@ function readFeatures() {
     level:    wasm._gg_feature(10),
     noiseFloor: wasm._gg_feature(11),
     presence: wasm._gg_feature(12),
+    bassLevel:   wasm._gg_feature(13),
+    midLevel:    wasm._gg_feature(14),
+    trebleLevel: wasm._gg_feature(15),
     average:  wasm._gg_average(),
     centroid: wasm._gg_spectrum_centroid(),
     band:     wasm._gg_dominant_band(),
@@ -242,9 +299,24 @@ const STATE_GROUPS = [
               'would show a comparison the firmware is not making. Hidden while the ' +
               'measured range is too narrow to split.' },
       { name: 'bpm', key: 'bpm', max: 600, digits: 0, marks: [80, 100] },
-      { name: 'volume', key: 'volume', max: 0.5, digits: 3 },
-      { name: 'peak', key: 'peak', max: 1, digits: 3 },
-      { name: 'average', key: 'average', max: 1, digits: 3 },
+      // No bars on these three. They are absolute amplitudes of the samples that
+      // arrived, and this microphone delivers about 0.006 RMS and 0.017 peak, so a
+      // bar against a maximum of 0.5 or 1 draws at one percent and reads as a
+      // broken meter when the measurement is correct. There is no maximum they
+      // could be scaled against here, because 1.0 means a full-scale input and
+      // nothing in a room reaches it. The number is the whole reading.
+      //
+      // The gain-invariant readings are the ones to compare between sources:
+      // level above, and the band drives. Those are fractions of a recent
+      // reference and read the same on any input. These three do not, and are not
+      // supposed to: a quieter room has a smaller volume, and that is the point.
+      { name: 'volume', key: 'volume', digits: 4 },
+      { name: 'peak', key: 'peak', digits: 4 },
+      { name: 'average', key: 'average', digits: 4,
+        note: 'Absolute sample amplitude, so these scale with microphone gain. ' +
+              'Nothing in the render path reads them any more: the animations ' +
+              'drive from level and the band drives, which are fractions of a ' +
+              'recent reference and read the same on any input.' },
     ],
   },
   {
@@ -263,6 +335,13 @@ const STATE_GROUPS = [
       { name: 'bass', key: 'bass', max: 1, digits: 3 },
       { name: 'mid', key: 'mid', max: 1, digits: 3 },
       { name: 'treble', key: 'treble', max: 1, digits: 3 },
+      // The three the animations read. Each is that band against its own recent
+      // peak, so 1.0 means "as much of this band as the room has had lately" and
+      // says nothing about loudness. They sit far above the shares beside them and
+      // are the number to look at when a strip is dim.
+      { name: 'bass drive', key: 'bassLevel', max: 1, digits: 3 },
+      { name: 'mid drive', key: 'midLevel', max: 1, digits: 3 },
+      { name: 'treble drive', key: 'trebleLevel', max: 1, digits: 3 },
       { name: 'spectrum centroid', key: 'centroid', digits: 1 },
       { name: 'dominant band', key: 'band', digits: 0 },
     ],
@@ -393,10 +472,15 @@ function flashButton(button, text) {
 //  Capture recording
 //
 //  Writes what the page actually fed the analyser to a file the host harness can
-//  replay (`pio run -e native -t exec -- --replay <file>`), which is how a
+//  replay (`.pio/build/native/program --replay <file>`), which is how a
 //  threshold gets tuned against the real microphone rather than against a guess
 //  about it. The browser is the only place the microphone is reachable, so this
 //  is the one channel from here to the tuning loop.
+//
+//  The binary is named directly rather than run through `pio run -t exec`,
+//  because that target takes no program arguments and rejects them as stray
+//  options. `.pio/build/native/program.exe` on Windows, and a full
+//  `pio run -e native` has to have run once first to produce it.
 //
 //  The blocks are a copy per frame, not a running buffer: the page writes each
 //  new block into the same region of the wasm heap, so a reference would record
@@ -487,7 +571,8 @@ function buildCaptureBuffer(blocks) {
 //       "http://localhost:8137/?source=demo&selftest=1" > dom.html
 //     sed -n 's/.*<pre id="selftest"[^>]*>\([A-Za-z0-9+/=]*\)<\/pre>.*/\1/p' \
 //       dom.html | base64 -d > demo.f32
-//     pio run -e native -t exec -- --replay demo.f32
+//     pio run -e native
+//     .pio/build/native/program --replay demo.f32
 //
 // It exists because the header layout is the only thing joining this file to
 // src/sim_main.cpp, and a mismatch there does not fail anything: every tuning
@@ -637,7 +722,7 @@ function buildState() {
   recordNote.textContent =
     'Record captures the audio this page is analysing, frame by frame, into a ' +
     '.f32 file. Stop it, then replay it offline with ' +
-    'pio run -e native -t exec -- --replay <file>, which reports the min, max, ' +
+    '.pio/build/native/program --replay <file>, which reports the min, max, ' +
     'mean and frame-to-frame churn of every value plus the mood dwell times. That ' +
     'is the loop for tuning a threshold against your microphone without a browser ' +
     'round trip per attempt.';
@@ -801,8 +886,17 @@ function step() {
   // module each frame instead of being cached. The pointers stay valid: they are
   // offsets into the heap, not addresses in the host page.
   const samples = new Float32Array(wasm.HEAPF32.buffer, engine.samplesPtr, engine.sampleCount);
-  if (source === 'mic') analyser.getFloatTimeDomainData(samples);
-  else fillDemo(samples);
+  // Analyser only once the context is really running. Until the browser has had
+  // its gesture it hands back silence, and silence renders an all-black strip,
+  // which reads as a rendering fault rather than as a permission prompt still
+  // open. What fills that gap is silence rather than the synthetic signal: the
+  // synthetic signal is a stand-in loud enough to see, and measuring the
+  // microphone against its references is what made every reading wrong after a
+  // switch. A black strip and a note is the honest version of "no audio yet".
+  const micLive = source === 'mic' && audioRunning();
+  if (micLive) analyser.getFloatTimeDomainData(samples);
+  else if (source === 'demo') fillDemo(samples);
+  else samples.fill(0);
   appendRecording(samples);
   selftestStep();
 
@@ -830,7 +924,11 @@ function step() {
   // reports have to cover the whole session, not only the window in which the
   // console was verbose. What the flag turns on is the frame ring and the log.
   f.t = performance.now();
-  f.source = source;
+  // What actually fed this frame, not what the page is pointed at. They differ
+  // while the context is suspended, and a trace that named the microphone for a
+  // frame the synthetic signal drove would send the next debugging session after
+  // the wrong input.
+  f.source = micLive ? 'mic' : 'demo';
   trace.frame(f);
 }
 
@@ -867,35 +965,76 @@ function watchForAudioStart() {
 }
 
 function onAudioState() {
-  if (running && source !== 'mic' && audioRunning()) {
-    source = 'mic';
+  // Guarded on micOpened rather than on the source, because the source is already
+  // the microphone before this can fire: the page opens the stream at load and
+  // stays pointed at it, feeding the analysis silence until the browser hands over
+  // audio. What has to happen at the handover is the dropping of the references
+  // the silence built and the clearing of the note that says why the strip was
+  // dark, not a change of source.
+  if (running && micOpened && audioRunning()) {
+    selectSource('mic');
     noteText = null;
     paintButtons();
     hideError();
   }
 }
 
-// Opens the microphone and reports whether audio is flowing, without ever
-// showing the error panel: this runs unprompted at startup, and covering the
-// canvas because a desktop has no microphone would hide the thing being looked
-// at. The reason goes in the note instead. An explicit click still uses
-// setSource(), which does surface the error.
+// Opens the microphone without ever showing the error panel: this runs
+// unprompted at startup, and covering the canvas because a desktop has no
+// microphone would hide the thing being looked at. The reason goes in the note
+// instead. An explicit click still uses setSource(), which does surface the error.
+//
+// It reports nothing, because the source is already the microphone before this is
+// called: a failure here changes the note and not the source. The page stays on
+// the microphone, and a failure means it stays there with nothing to analyse.
 async function openMicQuietly() {
   try {
     await openMic();
   } catch (err) {
     noteText = micFailure(err);
-    return false;
+    return;
   }
   if (!audioRunning()) {
-    noteText = 'The microphone is open. Click the page or press a key to let the ' +
-               'browser start audio, and the view switches over. Until then it runs ' +
-               'on the synthetic signal.';
+    noteText = 'The microphone is open. Click anywhere, or press a key, to let ' +
+               'the browser start audio. Until then there is nothing to analyse ' +
+               'and the strips stay dark.';
     watchForAudioStart();
-    return false;
+    return;
   }
   noteText = null;
-  return true;
+}
+
+// Point the analysis at a different input.
+//
+// Every feature is normalised against a reference learned from the input: the
+// loudest recent block for level, the same for the bands, a slow follower of the
+// quietest recent block for the gate. Those references make the readings
+// gain-independent, which is what they are for, and they are also why a change of
+// source is invisible to the analysis. It has no way to know the samples stopped
+// coming from the same place, so it goes on measuring the new input against the
+// old input's peak.
+//
+// The two sources here are about forty times apart. The synthetic signal is loud
+// and steady so the view is not blank while permission is pending, and this
+// microphone runs far below it. Switching back to the microphone after the demo
+// had been playing measured it against the demo's amplitude, and levelRef forgets
+// at 0.995 per frame, so every value read a fraction of the truth for about
+// thirteen seconds before climbing back. Nothing was wrong with the microphone.
+//
+// Both paths that change the source while frames are running come through here.
+// They each used to assign the variable and repaint the buttons, which is how the
+// page ended up with one input's statistics governing the other's readings.
+function selectSource(kind) {
+  source = kind;
+  wasm._gg_reset_analysis();
+  // And the two records the page keeps of the same signal. The spectrum's running
+  // peaks and the trace's min and max are session-wide by design, and they are
+  // still statistics of the input: carried across a switch they describe the
+  // louder source, so every bar and every range reads low against a scale that
+  // belongs to audio that has stopped. `spectrum` is null until the first frame
+  // has built it, and `trace` exists from module load.
+  trace.resetRange();
+  if (spectrum) spectrum.reset();
 }
 
 async function setSource(kind) {
@@ -918,23 +1057,26 @@ async function setSource(kind) {
       showError(micFailure(err));
       return;
     }
-    // Clicked, so this is the gesture the browser was waiting for and the context
-    // is normally running by now. The check is for the case where it is not:
-    // switching source to a suspended context would paint an all-black strip.
+    // Pointed at the microphone whether or not the browser has started audio yet:
+    // the stream is open, so the microphone is what this page wants, and step()
+    // fills the synthetic signal only while the context is still suspended. The
+    // switch used to be deferred until the context resumed, which left the
+    // analysis on the synthetic signal's references and made the first real
+    // reading a fraction of the truth.
+    selectSource('mic');
     if (!audioRunning()) {
       noteText = 'The microphone is open but the browser has not started audio ' +
-                 'yet. Click again, or press a key.';
+                 'yet. Click anywhere, or press a key.';
       watchForAudioStart();
-      paintButtons();
-      return;
+    } else {
+      noteText = null;
     }
-    noteText = null;
   } else {
     closeMic();
+    selectSource('demo');
     noteText = null;
   }
 
-  source = kind;
   paintButtons();
 }
 
@@ -959,19 +1101,39 @@ export async function start() {
   running = true;
   leds.resize();
 
-  // The microphone is the default source. Everything on this page is about what
-  // the firmware does with sound, and the synthetic signal exists only so the
-  // view is not blank while permission is pending or when the page is opened
-  // somewhere no microphone API is available. ?source=demo skips the attempt,
-  // which is what a screenshot of the synthetic path needs, since a headless
-  // browser can neither grant nor refuse the prompt.
+  // The microphone, always, and never the synthetic signal unless someone asks
+  // for it there and then. The demo button is the only way to select it; the
+  // ?source=demo link is the other, for a headless screenshot, and it is consumed
+  // below rather than left in the address.
+  //
+  // The source is set here rather than when the microphone opens, so the page is
+  // pointed at the microphone from the first frame. It used to fall back to the
+  // synthetic signal whenever the microphone could not be had, and a browser
+  // starts every audio context suspended until it has had a gesture, so that
+  // fallback was the normal path: the page ran on the synthetic signal by default
+  // and the microphone was the deviation. Nothing on the analysis side can undo
+  // that, because the references it keeps are statistics of whatever was playing.
+  //
+  // Until audio is flowing the analysis is fed silence, not the synthetic signal.
+  // Silence reads as no signal, which is true, and it costs a black strip until
+  // the first click. A synthetic signal would cost the readings instead.
+  //
+  // Not awaited, so the permission prompt cannot hold up the first paint. The
+  // promise only has to report a failure, since the source is already set.
   const params = new URLSearchParams(window.location.search);
   if (params.get('source') === 'demo') {
     source = 'demo';
-  } else if (await openMicQuietly()) {
-    source = 'mic';
+    // Removed from the address as it is read. The page reloads itself when the
+    // wasm module is rebuilt and a reload keeps the query string, so a link
+    // followed once would put every later run of this page on the synthetic
+    // signal without anyone asking for it again.
+    params.delete('source');
+    const rest = params.toString();
+    history.replaceState(null, '', window.location.pathname +
+                                (rest ? '?' + rest : '') + window.location.hash);
   } else {
-    source = 'demo';
+    source = 'mic';
+    openMicQuietly();
   }
   paintButtons();
 
@@ -983,7 +1145,10 @@ export function stop() {
   running = false;
   cancelAnimationFrame(rafId);
   closeMic();
-  source = 'demo';
+  // Back to the microphone, which is the state the page rests in. This used to
+  // return to the synthetic signal, so anything that stopped and restarted the
+  // player silently moved the page onto audio nobody asked for.
+  source = 'mic';
   noteText = null;
 }
 
@@ -995,6 +1160,11 @@ export function init() {
     leds.resize();
     step();
   });
+
+  // Started here rather than in start(), so that it is watching even when the
+  // module failed to load. That is the case where a rebuild is most likely to be
+  // the fix, and it would otherwise be the one case where the page cannot notice.
+  watchForRebuild();
 
   if (trace.enabled) {
     console.log('[gg] trace on. window.ggTrace.dump("mood"), .dwellStats(), .summary()');

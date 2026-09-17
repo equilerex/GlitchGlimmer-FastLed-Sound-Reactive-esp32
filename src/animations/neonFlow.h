@@ -30,7 +30,7 @@ public:
 
         // Smooth rainbow background
         for (int i = 0; i < n; ++i) {
-            float offset = sin8((i * audio.treble * 8) + millis() / 10) / 255.0;
+            float offset = sin8((i * audio.trebleLevel * 8) + millis() / 10) / 255.0;
             uint8_t hue = baseHue + offset * 32;
             // Clamped after the subtraction, not before. baseBrightness bottoms
             // out at 10 and (i % 16) reaches 15, so five pixels in every sixteen
@@ -41,15 +41,17 @@ public:
             leds[i] = CHSV(hue, 255, brightness);
         }
 
-        // Add bass pulses as wave
+        // Add bass pulses as wave. bassLevel and not bass, because bass is a share
+        // of the spectrum and reads 0.001 to 0.049 on the microphone in use, which
+        // put this wave at a fortieth of its range and read as black.
         for (int i = 0; i < n; ++i) {
             float wave = sin8((millis() / 4 + i * 5)) / 255.0;
-            leds[i] += CHSV(0, 255, audio.bass * wave * 255);
+            leds[i] += CHSV(0, 255, audio.bassLevel * wave * 255);
         }
 
         // Midrange shimmer
         for (int i = 0; i < n; i += 5) {
-            if (random(0, 100) < audio.mid * 80) {
+            if (random(0, 100) < audio.midLevel * 80) {
                 leds[i] += CHSV(96, 255, 200);
             }
         }

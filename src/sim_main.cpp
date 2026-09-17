@@ -426,22 +426,32 @@ void setPhase(const char* name) {
     g_tick.fetch_add(1, std::memory_order_relaxed);
 }
 
-void fillDeviceAudio(int frame, AudioFeatures& f, int16_t* wave, float* spectrum) {
+void fillDeviceAudio(int frame, AudioFeatures& f, int16_t* wave, float* spectrum,
+                     AudioFeatures::BandRefs& refs) {
     const int phase = (frame / 200) % 5;
 
-    // Target band levels, in the 0..1 range AudioProcessor's own normalisation
-    // produces. The spectrum below is built to hit these exactly, so a layer
-    // gated on `bass > 0.8` is reachable here for the same reason it is on
-    // device. An earlier version shaped the spectrum with one decaying curve and
-    // could not exceed bass 0.35, which made BassShockwaveLayer and
-    // TrebleSparkleLayer look dead when they were only unfed.
+    // Target band levels, as shares of the block's total magnitude, which is what
+    // AudioProcessor produces. These are the shares measured on the microphone in
+    // use, replayed from a capture: bass 0.001 to 0.049, mid 0.033 to 0.70, treble
+    // 0.006 to 0.40. Bass is the one to keep honest, because it is the small one
+    // and it is the band the bass-driven animations read.
+    //
+    // This table used to carry bass up to 0.95, which the firmware has never
+    // produced. An earlier version of it was raised deliberately, so that a layer
+    // gated on `bass > 0.8` was reachable in the harness at all, and that made the
+    // harness the only place those gates ever fired: on real audio the share could
+    // not reach them, BassShockwaveLayer and TrebleSparkleLayer were dead, and the
+    // bass-driven animations rendered near black while every check passed. A
+    // fixture raised to reach a threshold is a fixture that can no longer fail the
+    // way the device fails. Those gates read bassLevel now, which a share of any
+    // size can reach.
     float level, bassT, midT, trebleT;
     switch (phase) {
-        case 0:  level = 0.00f; bassT = 0.00f; midT = 0.00f; trebleT = 0.00f; break;  // silence
-        case 1:  level = 0.10f; bassT = 0.15f; midT = 0.10f; trebleT = 0.05f; break;  // quiet
-        case 2:  level = 0.90f; bassT = 0.95f; midT = 0.55f; trebleT = 0.25f; break;  // bass-heavy
-        case 3:  level = 0.45f; bassT = 0.30f; midT = 0.45f; trebleT = 0.30f; break;  // mid-forward
-        default: level = 1.00f; bassT = 0.50f; midT = 0.70f; trebleT = 0.85f; break;  // bright
+        case 0:  level = 0.00f; bassT = 0.000f; midT = 0.00f; trebleT = 0.00f; break;  // silence
+        case 1:  level = 0.10f; bassT = 0.010f; midT = 0.15f; trebleT = 0.05f; break;  // quiet
+        case 2:  level = 0.90f; bassT = 0.050f; midT = 0.45f; trebleT = 0.15f; break;  // bass-heavy
+        case 3:  level = 0.45f; bassT = 0.015f; midT = 0.70f; trebleT = 0.20f; break;  // mid-forward
+        default: level = 1.00f; bassT = 0.025f; midT = 0.30f; trebleT = 0.40f; break;  // bright
     }
 
     const int half      = NUM_SAMPLES / 2;
@@ -522,6 +532,12 @@ void fillDeviceAudio(int frame, AudioFeatures& f, int16_t* wave, float* spectrum
     f.signalPresence   = level > 0.05f;
     f.waveform         = wave;
     f.waveformSize     = NUM_SAMPLES;
+
+    // The render drive, through the firmware's own implementation and its own
+    // reference coefficients, so a fixture cannot hand the animations a bandLevel
+    // the device would never produce. The gate is 1 here because the shares above
+    // already go to zero on the silence phase, which is what the gate is for.
+    f.updateBandLevels(refs, LEVEL_REF_RISE, LEVEL_REF_DECAY, 1.0f);
 }
 
 // -----------------------------------------------------------------------------
@@ -613,6 +629,7 @@ void checkAnimationSweep(bool verbose) {
             Animation* anim = meta.create();
             anim->begin();
 
+            AudioFeatures::BandRefs refs;
             size_t allocFirstHalf = 0;
             size_t allocSecondHalf = 0;
             uint8_t peak = 0;
@@ -622,7 +639,7 @@ void checkAnimationSweep(bool verbose) {
                 g_tick.fetch_add(1, std::memory_order_relaxed);
 
                 AudioFeatures f;
-                fillDeviceAudio(frame, f, wave, spectrum);
+                fillDeviceAudio(frame, f, wave, spectrum, refs);
                 simAdvance(kDtMs);
 
                 fill_solid(buf.data(), n, CRGB::Black);
@@ -707,21 +724,26 @@ struct LitPeak {
     uint8_t maxChannel = 0;
 };
 
-// Peak summed channels over a run at a fixed level. Peak rather than mean,
+// Peak summed channels over a run at a fixed level, and the highest single
+// channel reached anywhere in the run. Sum at the peak rather than the mean,
 // because an animation that only draws on a beat would otherwise be scored on the
-// frames between its beats.
+// frames between its beats. The channel is a run maximum and not the channel at
+// the peak-sum frame, because the question it answers is whether the strip ever
+// reaches a visible duty, and an animation can reach its brightest pixel on a
+// frame that is not its brightest strip.
 LitPeak peakLitSumAt(const AnimationMeta& meta, int n, int frames, int dtMs,
                      int16_t* wave, float* spectrum, float level) {
     std::vector<CRGB> buf(static_cast<size_t>(n), CRGB::Black);
     Animation* anim = meta.create();
     anim->begin();
 
+    AudioFeatures::BandRefs refs;
     LitPeak peak;
     for (int frame = 0; frame < frames; ++frame) {
         g_tick.fetch_add(1, std::memory_order_relaxed);
 
         AudioFeatures f;
-        fillDeviceAudio(frame, f, wave, spectrum);
+        fillDeviceAudio(frame, f, wave, spectrum, refs);
 
         // level carries the run. The other amplitude fields are held at the ratios
         // the live session reported against it, 0.041 for volume, 0.113 for peak
@@ -748,10 +770,8 @@ LitPeak peakLitSumAt(const AnimationMeta& meta, int n, int frames, int dtMs,
             const uint8_t m = std::max(buf[i].r, std::max(buf[i].g, buf[i].b));
             if (m > top) top = m;
         }
-        if (sum > peak.sum) {
-            peak.sum        = sum;
-            peak.maxChannel = top;
-        }
+        if (sum > peak.sum) peak.sum = sum;
+        if (top > peak.maxChannel) peak.maxChannel = top;
     }
 
     delete anim;
@@ -820,6 +840,17 @@ void checkMeasuredLevelBrightness(bool verbose) {
     bool allClear = true;
     std::string detail;
 
+    // The ratio above is a test of the level curve and cannot see an animation
+    // that is dim at every level, which is the one that matters: a ratio of 1.0 is
+    // what an animation that renders black reads, and it passed for as long as the
+    // fixture fed the bands at twenty times the share the device produces. This is
+    // the same question asked absolutely, against the duty below which a channel
+    // reads as off rather than as dim. Bass Pulse Storm reached 42 of 255 when the
+    // bands were inflated and the strip was reported dark.
+    const double   kMinChannel = 64.0;
+    double         dimmest     = 255.0;
+    std::string    dimmestName;
+
     for (size_t idx = 1; idx < static_cast<size_t>(AnimationType::COUNT); ++idx) {
         const AnimationMeta& meta = animationCatalog[idx];
         if (meta.type == AnimationType::NONE || !meta.create) continue;
@@ -834,6 +865,11 @@ void checkMeasuredLevelBrightness(bool verbose) {
             std::printf("  brightness %-24s quiet %8.0f ch %3u, full %8.0f ch %3u, ratio %.3f\n",
                         meta.name, quiet.sum, unsigned(quiet.maxChannel),
                         full.sum, unsigned(full.maxChannel), ratio);
+        }
+
+        if (quiet.maxChannel < dimmest) {
+            dimmest     = quiet.maxChannel;
+            dimmestName = meta.name;
         }
 
         if (ratio < kMinRatio) {
@@ -851,6 +887,13 @@ void checkMeasuredLevelBrightness(bool verbose) {
                std::to_string(kMicLevel) + ", where a linear mapping holds 16"
              : detail + "against a floor of " + std::to_string(int(kMinRatio * 100.0)) +
                " percent at level " + std::to_string(kMicLevel));
+
+    record("every catalog animation reaches a visible duty on real band shares",
+           dimmest >= kMinChannel,
+           "the dimmest, " + dimmestName + ", reaches channel " +
+           std::to_string(unsigned(dimmest)) + " of 255 at the microphone's level "
+           "and the shares the device reports, against a floor of " +
+           std::to_string(unsigned(kMinChannel)));
 
     delete[] wave;
     delete[] spectrum;
@@ -877,10 +920,11 @@ void checkLayerSweep(bool verbose) {
     float*   spectrum = new float[NUM_SAMPLES / 2];
 
     AudioHistoryTracker history;
+    AudioFeatures::BandRefs refs;
     {
         AudioFeatures f;
         for (int i = 0; i < 1500; ++i) {
-            fillDeviceAudio(i * 7, f, wave, spectrum);
+            fillDeviceAudio(i * 7, f, wave, spectrum, refs);
             simAdvance(kDtMs);
             history.addSnapshot(f);
         }
@@ -916,7 +960,7 @@ void checkLayerSweep(bool verbose) {
                 g_tick.fetch_add(1, std::memory_order_relaxed);
 
                 AudioFeatures f;
-                fillDeviceAudio(frame, f, wave, spectrum);
+                fillDeviceAudio(frame, f, wave, spectrum, refs);
                 simAdvance(kDtMs);
 
                 fill_solid(buf.data(), LED_0_NUM, CRGB::Black);
@@ -1144,6 +1188,7 @@ SoakResult runSoak(const char* label, float period, int frames, int n,
     setPhase(label);
 
     SoakResult  r;
+    AudioFeatures::BandRefs refs;
     const size_t liveStart  = g_allocCount - g_freeCount;
     const size_t allocStart = g_allocCount;
 
@@ -1151,7 +1196,7 @@ SoakResult runSoak(const char* label, float period, int frames, int n,
         g_tick.fetch_add(1, std::memory_order_relaxed);
 
         AudioFeatures f;
-        fillDeviceAudio(frame, f, wave, spectrum);
+        fillDeviceAudio(frame, f, wave, spectrum, refs);
         simAdvance(33);
 
         fill_solid(buf, n, CRGB::Black);
@@ -1211,10 +1256,11 @@ void checkSoak(bool verbose) {
     // Filled before the measured window, so the one layer under test that reads
     // history has something to read.
     AudioHistoryTracker history;
+    AudioFeatures::BandRefs refs;
     {
         AudioFeatures f;
         for (int i = 0; i < 1500; ++i) {
-            fillDeviceAudio(i * 7, f, wave, spectrum);
+            fillDeviceAudio(i * 7, f, wave, spectrum, refs);
             simAdvance(33);
             history.addSnapshot(f);
         }
@@ -1492,9 +1538,16 @@ void checkAudioProcessor() {
     // submitSamples only fills the buffers. analyzeAudio is what advances the
     // gate and the reference, so the two have to alternate or thirty submits are
     // one frame.
+    //
+    // Four hundred blocks, where thirty used to be enough. level is a fraction of
+    // two things that now take seconds to arrive: the envelope, which is deliberate
+    // so that it measures a room rather than a syllable, and the silence gate, which
+    // closes 96 percent of its gap per second. Thirty blocks is a third of a second,
+    // which is most of a gate ramp ago. Four hundred is about four and a half
+    // seconds, which is past both. The assertion is unchanged.
     AudioProcessor procLevel;
     AudioFeatures loudLevel;
-    for (int warm = 0; warm < 30; ++warm) {
+    for (int warm = 0; warm < 400; ++warm) {
         procLevel.submitSamples(samples.data(), samples.size());
         loudLevel = procLevel.analyzeAudio();
     }
@@ -1504,25 +1557,124 @@ void checkAudioProcessor() {
            "level " + std::to_string(loudLevel.level) + " on a repeated 0.4 tone");
 
     // Held at a quarter for a stretch rather than submitted once. level is an
-    // enveloped ratio now, so a single quieter block is exactly what it is built to
-    // reject, and reading it after one block measures the release coefficient
-    // rather than the normalisation. Forty blocks is about half a second, which is
-    // long enough for the follower to arrive and short enough that the reference
-    // has not decayed far enough to matter. The reference does decay while these
-    // play, which is why the window is above a literal quarter rather than on it.
+    // enveloped ratio, so a single quieter block is exactly what it is built to
+    // reject, and reading it after one block measures the envelope's attack
+    // coefficient rather than the normalisation.
+    //
+    // Six hundred blocks, about seven seconds, because the envelope's release is
+    // now two seconds rather than half of one and a hundred blocks left it a third
+    // of the way down. Past that the reading drifts back up, since the reference
+    // goes on decaying toward the quiet passage while the envelope sits on it, so
+    // the window has an upper end as well as a lower one and this is inside it. The
+    // window is above a literal quarter for the same reason.
     std::vector<float> quieter(samples.size());
     for (size_t i = 0; i < quieter.size(); ++i) quieter[i] = samples[i] * 0.25f;
 
     AudioFeatures quarterLevel;
-    for (int held = 0; held < 40; ++held) {
+    for (int held = 0; held < 600; ++held) {
         procLevel.submitSamples(quieter.data(), quieter.size());
         quarterLevel = procLevel.analyzeAudio();
     }
 
-    record("a quarter-amplitude passage settles a quarter of the level",
+    record("a quarter-amplitude passage settles near a quarter of the level",
            quarterLevel.level > 0.2f && quarterLevel.level < 0.4f,
            "level " + std::to_string(quarterLevel.level) +
-           " held for forty blocks at a quarter of the amplitude that set the reference");
+           " held for six hundred blocks at a quarter of the amplitude that set the reference");
+
+    // --- Changing source -----------------------------------------------------
+    // Every reference in the analysis is a statistic of the input: the loudest
+    // recent value of the envelope for level and for the bands, a slow follower of
+    // the quietest recent block for the gate. That is what makes the features
+    // gain-independent, and it is also what makes a change of input invisible to
+    // them. The analysis cannot see that the samples stopped coming from the same
+    // place, so it goes on measuring the new signal against the old one's peak.
+    //
+    // The page switches between a synthetic signal and the microphone, about
+    // thirty times apart, and the microphone read a fraction of the truth for
+    // several seconds after a switch back, because the reference forgets at under
+    // a percent per block. Nothing was wrong with the microphone.
+    //
+    // Four hundred blocks of the loud signal first, so every reference is settled
+    // on it, then the faint one, a sixteenth of it and steady. Five hundred blocks
+    // on the faint signal, which is past the envelope's settling time and inside the
+    // window before the gate closes on it of its own accord.
+    //
+    // That upper bound is the awkward part of testing this. The noise floor follows
+    // the quietest recent block, so on a steady faint signal it climbs toward the
+    // signal at 0.00002 a block, and the gate closes once the floor is within two
+    // thirds of the signal. At this amplitude that is about 590 blocks, and a
+    // repeating signal is worse, because the floor settles onto its trough and the
+    // gate then chatters. Five hundred is inside it.
+    //
+    // The carried reading is no longer the near-zero it was. The envelope's release
+    // is two seconds rather than half of one, so in five hundred blocks it has closed
+    // most but not all of the gap from the loud level down to the faint one, and the
+    // ratio it forms against the stale reference is correspondingly larger. The
+    // contract the check exists for is intact and is the comparison rather than the
+    // number: carried reads a fraction of the truth, and recovering the truth takes
+    // dropping the references.
+    std::vector<float> faint(NUM_SAMPLES);
+    for (int i = 0; i < NUM_SAMPLES; ++i) {
+        faint[i] = 0.025f * std::sin(kTwoPi * kToneHz * float(i) / float(SAMPLE_RATE));
+    }
+
+    AudioProcessor procSwitch;
+    for (int warm = 0; warm < 400; ++warm) {
+        procSwitch.submitSamples(samples.data(), samples.size());
+        procSwitch.analyzeAudio();
+    }
+
+    AudioFeatures carried;
+    for (int held = 0; held < 500; ++held) {
+        procSwitch.submitSamples(faint.data(), faint.size());
+        carried = procSwitch.analyzeAudio();
+    }
+
+    procSwitch.resetTracking();
+
+    AudioFeatures recovered;
+    for (int held = 0; held < 500; ++held) {
+        procSwitch.submitSamples(faint.data(), faint.size());
+        recovered = procSwitch.analyzeAudio();
+    }
+
+    record("a faint input is measured on its own scale after the references are dropped",
+           carried.level < 0.25f && recovered.level > 0.9f,
+           "level " + std::to_string(carried.level) + " still measured against the " +
+           "loud input, " + std::to_string(recovered.level) + " after resetTracking");
+
+    // --- level is a level, not a beat detector -------------------------------
+    // level is what the layers read to decide how large and how bright to be, so it
+    // has to answer "how loud are the surroundings" rather than "did something just
+    // hit". Measured from one block's RMS it answered the second question: a kick is
+    // a single block, so the reading jumped on every hit.
+    //
+    // The signal here alternates by a factor of two every block, which is a stand-in
+    // for a kick pattern with no other content. A level that tracks loudness holds
+    // near the mean of the two; one that tracks the beat swings across most of its
+    // range every block. The spread over the second half is what is asserted, since
+    // the first half is the envelope arriving.
+    std::vector<float> alternating(NUM_SAMPLES);
+    AudioProcessor procBeat;
+    float levelMin = 1.0f, levelMax = 0.0f;
+    for (int block = 0; block < 400; ++block) {
+        const float amp = (block % 2 == 0) ? 0.4f : 0.2f;
+        for (int i = 0; i < NUM_SAMPLES; ++i) {
+            alternating[i] = amp * std::sin(kTwoPi * kToneHz * float(i) / float(SAMPLE_RATE));
+        }
+        procBeat.submitSamples(alternating.data(), alternating.size());
+        const AudioFeatures f = procBeat.analyzeAudio();
+        if (block >= 200) {
+            levelMin = std::min(levelMin, f.level);
+            levelMax = std::max(levelMax, f.level);
+        }
+    }
+
+    record("level holds steady across a per-block level change",
+           levelMax - levelMin < 0.15f,
+           "level spread " + std::to_string(levelMax - levelMin) + " over 200 blocks alternating " +
+           "between 0.4 and 0.2 amplitude, range " + std::to_string(levelMin) + " to " +
+           std::to_string(levelMax));
 
     // --- BPM decay -----------------------------------------------------------
     // The readout froze at its last measured value when the music stopped.
@@ -1559,44 +1711,93 @@ void checkAudioProcessor() {
            "bpm went from " + std::to_string(bpmBefore) + " to " + std::to_string(bpmAfter) +
            " over " + std::to_string(quietFrames) + " quiet frames");
 
+    // --- BPM stability -------------------------------------------------------
+    // The readout was the newest interval outright, 60000/sinceBeat, so a single
+    // beat the detector missed doubled that interval and halved the number until
+    // the next beat replaced it. Against a real microphone that is most beats, and
+    // the tempo read as noise rather than as a tempo.
+    //
+    // The fixture is a steady 800 ms train, which is 75 BPM, with one gap twice
+    // that long standing in for the missed beat. The reading right after the gap
+    // has to be the tempo, not what the gap alone implies, and it has to still be
+    // the tempo once the gap has aged into the middle of the window.
+    AudioProcessor procSteady;
+    float bpmAtGap = 0.0f, bpmEnd = 0.0f;
+    for (int i = 0; i < 10; ++i) {
+        procSteady.submitSamples(samples.data(), samples.size());
+        const float atBeat = procSteady.analyzeAudio().bpm;
+        if (i == 5) bpmAtGap = atBeat;
+        if (i == 9) bpmEnd = atBeat;
+        simAdvance(400);
+        procSteady.submitSamples(quiet.data(), quiet.size());
+        procSteady.analyzeAudio();
+        simAdvance(i == 5 ? 1200 : 400);
+    }
+
+    const float kSteadyBpm = 60000.0f / 800.0f;
+    const float kGapOnlyBpm = 60000.0f / 1600.0f;
+    const float gapDelta = bpmAtGap > kSteadyBpm ? bpmAtGap - kSteadyBpm : kSteadyBpm - bpmAtGap;
+    const float endDelta = bpmEnd > kSteadyBpm ? bpmEnd - kSteadyBpm : kSteadyBpm - bpmEnd;
+
+    record("a missed beat does not move the tempo",
+           gapDelta < 6.0f && endDelta < 6.0f,
+           "bpm " + std::to_string(bpmAtGap) + " at the doubled interval and " +
+           std::to_string(bpmEnd) + " after it, against " + std::to_string(kSteadyBpm) +
+           " for the train and " + std::to_string(kGapOnlyBpm) + " for the interval itself");
+
     // --- Mood flicker --------------------------------------------------------
     // The browser reported the mood value jumping several times a second, with or
     // without music. The classifier reads instantaneous values, so the input has to
     // cross one of its thresholds for this to be a real test rather than a signal
-    // that was never going to move: a sine and a single-sample spike have the same
-    // energy scale but opposite crest factors, and dynamics is the threshold they
-    // straddle.
-    std::vector<float> spiky(NUM_SAMPLES, 0.0f);
-    spiky[0] = 0.9f;
-
-    // Driven repeatedly for the same reason as procLevel above: level is held
-    // down by the gate until it has ramped, so a single frame of this block reads
-    // 0.12 rather than the 0.9 it settles at.
-    AudioProcessor procSpike;
-    AudioFeatures spike;
-    for (int warm = 0; warm < 20; ++warm) {
-        procSpike.submitSamples(spiky.data(), spiky.size());
-        spike = procSpike.analyzeAudio();
+    // that was never going to move.
+    //
+    // The threshold it crosses is dynamics, and dynamics is the span the loudness
+    // covers while its window is open. Two fixtures straddle it: a signal held at one
+    // amplitude, whose envelope does not move and therefore reads a span of zero, and
+    // a signal that is loud for a stretch and then quiet, whose envelope covers most
+    // of its own range. The pair is what establishes that the classifier's dynamics
+    // cut point can be crossed in both directions. The old pair was a sine against a
+    // single-sample spike, which was the right fixture for a crest factor and is
+    // not one for a span: neither of those moves the envelope at all.
+    AudioProcessor procSteadyDyn;
+    AudioFeatures steadyDyn;
+    for (int warm = 0; warm < 300; ++warm) {
+        procSteadyDyn.submitSamples(samples.data(), samples.size());
+        steadyDyn = procSteadyDyn.analyzeAudio();
     }
 
-    // The INTENSE gate is level > 0.8 and dynamics > 0.5, so the pair has to
-    // straddle both. The spike's processor has seen only that one block, so its
-    // level is 1.0 by construction: level is a fraction of the loudest block in
-    // the same processor's history.
+    std::vector<float> quietTone(NUM_SAMPLES);
+    for (int i = 0; i < NUM_SAMPLES; ++i) {
+        quietTone[i] = 0.1f * std::sin(kTwoPi * kToneHz * float(i) / float(SAMPLE_RATE));
+    }
+
+    AudioProcessor procSpan;
+    for (int warm = 0; warm < 300; ++warm) {
+        procSpan.submitSamples(samples.data(), samples.size());
+        procSpan.analyzeAudio();
+    }
+    AudioFeatures spanDyn;
+    for (int held = 0; held < 300; ++held) {
+        procSpan.submitSamples(quietTone.data(), quietTone.size());
+        spanDyn = procSpan.analyzeAudio();
+    }
+
     record("the flicker test straddles a classifier threshold",
-           f.dynamics < 0.5f && spike.dynamics > 0.6f && spike.level > 0.8f,
-           "sine dynamics " + std::to_string(f.dynamics) + " against spike dynamics " +
-           std::to_string(spike.dynamics) + " at level " + std::to_string(spike.level) +
-           ", the INTENSE gate being level > 0.8 and dynamics > 0.5");
+           steadyDyn.dynamics < 0.2f && spanDyn.dynamics > 0.5f,
+           "dynamics " + std::to_string(steadyDyn.dynamics) + " on a held tone against " +
+           std::to_string(spanDyn.dynamics) + " after a step down to a tenth of it, " +
+           "the classifier's cut being 0.5");
 
     // The block alternates on every frame, so an undamped classifier changes on all
-    // 99 transitions while a damped one settles and holds.
+    // 99 transitions while a damped one settles and holds. The two blocks differ in
+    // amplitude by a factor of four, which is the same alternation the level checks
+    // above use and enough to cross the classifier's cut points.
     AudioProcessor procFlicker;
     MoodHistory flicker;
     int flickerChanges = 0;
     MoodType flickerPrevious = MoodType::UNKNOWN;
     for (int frame = 0; frame < 100; ++frame) {
-        const std::vector<float>& block = (frame % 2 == 0) ? samples : spiky;
+        const std::vector<float>& block = (frame % 2 == 0) ? samples : quietTone;
         procFlicker.submitSamples(block.data(), block.size());
         flicker.update(procFlicker.analyzeAudio());
         if (frame > 0 && flicker.getCurrentMood() != flickerPrevious) ++flickerChanges;
@@ -1818,9 +2019,10 @@ bool writeScenario(const std::string& dir, const ScenarioSpec& spec,
     }
 
     std::vector<float> brightness(spec.frames, 0.0f);
+    AudioFeatures::BandRefs refs;
     int lastChangeCount = -1;
     for (int frame = 0; frame < spec.frames; ++frame) {
-        if (spec.deviceScale) fillDeviceAudio(frame, audio, wave.data(), spectrum.data());
+        if (spec.deviceScale) fillDeviceAudio(frame, audio, wave.data(), spectrum.data(), refs);
         else                  audio = scriptedAudio(frame);
 
         simAdvance(33);
@@ -2001,6 +2203,11 @@ const Tracked kTracked[] = {
     {"bass",            [](const AudioFeatures& f) { return f.bass; }},
     {"mid",             [](const AudioFeatures& f) { return f.mid; }},
     {"treble",          [](const AudioFeatures& f) { return f.treble; }},
+    // The three the animations drive pixels from, reported beside the shares they
+    // are derived from, because a change to either shows up here first.
+    {"bassLevel",       [](const AudioFeatures& f) { return f.bassLevel; }},
+    {"midLevel",        [](const AudioFeatures& f) { return f.midLevel; }},
+    {"trebleLevel",     [](const AudioFeatures& f) { return f.trebleLevel; }},
     {"energy",          [](const AudioFeatures& f) { return f.energy; }},
     {"dynamics",        [](const AudioFeatures& f) { return f.dynamics; }},
     {"bpm",             [](const AudioFeatures& f) { return f.bpm; }},

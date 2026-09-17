@@ -37,23 +37,100 @@
 // animation wants is decided by which of the two it writes, not by preference.
 #define BRIGHTNESS_GAMMA    0.5f
 
-// The level follower, as one-pole coefficients: the fraction of the gap to the
-// target closed per analysed block, about 86 blocks a second.
+// The envelope of the input that level is measured from, as one-pole
+// coefficients: the fraction of the gap closed per analysed block, about 86
+// blocks a second.
 //
-// Attack is fast enough that a hit lands on the block it happens on, release slow
-// enough that its tail is visible. A single coefficient for both would have to
-// compromise between reacting and not flickering, which does neither well. Equal
-// values here would be a plain smoother, which reads as lagging the music.
-#define LEVEL_ATTACK        0.55f
-#define LEVEL_RELEASE       0.08f
+// level answers "how loud is this room right now", which is a property of the
+// surroundings and not of the beat. Measured from a single block's RMS it answers
+// a different question: a kick is one block, so the reading jumped on every hit
+// and level behaved as a second beat detector. The envelope is what separates the
+// two.
+//
+// Both coefficients are several times slower than they first were. At the block
+// rate 0.02 is a time constant near half a second and 0.006 near two seconds. The
+// previous pair, 0.05 and 0.02, followed the syllable rather than the room. The
+// gap between two words is a few hundred milliseconds, which the old release
+// crossed most of the way, so the reading fell toward zero between words and
+// climbed back to full on the next one, and that is the whole of the reported
+// swing from zero to a hundred in a tenth of a second. A room's loudness does not
+// change at that rate and the reading no longer claims it does. Asymmetric
+// because a room that gets louder should be visible promptly while one that gets
+// quieter can take a moment.
+#define LEVEL_ENV_ATTACK    0.02f
+#define LEVEL_ENV_RELEASE   0.006f
+
+// How fast the level's reference forgets, per block. The reference is the loudest
+// recent thing the envelope has reached, and level is a fraction of it, which is
+// what lets a quiet passage read as quiet instead of climbing back to full.
+//
+// Slow, and much slower than it first was, because this is the term that decides
+// whether level means "how loud is this room" or "how long since something loud
+// happened". At 0.9995 it holds for about twenty seconds, so a quiet stretch stays
+// quiet while it lasts. The counterweight is the noise floor, which climbs toward
+// the signal over the same stretch and pulls the reading down further, so a room
+// that stays quiet settles low rather than drifting up to full.
+#define LEVEL_REF_DECAY     0.9995f
+
+// How fast that reference rises onto a louder envelope, per block. It used to rise
+// instantly, which made the loudest envelope value of the last twenty seconds the
+// reference for all of them: one cough or door set the denominator and everything
+// after it read dim for as long as the decay lasted. At 0.05 it takes a sustained
+// passage to move the reference, which is what "the loudest recent thing" should
+// mean.
+#define LEVEL_REF_RISE      0.05f
+
+// How fast the silence gate opens and closes, per block. It opened at 0.12, which
+// is the spectrum gone inside a tenth of a second, and level multiplied by the
+// same ramp fell off a cliff at the end of every phrase. That is the gate's doing
+// rather than the envelope's, so slowing the envelope alone would not have fixed
+// the reported swing. 0.04 is about a third of a second.
+#define GATE_RAMP           0.04f
+
+// dynamics is the span the loudness covers while its window is open, as a fraction
+// of the top of that span. The two coefficients are the rates at which the
+// remembered top and bottom of the envelope follow it: fast when the envelope goes
+// beyond them, slow when it retreats, so the window is the last few seconds rather
+// than the last block.
+#define DYN_EDGE_RISE       0.5f
+#define DYN_EDGE_FALL       0.002f
 
 // ==== FFT Configuration ====
 #define FFT_SMOOTHING       0.8f     // Spectral smoothing for more stable bars
 #define FFT_BANDS           16       // Number of bands for visualization/spectrum
 
 // ==== Beat Detection ====
-#define BEAT_THRESHOLD      0.05f    // Minimum change in volume to consider beat
-#define MIN_BEAT_INTERVAL   300      // ms between beats (to avoid rapid re-triggers)
+// How far a block has to rise above the one before it to count as a beat, as a
+// fraction of that block. A fraction rather than an amount, because the amount is
+// a claim about one microphone's gain and the firmware runs at several. The block
+// before it is a single 11.6 ms window, which is the right reference for an onset:
+// a kick is an edge at that timescale, and anything averaging over more than a few
+// blocks is already carrying the beat it is supposed to be detecting.
+#define BEAT_RISE_FRACTION  0.35f
+// Below that fraction the previous block is small enough that the fraction is a
+// few counts of the ADC, so a quiet room would pass it on noise alone. This floor
+// is a multiple of the measured noise floor rather than a fixed number, for the
+// same reason the fraction is relative.
+#define BEAT_RISE_NOISE     4.0f
+// Milliseconds between beats. Caps the detector at 240 BPM.
+#define MIN_BEAT_INTERVAL   250
+// How much the bass band's energy has to rise over the block before it for the
+// rise to count as a beat. The level rise above is cleared by any onset, and
+// speech is almost nothing but onsets: a syllable starts on a consonant, the block
+// before it was quieter, so the detector fired on every word and reported 140 to
+// 200 with no beat anywhere in the room. What a beat has that a word does not is
+// low end. Bass here is everything under 200 Hz, where a kick lives and where
+// speech carries almost nothing, so requiring that band to move is what separates
+// a rhythm from someone talking. A ratio to the previous block, so it holds at any
+// gain, and measured on the band's raw magnitude rather than its share, because a
+// block that is mostly bass already has a share at the top of its range and a
+// share cannot rise.
+#define BEAT_BASS_RISE      1.15f
+// How many inter-beat intervals the tempo is the median of. One interval moves the
+// readout by tens of BPM when a beat lands a block early, and a missed beat halves
+// it, so the tempo comes from several and the outliers are discarded. Twelve is
+// about six seconds of a 120 BPM track, which is several bars rather than one.
+#define BEAT_BPM_WINDOW     12
 
 // ==== Display ====
 #define DEFAULT_BRIGHTNESS  150

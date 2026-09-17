@@ -59,7 +59,10 @@ class DominantBandFireTrailLayer : public VisualLayer {
 public:
     void update(const AudioFeatures& audio, const AudioHistory&) override {
         center = map(audio.dominantBand, 0, NUM_SAMPLES / 2, 0, 255);
-        heat = audio.bass + audio.treble;
+        // The bandLevels, not the shares. Both shares read under 0.05 for bass and
+        // under 0.41 for treble on the microphone in use, so heat sat near zero and
+        // every pixel was drawn at the base of its palette.
+        heat = audio.bassLevel + audio.trebleLevel;
     }
 
     void render(CRGB* leds, int count) override {
@@ -84,7 +87,11 @@ public:
 
     void render(CRGB* leds, int count) override {
         for (int i = 0; i < count; ++i) {
-            leds[i] += CHSV(baseHue, 100, 20);
+            // 72 and not 20. FastLED squares CHSV's val on the way out, so a val of
+            // 20 emits a duty of 20 * 20 / 255, which is 1.6 of 255, and this mist
+            // contributed nothing on any frame of any scene. 72 is the val whose
+            // square is 20, which is the emission the 20 was written as.
+            leds[i] += CHSV(baseHue, 100, 72);
         }
     }
 
@@ -267,7 +274,7 @@ public:
     }
 
     void update(const AudioFeatures& now, const AudioHistory&) override {
-        if (now.beatDetected && now.bass > 0.8f) {
+        if (now.beatDetected && now.bassLevel > 0.8f) {
             frame = 0;
         } else {
             frame++;
@@ -391,7 +398,7 @@ private:
 
 public:
     void update(const AudioFeatures& now, const AudioHistory&) override {
-        treble = now.treble;
+        treble = now.trebleLevel;
     }
 
     void render(CRGB* leds, int count) override {

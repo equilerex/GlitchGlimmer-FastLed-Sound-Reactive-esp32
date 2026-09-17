@@ -99,6 +99,68 @@ void AudioProcessor::submitSamples(const float* samples, size_t count) {
     }
 }
 
+// Drop the remembered statistics of the input. Not the buffers: the FFT's vReal
+// and vImag are overwritten by the next submitSamples() and hold nothing but the
+// block just analysed. Not the seeding of the first block either, which every
+// filter here reads as "start on this value rather than climbing off zero", so
+// clearing the flags lets the next block seed again.
+void AudioProcessor::resetTracking() {
+    // The gate, and the floor it is measured against. A floor carried over from a
+    // louder source sits above the new signal's every block, which closes the gate
+    // and sends the level to zero by construction rather than by masking.
+    noiseFloor      = 0.0f;
+    signalPresence  = false;
+    gateGain        = 0.0f;
+
+    // The reference level is a fraction of, the envelope it is measured from, and
+    // the band equivalents. The bandLevels go with the band references they are
+    // measured against, since a reference from a louder source reads the next one
+    // as quiet for as long as it takes to decay.
+    levelRef       = 0.0f;
+    levelEnv       = 0.0f;
+    levelEnvSeeded = false;
+
+    bandRefs.reset();
+
+    smoothBass    = 0.0f;
+    smoothMid     = 0.0f;
+    smoothTreble  = 0.0f;
+    bandsSeeded   = false;
+
+    dynHi            = 0.0f;
+    dynLo            = 0.0f;
+    dynamicsSeeded   = false;
+
+    // The beat clock is stamped with now rather than zeroed, so the minimum
+    // interval applies from the switch instead of being already expired, and the
+    // remembered intervals are dropped because they describe the tempo of audio
+    // that has stopped.
+    previousVolume     = 0.0f;
+    previousBassEnergy = 0.0f;
+    loudness           = 0.0f;
+    lastBeatTime   = millis();
+    currentBPM     = 0.0f;
+    beatIntervalCount = 0;
+    beatIntervalNext  = 0;
+}
+
+// Insertion sort on a copy of at most BEAT_BPM_WINDOW elements. The ring keeps its
+// insertion order and the caller keeps the ring.
+unsigned long AudioProcessor::medianBeatInterval() const {
+    unsigned long sorted[BEAT_BPM_WINDOW];
+    for (int i = 0; i < beatIntervalCount; ++i) sorted[i] = beatIntervals[i];
+    for (int i = 1; i < beatIntervalCount; ++i) {
+        const unsigned long v = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > v) {
+            sorted[j + 1] = sorted[j];
+            --j;
+        }
+        sorted[j + 1] = v;
+    }
+    return sorted[beatIntervalCount / 2];
+}
+
 // Perform FFT and compute audio features
 AudioFeatures AudioProcessor::analyzeAudio() {
     AudioFeatures features;
@@ -122,31 +184,17 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // These live in members because they are stateful between frames, but they are
     // also what every consumer reads, so they have to reach the returned struct.
     // Uncopied, features.volume, features.peak and features.loudness stay at their
-    // defaults and the animations reading them are silently dead: NeonBeatTunnel
-    // scales by volume and renders black, neonFlow clamps to its brightness floor,
-    // and the display's loudness bar reads zero.
+    // defaults and the panel reads zero for all three. No animation drives from
+    // these any more: they are absolute sample amplitudes, so a constant compared
+    // against one is a guess about the microphone's gain, and the render path took
+    // level and the band drives instead. They are kept as the honest measurement.
     features.volume   = volume;
     features.peak     = peak;
     features.loudness = loudness;
 
-    // Mean level and how much the signal moves relative to its own peak.
-    // dynamics is what separates a steady loud track from a punchy one, and the
-    // mood classifier and several layer opacities read it, so it has to be set.
+    // Mean level. dynamics is set below, once the envelope it is measured from
+    // exists.
     features.average  = avg;
-
-    // Smoothed, because peak is one sample of one block: on a steady tone the raw
-    // ratio still moves several tenths per frame, which is the flicker the browser
-    // reported as dynamics reading unreliably between 50 and 70. Smoothed at the
-    // producer rather than at each consumer, since the classifier and the layer
-    // opacities both read it as a level.
-    const float rawDynamics = (peak - avg) / (peak + 1e-6f);
-    if (!dynamicsSeeded) {
-        smoothedDynamics = rawDynamics;
-        dynamicsSeeded   = true;
-    } else {
-        smoothedDynamics += (rawDynamics - smoothedDynamics) * 0.08f;
-    }
-    features.dynamics = smoothedDynamics;
 
     // Tracked silence baseline. It falls onto a quieter block slowly and climbs
     // back more slowly still, so it follows a change of room without drifting up
@@ -200,9 +248,10 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // that the animations colour with. energy stays the raw sum, so nothing that
     // divides it by a device-scale constant changes.
     //
-    // The shares sum to 1 here and do not after the normalisation below, which
-    // rescales them against a shared peak so the dominant band can reach its bar.
-    // Anything reading these reads the normalised set.
+    // The three sum to 1, and they still do by the time they reach a consumer: the
+    // gate scales all three by the same amount and the smoothing is the only thing
+    // that separates them, since it runs at a different rate on the way up than on
+    // the way down.
     if (eTotal > 1e-6f) {
         features.bass   = bSum / eTotal;
         features.mid    = mSum / eTotal;
@@ -212,6 +261,15 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     }
     features.energy= eTotal;
     features.spectrumCentroid = eTotal>0? (cSum/eTotal): 0.0f;
+
+    // The bass band's raw magnitude, before the gate touches it, which is what the
+    // beat detector compares against the block before. Energy and not the share:
+    // the share of a block that is mostly bass is already at the top of its range,
+    // so a share cannot rise no matter how hard the kick lands, and the detector
+    // would never fire on the bass-heavy material it exists for. The raw sum has no
+    // ceiling. Ungated as well, because the gate opening is itself a rise.
+    const float bassEnergy = bSum;
+
     // Find dominant bin
     int dom=1; float mx=vReal[1];
     for(int i=2;i<half;i++) if(vReal[i]>mx){ mx=vReal[i]; dom=i; }
@@ -221,75 +279,106 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // With no signal present the FFT sees microphone self-noise and room rumble,
     // which is broadband and lights every band and every bar. The gate is what
     // makes silence read as silence. Applied after the centroid and the dominant
-    // band, since both are ratios over the same magnitudes and cancel out.
-    // Ramped slowly rather than at a quarter per frame, because a fast ramp reads
-    // as the spectrum being yanked away rather than as the room going quiet.
-    gateGain += ((signalPresence ? 1.0f : 0.0f) - gateGain) * 0.12f;
-    features.bass   *= gateGain;
-    features.mid    *= gateGain;
-    features.treble *= gateGain;
+    // band, since both are ratios over the same magnitudes and cancel out. Ramped
+    // rather than switched, because a hard 0/1 strobes a signal sitting on the
+    // threshold; see GATE_RAMP in Config.h for the rate and why it slowed.
+    gateGain += ((signalPresence ? 1.0f : 0.0f) - gateGain) * GATE_RAMP;
     features.energy *= gateGain;
     for (int i = 0; i < half; ++i) features.spectrum[i] *= gateGain;
+    // The three bands are gated below instead, after their smoothing and their
+    // bandLevels. Gating them here as well would drag the per-band references down
+    // by the gate on every silence, and a reference measured through a gate is not
+    // a reference for the band.
 
-    // The loudest recent block, which is what the level below is a fraction of.
-    // Rises onto a louder block at once and forgets slowly, because the loud
-    // part of a track is the reference for its quiet part: a reference that fell
-    // as fast as the signal would turn every quiet passage back up to full.
-    if (volume > levelRef) {
-        levelRef = volume;
+    // The envelope of the input, which is what level is measured from. A single
+    // block's RMS is not the loudness of the room: it is one 11.6 ms window, and on
+    // music it swings by a factor of two or more between blocks, so a ratio taken
+    // straight from it moved with the beat and level read as a second beat
+    // detector. The envelope is the surroundings rather than the hit, which is what
+    // the layers modulating their overall range from it are asking for.
+    //
+    // Seeded from the first block rather than from zero, like the other filters
+    // here, so the first frame is a reading of real audio rather than a value
+    // climbing off the floor.
+    if (!levelEnvSeeded) {
+        levelEnv       = volume;
+        levelEnvSeeded = true;
     } else {
-        levelRef *= 0.995f;
+        const float toEnv = (volume > levelEnv) ? LEVEL_ENV_ATTACK : LEVEL_ENV_RELEASE;
+        levelEnv += (volume - levelEnv) * toEnv;
+    }
+
+    // The loudest recent envelope value, which is what the level below is a
+    // fraction of. Rises onto a louder passage over about a fifth of a second and
+    // forgets over twenty, because the loud part of a track is the reference for
+    // its quiet part: a reference that fell as fast as the signal would turn every
+    // quiet passage back up to full. The rise is no longer instantaneous for the
+    // same reason on the other side of it, so that one loud envelope value cannot
+    // become the denominator for everything in the next twenty seconds.
+    if (levelEnv > levelRef) {
+        levelRef += (levelEnv - levelRef) * LEVEL_REF_RISE;
+    } else {
+        levelRef *= LEVEL_REF_DECAY;
     }
     if (levelRef < 1e-4f) levelRef = 1e-4f;
 
+    // dynamics, which is how far the loudness travels rather than what shape it
+    // has. It used to be (peak - average) / peak over one block, a crest factor,
+    // and a crest factor is a property of a waveform's shape that every sound a
+    // room produces shares: speech, hum, noise and music through a small speaker
+    // all sit near 0.65, and turning the gain down does not change a shape, so the
+    // reading held at 0.65 whether anyone was talking or not. A number that cannot
+    // move cannot separate a calm room from a busy one, which is what the mood
+    // classifier and several layer opacities ask it to do.
+    //
+    // The span the envelope covers is what does move, so the two edges follow it,
+    // quickly outwards and slowly back in, which makes the window they remember a
+    // few seconds wide. As a fraction of the top of the span, so it stays a ratio
+    // and not a level.
+    if (!dynamicsSeeded) {
+        dynHi          = levelEnv;
+        dynLo          = levelEnv;
+        dynamicsSeeded = true;
+    } else {
+        dynHi += (levelEnv - dynHi) * (levelEnv > dynHi ? DYN_EDGE_RISE : DYN_EDGE_FALL);
+        dynLo += (levelEnv - dynLo) * (levelEnv < dynLo ? DYN_EDGE_RISE : DYN_EDGE_FALL);
+    }
+    features.dynamics = (dynHi > 1e-6f)
+        ? constrain((dynHi - dynLo) / dynHi, 0.0f, 1.0f)
+        : 0.0f;
+
     // Normalised against the floor as well as the peak. Against the peak alone the
     // ratio climbs as the room goes quiet, because both terms fall but levelRef
-    // falls geometrically while volume drops onto the room tone at once, so the
-    // level rose during silence and only the gate hid it. Subtracting the floor
+    // falls geometrically while the envelope drops onto the room tone at once, so
+    // the level rose during silence and only the gate hid it. Subtracting the floor
     // sends the numerator to zero there, so silence now reads as zero by
     // construction rather than by masking.
-    const float levelSpan = levelRef - noiseFloor;
-    const float levelRaw  = (levelSpan > 1e-5f) ? (volume - noiseFloor) / levelSpan : 0.0f;
-
-    // Then the asymmetric follower. Attack and release are separate coefficients
-    // because the raw ratio is a spike train: every block louder than the one
-    // before sets it to 1 for that frame, and the value fell away again by the
-    // next, which read as flicker in the readout and in everything driven from it.
-    // Fast attack keeps a hit on the frame it happens, slow release gives the tail
-    // a visible shape, which is the asymmetry the eye reads as motion.
-    const float levelTarget = constrain(levelRaw, 0.0f, 1.0f);
-    if (!levelSeeded) {
-        levelSmoothed = levelTarget;
-        levelSeeded   = true;
-    } else {
-        const float k = (levelTarget > levelSmoothed) ? LEVEL_ATTACK : LEVEL_RELEASE;
-        levelSmoothed += (levelTarget - levelSmoothed) * k;
-    }
-
-    // Still gated, for the moment the gate opens and closes: the follower cannot
-    // move faster than its release, so the gate is what takes the level to zero on
-    // the frame the room goes quiet rather than a tenth of a second later.
-    features.level = constrain(levelSmoothed, 0.0f, 1.0f) * gateGain;
-
-    // The bands against one shared recent peak, on the same rise-fast, forget-slow
-    // rule as levelRef above and for the same reason: the loudest recent block is
-    // the reference for the quiet ones, so the set does not fall back to full
-    // during a quiet passage.
     //
-    // One reference, not one per band. A share is gain-independent but it is a
-    // fraction of a total that treble's 232 bins dominate, so on real music the
-    // largest band sat around 0.5 and none of them filled its bar. Against a
-    // shared reference the dominant band uses the whole bar and the others stay
-    // proportionally below it, which is the relationship the animations colour
-    // with. A per-band reference would destroy exactly that: a band carrying
-    // nothing but noise floor would normalise to 1 against its own noise, and a
-    // pure 100 Hz tone would report bass, mid and treble all at full.
-    const float bandPeak = max(features.bass, max(features.mid, features.treble));
-    if (bandPeak > bandsRef) bandsRef = bandPeak; else bandsRef *= 0.995f;
-    if (bandsRef < 1e-4f) bandsRef = 1e-4f;
-    features.bass   = constrain(features.bass   / bandsRef, 0.0f, 1.0f);
-    features.mid    = constrain(features.mid    / bandsRef, 0.0f, 1.0f);
-    features.treble = constrain(features.treble / bandsRef, 0.0f, 1.0f);
+    // There is no second filter on the ratio. The envelope and the reference are
+    // both slow, so the ratio is already a level rather than a spike train, and a
+    // further follower would only add lag to a value whose whole job is to be
+    // stable.
+    const float levelSpan = levelRef - noiseFloor;
+    const float levelRaw  = (levelSpan > 1e-5f) ? (levelEnv - noiseFloor) / levelSpan : 0.0f;
+
+    // Still gated, for the moment the gate opens and closes: the envelope cannot
+    // move faster than its release, so the gate is what takes the level to zero on
+    // the frame the room goes quiet rather than a second later.
+    features.level = constrain(levelRaw, 0.0f, 1.0f) * gateGain;
+
+    // The shares are left as shares. They were rescaled against the largest of the
+    // three, which made the dominant band read exactly 1.0 by construction, and on
+    // this microphone the dominant band is mid on anything with a voice or a
+    // melody in it. That is why mid sat pinned at the top of its bar while bass and
+    // treble moved, which is a claim about which band is present rather than about
+    // how much of it there is. A share already says how much of it there is, at any
+    // gain, and the three now read in the proportions the audio actually has.
+    //
+    // The cost is that every band reads lower than it did, by roughly the factor
+    // the shared reference was lifting them, so the animations that drive
+    // brightness from a band are dimmer than they were. Inflating a measurement to
+    // suit a consumer is what produced the pinned band, so the scale belongs in the
+    // animations.
 
     // Seeded from the first block rather than from zero, so the first frame is a
     // reading of real audio instead of a value climbing off the floor.
@@ -312,27 +401,76 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     features.mid    = smoothMid;
     features.treble = smoothTreble;
 
+    // The render drive, from the smoothed ungated shares and the gate, which is
+    // applied here rather than above so the reference is a reference for the band
+    // rather than for the band times the gate. See updateBandLevels and the
+    // bandLevels member block in AudioFeatures.h for why a share is not a drive.
+    //
+    // The reference coefficients are level's, which hold the recent peak for about
+    // twenty seconds and take a sustained passage to move. One reference per band
+    // rather than one for the three, because the bands do not peak together: a kick
+    // and a cymbal are seconds apart and a shared reference would read whichever
+    // came last.
+    features.updateBandLevels(bandRefs, LEVEL_REF_RISE, LEVEL_REF_DECAY, gateGain);
+
+    features.bass   *= gateGain;
+    features.mid    *= gateGain;
+    features.treble *= gateGain;
+
     // Beat detection
+    //
+    // The rise is measured against the block before it, which is a single 11.6 ms
+    // window and therefore the right reference for an onset: a kick is an edge at
+    // that timescale, and a reference averaging over more than a few blocks already
+    // carries the beat it is supposed to be detecting.
+    //
+    // Both terms of the threshold are relative. The fraction is a fraction rather
+    // than an amount because an amount is a claim about one microphone's gain, and
+    // the floor is a multiple of the measured noise floor for the same reason
+    // rather than the fixed 0.008 it used to be. That constant was a third of the
+    // entire range on the microphone in use, so every block carrying room noise
+    // cleared it and the tempo followed the room. Gated on signal presence as well,
+    // so silence cannot manufacture a beat out of nothing.
+    //
+    // A level rise alone is not a beat, and that is what made the tempo follow
+    // speech: every syllable is an onset, the block before it is quieter, and the
+    // detector fired on each one, which is where 140 to 200 BPM with nothing
+    // playing came from. The second condition is that the bass band has to rise
+    // too. A kick is low end and a consonant is not, so it is the condition that
+    // tells a rhythm from a voice. See BEAT_BASS_RISE in Config.h.
     unsigned long now = millis();
     const unsigned long sinceBeat = now - lastBeatTime;
-    // The rise is measured against the recent level rather than against a fixed
-    // 0.04. An absolute rise is unreachable when the microphone runs at low gain:
-    // at a peak of 0.02 no block can rise by 0.04, so the detector never fired and
-    // the BPM readout sat at zero however much music was playing. Gated on signal
-    // presence as well, so silence cannot manufacture a beat out of nothing.
-    const float beatRise = max(0.008f, previousVolume * 0.35f);
+    const float beatRise = max(noiseFloor * BEAT_RISE_NOISE,
+                               previousVolume * BEAT_RISE_FRACTION);
     bool beat = false;
-    if (signalPresence && volume - previousVolume > beatRise && sinceBeat > 250) {
+    if (signalPresence && volume - previousVolume > beatRise &&
+        bassEnergy > previousBassEnergy * BEAT_BASS_RISE &&
+        sinceBeat > MIN_BEAT_INTERVAL) {
         beat = true;
-        if (sinceBeat <= 2000) currentBPM = 60000.0 / sinceBeat;
+        // The tempo is the median of the recent intervals, not the newest one. One
+        // interval moves the readout by tens of BPM when a beat lands a block early
+        // or late, and a beat the detector misses doubles the interval and halves
+        // the number, which is what an erratic readout is made of.
+        if (sinceBeat <= 2000) {
+            beatIntervals[beatIntervalNext] = sinceBeat;
+            beatIntervalNext = (beatIntervalNext + 1) % BEAT_BPM_WINDOW;
+            if (beatIntervalCount < BEAT_BPM_WINDOW) ++beatIntervalCount;
+            currentBPM = 60000.0f / float(medianBeatInterval());
+        }
         lastBeatTime = now;
     }
     // No beats for a while means the tempo is no longer known. Without this the
     // last measured value stays on the readout forever, which reads as stuck
-    // rather than as stale.
+    // rather than as stale. The intervals go with it, because the first beat after
+    // a break would otherwise be averaged against a tempo that stopped a minute
+    // ago and report a number belonging to neither.
     if (sinceBeat > 2000) {
         currentBPM *= 0.94f;
-        if (currentBPM < 1.0f) currentBPM = 0.0f;
+        if (currentBPM < 1.0f) {
+            currentBPM = 0.0f;
+            beatIntervalCount = 0;
+            beatIntervalNext  = 0;
+        }
     }
     features.beatDetected = beat;
     features.bpm          = currentBPM;
@@ -341,6 +479,7 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // was unreachable.
     features.bassHits     = beat ? 1 : 0;
 
-    previousVolume = volume;
+    previousVolume     = volume;
+    previousBassEnergy = bassEnergy;
     return features;
 }

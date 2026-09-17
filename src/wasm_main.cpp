@@ -99,6 +99,18 @@ void gg_init(void) {
 EMSCRIPTEN_KEEPALIVE
 int gg_sample_count(void) { return NUM_SAMPLES; }
 
+// Forget the analysis state left behind by whatever was feeding the module.
+//
+// The page has two inputs at very different amplitudes and switches between them,
+// and the features are normalised against references learned from the input. A
+// switch is therefore a discontinuity the analysis cannot see: it has no way to
+// know the samples stopped coming from the same place, and it goes on measuring
+// the new signal against the old signal's peak. Called on every change of source,
+// including the one at load, so the first reading is of the source actually in
+// use rather than of whatever the default filled the references with.
+EMSCRIPTEN_KEEPALIVE
+void gg_reset_analysis(void) { g_proc.resetTracking(); }
+
 // Where to write the microphone's time-domain samples, each normalised to -1..1.
 EMSCRIPTEN_KEEPALIVE
 float* gg_sample_buffer(void) { return g_samples; }
@@ -158,6 +170,12 @@ float gg_feature(int index) {
         case 10: return g_last.level;
         case 11: return g_last.noiseFloor;
         case 12: return g_last.signalPresence ? 1.0f : 0.0f;
+        // The render drive the animations actually read, beside the shares above.
+        // Shown because the two differ by a factor of twenty on real audio and the
+        // shares alone do not explain what a pixel is doing.
+        case 13: return g_last.bassLevel;
+        case 14: return g_last.midLevel;
+        case 15: return g_last.trebleLevel;
         default: return 0.0f;
     }
 }

@@ -25,8 +25,8 @@
 #
 # builds once and then rebuilds whenever a source or header changes, which is the
 # loop to leave running while editing an animation. It costs one link per change
-# rather than a full rebuild, because the object cache survives. The page still
-# needs a reload afterwards: the module is fetched once at load time.
+# rather than a full rebuild, because the object cache survives. An open page
+# reloads itself when the build lands, so the loop is edit, save, look at the page.
 
 set -euo pipefail
 
@@ -222,6 +222,16 @@ fi
 
 em++ "${objects[@]}" "${link_flags[@]}" -o "$out/glitchglimmer.js"
 
+# Record the build so an open page can notice it. The module is fetched once at
+# load time, so without this a rebuild is invisible until someone reloads by hand,
+# which is the slowest part of changing an animation. web/live.js polls this file
+# and reloads when the value changes.
+#
+# Written after the link and not before, so a failed build leaves the previous
+# value in place and does not reload a page onto a module that is half written.
+# Milliseconds, because two builds inside one second are ordinary in --watch mode.
+printf '{"build": %s}\n' "$(date +%s%3N)" > "$out/build.json"
+
 echo
 echo "Wrote $out/glitchglimmer.js and $out/glitchglimmer.wasm"
 ls -lh "$out"/glitchglimmer.* | awk '{print "  " $9 "  " $5}'
@@ -235,7 +245,7 @@ fi
 # lives in the object cache so it shares a filesystem with the sources, which
 # makes the mtime comparison meaningful.
 echo
-echo "Watching src/ and sim/stubs/wasm/. Ctrl-C to stop. Reload the page after a rebuild."
+echo "Watching src/ and sim/stubs/wasm/. Ctrl-C to stop. An open page reloads itself."
 marker="$cache/.watch-marker"
 while true; do
   touch "$marker"

@@ -29,7 +29,6 @@ struct MoodSnapshot {
     float loudness;
     float peak;
     float average;
-    float agcLevel;
 
     float bass;
     float mid;
@@ -53,7 +52,7 @@ struct MoodSnapshot {
     unsigned long timestamp;
 
     MoodSnapshot()
-        : volume(0), loudness(0), peak(0), average(0), agcLevel(1),
+        : volume(0), loudness(0), peak(0), average(0),
           bass(0), mid(0), treble(0),
           spectrumCentroid(0), dominantBand(0), dynamics(0), energy(0), level(0),
           beatDetected(false), bpm(0), bassHits(0),
@@ -100,10 +99,11 @@ private:
 
     // The classifier's dynamics cut points move with the observed range rather
     // than sitting at 0.5 and 0.2. A fixed pair is a claim about one input's
-    // crest factor: on the microphone in use dynamics lives between about 0.46
-    // and 0.57, so `> 0.5` was true on nearly every frame and `< 0.2` never, and
-    // dynamics could not separate anything. dynSpan is what the classifier tests
-    // for usability, since a signal with no drum in it has no range to split.
+    // spread: on the microphone in use the range a signal covers is narrow when the
+    // room is steady and wide when it is not, so a fixed cut is either always
+    // cleared or never cleared depending on the room, and dynamics could not
+    // separate anything. dynSpan is what the classifier tests for usability, since
+    // a signal with no drum in it has no range to split.
     //
     // The rates are per second rather than per frame. The device analyses a block
     // every 33 ms and the browser page steps once per animation frame, so a
@@ -147,7 +147,6 @@ public:
         m.loudness = f.loudness;
         m.peak = f.peak;
         m.average = f.average;
-        m.agcLevel = f.agcLevel;
         m.bass = f.bass;
         m.mid = f.mid;
         m.treble = f.treble;

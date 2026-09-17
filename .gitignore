@@ -30,6 +30,16 @@ web/live/.obj/
 web/live/glitchglimmer.js
 web/live/glitchglimmer.wasm
 
+# Build stamp, written by tools/build-wasm.sh so an open page can tell that the
+# module it loaded has been replaced and reload itself. Present only in a working
+# copy, which is also what keeps the page's polling off a deployed one.
+web/live/build.json
+
 # Local harness and build logs
 sim-run.txt
 *.log
+
+# Microphone captures from the live page's Record button. Float samples of
+# whatever was in the room, which is the user's environment rather than the
+# project's source, and the harness generates its own fixtures for the checks.
+*.f32

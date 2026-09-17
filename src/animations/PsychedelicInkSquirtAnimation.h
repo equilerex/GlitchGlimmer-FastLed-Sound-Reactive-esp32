@@ -34,7 +34,10 @@ public:
         // level, not energy. energy is a raw FFT magnitude sum in the hundreds,
         // so the old energy * 0.05 term contributed 5 to 50 units a second and
         // swamped the two musical terms beside it.
-        offset += deltaTime * (0.1f + audio.bass * 2.0f + audio.pixelLevel() * 0.5f);
+        // bassLevel, not the bass share. The share reads 0.001 to 0.049 on the
+        // microphone in use, so the bass term contributed nothing here beside the
+        // level term.
+        offset += deltaTime * (0.1f + audio.bassLevel * 2.0f + audio.pixelLevel() * 0.5f);
         if (offset >= 6.2831853f || offset < 0.0f) offset = fmodf(offset, 6.2831853f);
 
         // level, not volume, for the gain reason the rest of the sweep shares:

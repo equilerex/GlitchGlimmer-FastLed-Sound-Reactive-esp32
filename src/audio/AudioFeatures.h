@@ -8,7 +8,6 @@ struct AudioFeatures {
     float loudness = 0.0f;          // Smoothed loudness (0–100)
     float peak = 0.0f;              // Peak amplitude
     float average = 0.0f;           // Mean signal level
-    float agcLevel = 1.0f;          // Auto gain correction multiplier
 
     // Current level as a fraction of the loudest recent block, so it is 0..1 at
     // any microphone gain. This is the field an effect should drive loudness
@@ -45,13 +44,72 @@ struct AudioFeatures {
     // lets both sinks share one curve and one set of constants.
     float hsvLevel() const { return sqrtf(pixelLevel()); }
 
+    // The references the three bandLevels are measured against. Held by whoever
+    // owns the analysis rather than by the block, which is allocated fresh every
+    // call and would carry the reference for exactly one frame. AudioProcessor
+    // keeps one beside its level reference and the harness keeps its own, and both
+    // run the one implementation below rather than their own.
+    struct BandRefs {
+        float bass   = 0.0f;
+        float mid    = 0.0f;
+        float treble = 0.0f;
+        bool  seeded = false;
+
+        void reset() { bass = mid = treble = 0.0f; seeded = false; }
+    };
+
+    // Moves the references onto the bands and derives the three bandLevels. `rise`
+    // and `decay` are per-block one-pole coefficients, level's, which hold a recent
+    // peak for about twenty seconds and take a sustained passage to move. `gate` is
+    // the silence gate, applied to the output here rather than to the bands, so the
+    // reference is a reference for the band and is not dragged down every time the
+    // room goes quiet. Called with the smoothed ungated shares, which is what lets
+    // the reference compare like with like across a silence.
+    void updateBandLevels(BandRefs& r, float rise, float decay, float gate) {
+        if (!r.seeded) {
+            r.bass   = bass;
+            r.mid    = mid;
+            r.treble = treble;
+            r.seeded = true;
+        } else {
+            r.bass   = bass   > r.bass   ? r.bass   + (bass   - r.bass)   * rise : r.bass   * decay;
+            r.mid    = mid    > r.mid    ? r.mid    + (mid    - r.mid)    * rise : r.mid    * decay;
+            r.treble = treble > r.treble ? r.treble + (treble - r.treble) * rise : r.treble * decay;
+        }
+
+        bassLevel   = r.bass   > 1e-5f ? constrain(bass   / r.bass,   0.0f, 1.0f) * gate : 0.0f;
+        midLevel    = r.mid    > 1e-5f ? constrain(mid    / r.mid,    0.0f, 1.0f) * gate : 0.0f;
+        trebleLevel = r.treble > 1e-5f ? constrain(treble / r.treble, 0.0f, 1.0f) * gate : 0.0f;
+    }
+
     float bass = 0.0f;              // Low frequency energy
     float mid = 0.0f;               // Mid frequency energy
     float treble = 0.0f;            // High frequency energy
 
+    // The same three bands against their own recent peak, 0..1 and gated by the
+    // same silence gate level is. These are what an effect drives pixels from, and
+    // the three above are the measurement.
+    //
+    // A share is the honest way to report which part of the audio carries the
+    // energy, which is why the three above are left as shares. It is also small
+    // whenever the audio is broadband, which most music is: on the microphone in
+    // use bass reads 0.001 to 0.049 and treble 0.006 to 0.40. So every constant an
+    // animation compared a band against was a claim about one input's spectrum, and
+    // the bass-driven animations rendered near black on real audio while passing
+    // every check, because the harness fed them bass at 0.95.
+    //
+    // A per-band rolling reference removes the constant. bass reads near 1 when
+    // bass is near the most bass the room has had recently, at any gain, which is
+    // the question level answers for loudness. Not the shared peak the bands were
+    // once rescaled against, which held the largest band at exactly 1.0 every frame
+    // and pinned mid there, because mid is the largest band on a voice or a melody.
+    float bassLevel   = 0.0f;
+    float midLevel    = 0.0f;
+    float trebleLevel = 0.0f;
+
     float spectrumCentroid = 0.0f;  // Centroid of frequency content
     int dominantBand = 0;           // Index of loudest spectrum bin
-    float dynamics = 0.0f;          // Difference between peak and average
+    float dynamics = 0.0f;          // Span the loudness covers over a few seconds
     float energy = 0.0f;            // Sum of spectral magnitudes
 
     bool beatDetected = false;      // Beat detection flag

@@ -139,6 +139,16 @@ export class Spectrum {
     this.barPeak = new Float32Array(this.bars);
   }
 
+  // Forget the per-bar references. Called when the page changes which input it is
+  // analysing: these are running peaks, so they are a record of the loudest thing
+  // each bar has seen, and the synthetic signal is about forty times the
+  // microphone. Left in place across a switch they make every bar draw at a few
+  // percent of its true height for as long as the old reference has not decayed,
+  // which reads as bands that are too low rather than as stale references.
+  reset() {
+    this.barPeak.fill(0);
+  }
+
   // `gate` is the firmware's silence gate, 0..1. Without it a per-bar reference
   // decays onto the room tone and silence draws a full row, which is the opposite
   // of what the gate exists for.

@@ -18,10 +18,13 @@ public:
         // Basic color hue from spectrum centroid
         float baseHue = fmod(audio.spectrumCentroid * 2.0f, 255.0f);
 
-        // Color based on bass/mid/treble blend
-        uint8_t r = (uint8_t)(audio.bass * 255);
-        uint8_t g = (uint8_t)(audio.mid * 255);
-        uint8_t b = (uint8_t)(audio.treble * 255);
+        // Color based on bass/mid/treble blend. The bandLevels and not the shares:
+        // a share is small on broadband audio, measured at 0.001 to 0.049 for bass
+        // on the microphone in use, so this blend was three near-black channels and
+        // the strip rendered dark with music playing.
+        uint8_t r = (uint8_t)(audio.bassLevel * 255);
+        uint8_t g = (uint8_t)(audio.midLevel * 255);
+        uint8_t b = (uint8_t)(audio.trebleLevel * 255);
         CRGB blendColor = CRGB(r, g, b);
 
         // Fade wave trail effect using sine modulation and spectrum
