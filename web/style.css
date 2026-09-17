@@ -57,7 +57,11 @@ canvas {
   height: auto;
 }
 
-.error {
+/* :not([hidden]) rather than a bare display, because a class rule outranks the
+   user agent's [hidden] { display: none }. Written as display: flex alone, this
+   panel stayed visible while hidden and painted an opaque rectangle over the
+   canvas for the whole run, which reads as the player drawing nothing. */
+.error:not([hidden]) {
   position: absolute;
   inset: 0;
   display: flex;
