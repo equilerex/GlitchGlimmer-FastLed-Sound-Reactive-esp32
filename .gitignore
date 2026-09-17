@@ -18,6 +18,18 @@ graphify-out/
 # they are built in the Pages workflow rather than committed and reviewed.
 web/data/
 
+# Incremental WebAssembly object cache, written by tools/build-wasm.sh. Keyed to
+# the source tree it was built from, so it is machine state, not a source.
+web/live/.obj/
+
+# The WebAssembly module and its glue. Generated from src/ by
+# tools/build-wasm.sh, about 180 KB of binary, and rebuilt by CI and by the Pages
+# workflow, so committing it would only add a copy that drifts from the source it
+# was built from. The page needs it to exist, so the live view 404s until the
+# script has been run once.
+web/live/glitchglimmer.js
+web/live/glitchglimmer.wasm
+
 # Local harness and build logs
 sim-run.txt
 *.log

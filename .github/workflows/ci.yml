@@ -36,3 +36,28 @@ jobs:
           python-version: '3.12'
       - run: pip install platformio
       - run: pio run -e native -t exec
+
+  # The browser visualiser is the firmware's own code compiled by a different
+  # toolchain, and nothing in the other two jobs compiles it. Its sources overlap
+  # src/ but its flags do not, so a change can pass both of them and break here.
+  # The version is pinned to the one the module in web/live was built with, since
+  # an Emscripten upgrade changes the glue the page calls into.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio
+      - run: pio run -e native
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.9
+      - run: tools/build-wasm.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glitchglimmer-wasm
+          path: |
+            web/live/glitchglimmer.js
+            web/live/glitchglimmer.wasm

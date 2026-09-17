@@ -1,8 +1,8 @@
 name: pages
 
-# Builds the frame recordings from the firmware, then publishes web/. The
-# recordings are generated rather than committed, so this workflow is the only
-# place the site's data comes from and it cannot drift from src/.
+# Builds the frame recordings and the WebAssembly module from the firmware, then
+# publishes web/. Both are generated rather than committed, so this workflow is
+# the only place the site's data comes from and neither can drift from src/.
 #
 # Enable once in the repository settings: Settings -> Pages -> Source ->
 # GitHub Actions.
@@ -38,6 +38,16 @@ jobs:
 
       - name: Record frames
         run: .pio/build/native/program --dump-frames web/data
+
+      # The live view fetches live/glitchglimmer.js at load time, so without this
+      # step the published site serves a page whose live view 404s. Pinned to the
+      # version the module is developed against. See .github/workflows/ci.yml.
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.9
+
+      - name: Build the WebAssembly module
+        run: tools/build-wasm.sh
 
       - uses: actions/configure-pages@v5
 
