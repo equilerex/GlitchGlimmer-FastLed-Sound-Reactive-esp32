@@ -43,6 +43,16 @@ h2 {
   max-width: 62ch;
 }
 
+.modes {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.9rem;
+}
+
+.mode-button {
+  padding: 0.35rem 0.85rem;
+}
+
 .strip-panel {
   position: relative;
   background: var(--panel);
@@ -103,6 +113,143 @@ canvas {
 .hud-value {
   font-family: var(--mono);
   font-size: 0.95rem;
+}
+
+.meter {
+  display: block;
+  height: 0.75rem;
+  margin-top: 0.3rem;
+  background: #0e0e13;
+  border: 1px solid var(--panel-edge);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+   State panel. One row per value the firmware's mood system reads, each on a
+   bar with a fixed maximum so a value pinned at the top of its scale is visible
+   as pinned rather than normalised away. The threshold markers matter more than
+   the bars: a classifier comparing a raw FFT sum against 0.8 shows up as four
+   slivers crammed against the left edge of a bar that reaches 3000.
+   --------------------------------------------------------------------------- */
+.state { margin-top: 0.4rem; }
+
+.state-hint {
+  margin: 1.2rem 0 0.7rem;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  max-width: 68ch;
+}
+
+.state-group { margin-bottom: 1.1rem; }
+
+.state-group h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-dim);
+}
+
+.state-row {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr) 5.5rem;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.3rem;
+}
+
+.state-name {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink-dim);
+}
+
+/* position: relative so the threshold markers can sit over the fill. */
+.state-row .meter {
+  position: relative;
+  margin-top: 0;
+}
+
+.state-num {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inside the bar rather than overhanging it, because .meter clips its own
+   contents. A threshold near the bottom of a linear scale lands a pixel or two
+   from the left edge, which is the point: it is meant to look pinned. */
+.meter-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #ff5d73;
+}
+
+.state-note {
+  grid-column: 2 / 4;
+  margin: -0.1rem 0 0.35rem;
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+}
+
+/* One dial per row: name, slider, value. The name column is fixed so the sliders
+   start at the same x down the group, which is what makes a column of them
+   readable as a set rather than as eight unrelated controls. */
+.tune-row {
+  display: grid;
+  grid-template-columns: 10rem 1fr 3.6rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.3rem 0;
+  font-size: 0.8rem;
+}
+
+.tune-name { color: var(--ink-dim); }
+
+.tune-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tune-row input[type='range'] {
+  width: 100%;
+  accent-color: #6ad4ff;
+}
+
+/* Sized by inline styles from render.js, so no display rule here that could
+   fight the width and height it sets. */
+.spectrum {
+  margin: 0.2rem 0 0.9rem;
+  background: #0e0e13;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+}
+
+.lamp {
+  display: block;
+  width: 0.9rem;
+  height: 0.9rem;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  background: #26262f;
+  border: 1px solid var(--panel-edge);
+}
+
+.lamp.on {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
 }
 
 .controls {

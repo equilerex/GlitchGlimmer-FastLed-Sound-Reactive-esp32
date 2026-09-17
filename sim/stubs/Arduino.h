@@ -27,6 +27,23 @@ using std::max;
 using std::min;
 
 // -----------------------------------------------------------------------------
+//  Core version and the macros arduinoFFT expects
+// -----------------------------------------------------------------------------
+// FastLED's stub announces ARDUINO as 1. arduinoFFT picks its Arduino header with
+// `#ifdef ARDUINO / #if ARDUINO >= 100`, so both "undefined" and "1" send it to
+// the pre-1.0 WProgram.h, which no longer ships. 1.8.19 is the version FastLED's
+// own emulation names in the comment beside its define.
+#ifndef ARDUINO
+#define ARDUINO 10819
+#endif
+
+// An Arduino core macro, used by arduinoFFT for its window weighting. A macro
+// rather than a function for the same reason constrain below is one.
+#ifndef sq
+#define sq(x) ((x) * (x))
+#endif
+
+// -----------------------------------------------------------------------------
 //  Clock. The harness advances it; everything else only reads it.
 // -----------------------------------------------------------------------------
 unsigned long& simNow();

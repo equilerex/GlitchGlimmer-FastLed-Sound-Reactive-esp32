@@ -18,55 +18,117 @@
 </header>
 
 <main>
+  <div class="modes" role="group" aria-label="View">
+    <button class="mode-button" type="button" data-mode="recording" aria-pressed="true">Recording</button>
+    <button class="mode-button" type="button" data-mode="live" aria-pressed="false">Live microphone</button>
+  </div>
+
   <div class="strip-panel">
-    <canvas id="view" aria-label="Recorded LED strip output"></canvas>
+    <canvas id="view" aria-label="LED strip output"></canvas>
     <div id="error" class="error" hidden></div>
   </div>
 
-  <div class="hud">
-    <div class="hud-cell">
-      <span class="hud-label">Scene</span>
-      <span class="hud-value" id="scene">&mdash;</span>
+  <div id="pane-recording">
+    <div class="hud">
+      <div class="hud-cell">
+        <span class="hud-label">Scene</span>
+        <span class="hud-value" id="scene">&mdash;</span>
+      </div>
+      <div class="hud-cell">
+        <span class="hud-label">Mood</span>
+        <span class="hud-value" id="mood">&mdash;</span>
+      </div>
+      <div class="hud-cell">
+        <span class="hud-label">Time</span>
+        <span class="hud-value" id="time">0.0s</span>
+      </div>
     </div>
-    <div class="hud-cell">
-      <span class="hud-label">Mood</span>
-      <span class="hud-value" id="mood">&mdash;</span>
+
+    <div class="controls">
+      <button id="play" class="primary" type="button">Pause</button>
+      <input id="scrub" type="range" min="0" max="0" value="0" step="1"
+             aria-label="Scrub through the recording">
     </div>
-    <div class="hud-cell">
-      <span class="hud-label">Time</span>
-      <span class="hud-value" id="time">0.0s</span>
+
+    <div class="scenarios">
+      <span class="hud-label">Recording</span>
+      <div id="buttons" class="button-row"></div>
+      <p class="note" id="note"></p>
     </div>
   </div>
 
-  <div class="controls">
-    <button id="play" class="primary" type="button">Pause</button>
-    <input id="scrub" type="range" min="0" max="0" value="0" step="1"
-           aria-label="Scrub through the recording">
-  </div>
+  <div id="pane-live" hidden>
+    <div class="hud">
+      <div class="hud-cell">
+        <span class="hud-label">Scene</span>
+        <span class="hud-value" id="scene-live">&mdash;</span>
+      </div>
+      <div class="hud-cell">
+        <span class="hud-label">Mood now</span>
+        <span class="hud-value" id="mood-live">&mdash;</span>
+      </div>
+      <div class="hud-cell">
+        <span class="hud-label">Mood of window</span>
+        <span class="hud-value" id="predicted-live">&mdash;</span>
+      </div>
+      <div class="hud-cell">
+        <span class="hud-label">BPM</span>
+        <span class="hud-value" id="bpm-live">&mdash;</span>
+      </div>
+      <div class="hud-cell">
+        <span class="hud-label">Level</span>
+        <span class="meter"><span class="meter-fill" id="level-live"></span></span>
+      </div>
+      <div class="hud-cell">
+        <span class="hud-label">Beat</span>
+        <span class="lamp" id="beat-live"></span>
+      </div>
+    </div>
 
-  <div class="scenarios">
-    <span class="hud-label">Recording</span>
-    <div id="buttons" class="button-row"></div>
-    <p class="note" id="note"></p>
+    <canvas id="spectrum" class="spectrum"
+            aria-label="Frequency spectrum of the analysis window"></canvas>
+
+    <div class="controls">
+      <button id="mic" class="primary" type="button" aria-pressed="true">Use microphone</button>
+      <button id="demo" type="button" aria-pressed="false">Demo signal</button>
+    </div>
+    <p class="note" id="live-note"></p>
+
+    <p class="state-hint">
+      Every value below is read back out of the WebAssembly module after the frame
+      is stepped, so these are the firmware's own numbers, not a page-side
+      restatement of them. Bars carry a marker where the classifier in
+      <code>MoodHistory::classifyMood</code> puts its threshold.
+    </p>
+
+    <div id="live-state" class="state"></div>
   </div>
 
   <section class="about">
     <h2>What you are looking at</h2>
     <p>
-      These frames are not a JavaScript rewrite of the animations. The host
-      harness in <code>src/sim_main.cpp</code> compiles the same
-      <code>LEDStripController</code>, <code>SceneDirector</code> and layer code
-      the firmware ships, drives it with a scripted audio timeline over a clock
-      the harness owns, and records the resulting pixels. The page replays those
-      bytes, so the recording and the firmware cannot drift apart.
+      Neither view is a JavaScript rewrite of the animations. The recording is the
+      output of the host harness in <code>src/sim_main.cpp</code>, which compiles
+      the same <code>LEDStripController</code>, <code>SceneDirector</code> and
+      layer code the firmware ships and drives it with a scripted audio timeline.
     </p>
     <p>
-      It is a recording rather than a live simulation: the audio timeline is
-      fixed, and nothing here runs the FFT, the I2S driver or the display.
+      The live view is that same code compiled to WebAssembly by
+      <code>tools/build-wasm.sh</code> and stepped once per frame from the page.
+      Your microphone's samples go into <code>AudioProcessor</code> unchanged, so
+      the FFT, the feature extraction, the beat detector and the mood classifier
+      are the firmware's own, and the pixels are what the device would have
+      written for that sound.
+    </p>
+    <p>
+      The microphone needs a secure context: <code>https</code>, or
+      <code>localhost</code>. Opened over <code>file://</code> the browser exposes
+      no microphone API at all, and the view falls back to a synthetic signal.
     </p>
   </section>
 </main>
 
-<script src="app.js"></script>
+<script defer src="live/glitchglimmer.js"></script>
+<script type="module" src="main.js"></script>
 </body>
 </html>
