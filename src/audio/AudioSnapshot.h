@@ -5,6 +5,7 @@
 
 struct AudioSnapshot {
     float volume;
+    float level;
     float bass, mid, treble;
     float centroid;
     float bpm;

@@ -212,6 +212,18 @@ public:
     }
     inline int getSceneChangeCount() const { return sceneState.sceneChangeCount; }
 
+    // The scene clock. A transition needs both a minimum elapsed time and a mood
+    // shift, so elapsed-against-minimum is the only way to tell a scene that is
+    // holding from one that is about to be replaced.
+    inline unsigned long sceneElapsedMs() const { return sceneState.elapsed(); }
+    inline float sceneMinMs() const { return sceneState.sceneMinDurationMs; }
+    inline float sceneIdealMs() const { return sceneState.sceneIdealDurationMs; }
+
+    // Mutable, for the tuning controls. A non-const reference is deliberate: the
+    // setters recompute the running scene's own thresholds, so a change lands on
+    // the scene in front of the viewer rather than on the one after it.
+    inline SceneState& sceneStateForTuning() { return sceneState; }
+
 private:
     AudioFeatures&       audio;
     MoodHistory&         moodHistory;

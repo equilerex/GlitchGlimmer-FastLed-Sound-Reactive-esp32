@@ -24,12 +24,15 @@ void SceneRegistry::registerDefaultScenes() {
 const SceneDefinition& SceneRegistry::pickSceneByMood(const SceneState& current, const MoodSnapshot& mood) const {
     std::vector<const SceneDefinition*> matches;
 
-    // Determine the current mood type from the snapshot
+    // Determine the current mood type from the snapshot. This repeats
+    // MoodHistory::classifyMood, thresholds and all, and has to read the same
+    // field: it tested energy against 0.3..0.8, so every condition was true on
+    // every frame and the picker never agreed with the mood on the display.
     MoodType currentMood = MoodType::UNKNOWN;
-    if (mood.energy > 0.8f && mood.dynamics > 0.5f) currentMood = MoodType::INTENSE;
-    else if (mood.energy > 0.6f && mood.bpm > 100) currentMood = MoodType::ENERGETIC;
-    else if (mood.energy < 0.3f && mood.dynamics < 0.2f) currentMood = MoodType::CALM;
-    else if (mood.bpm < 80 && mood.energy > 0.4f) currentMood = MoodType::FLOATY;
+    if (mood.level > 0.8f && mood.dynamics > 0.5f) currentMood = MoodType::INTENSE;
+    else if (mood.level > 0.6f && mood.bpm > 100) currentMood = MoodType::ENERGETIC;
+    else if (mood.level < 0.3f && mood.dynamics < 0.2f) currentMood = MoodType::CALM;
+    else if (mood.bpm < 80 && mood.level > 0.4f) currentMood = MoodType::FLOATY;
 
     for (const auto& s : scenes) {
         if (s.supportsMood(currentMood)) {

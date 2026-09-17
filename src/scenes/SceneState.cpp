@@ -6,26 +6,34 @@
 
 // Initialize default values
 SceneState::SceneState()
- : activeScene(nullptr), sceneStartMillis(0), sceneMinDurationMs(5000), sceneIdealDurationMs(12000), lastMood(), sceneChangeCount(0), totalUptimeMs(0)
+ : activeScene(nullptr), sceneStartMillis(0), sceneMinDurationMs(5000), sceneIdealDurationMs(12000), lastMood(), startMood(UNKNOWN), sceneChangeCount(0), totalUptimeMs(0)
 {}
 
 // Begin a new scene with baseline mood snapshot
-void SceneState::beginScene(const SceneDefinition* def, const MoodSnapshot& moodNow) {
+void SceneState::beginScene(const SceneDefinition* def, const MoodSnapshot& moodNow, MoodType moodNowType) {
     activeScene = def;
     sceneStartMillis = millis();
     lastMood = moodNow;
+    startMood = moodNowType;
     sceneMinDurationMs = calculateMinDuration(moodNow);
     sceneIdealDurationMs = calculateIdealDuration(moodNow);
     sceneChangeCount++;
 }
 
 // Determine if it's time to transition based on mood shifts or max duration
-bool SceneState::shouldTransition(const MoodSnapshot& moodNow) const {
+bool SceneState::shouldTransition(const MoodSnapshot& moodNow, MoodType moodNowType) const {
     unsigned long now = millis();
     bool pastMin = (now - sceneStartMillis) > sceneMinDurationMs;
-    bool moodShift = fabs(moodNow.energy - lastMood.energy) > 0.25f
-                  || fabs(moodNow.bpm - lastMood.bpm) > 15.0f
-                  || fabs(moodNow.dynamics - lastMood.dynamics) > 0.2f;
+    // The shift is the classifier's mood, not a single field crossing a constant.
+    // The old test compared the instantaneous level against the snapshot taken
+    // when the scene began, and level is renormalised to the loudest recent block,
+    // so a quarter of its range was crossed within a second or two of any real
+    // audio: moodShift was true by the time the minimum elapsed and the scene
+    // changed at its minimum duration on every single scene. The classified mood
+    // is already smoothed, confirmed and held, so it is the stable signal this
+    // test was always meant to read.
+    bool moodShift = moodNowType != startMood
+                  || fabs(moodNow.bpm - lastMood.bpm) > 15.0f;
     bool maxedOut = (now - sceneStartMillis) > sceneIdealDurationMs;
     return pastMin && (moodShift || maxedOut);
 }
@@ -33,14 +41,34 @@ bool SceneState::shouldTransition(const MoodSnapshot& moodNow) const {
 // Compute minimum duration scaled by tempo
 float SceneState::calculateMinDuration(const MoodSnapshot& mood) const {
     float bpmFactor = constrain(mood.bpm / 130.0f, 0.6f, 1.4f);
-    return 4000.0f * bpmFactor;
+    return minBaseMs * bpmFactor;
 }
 
 // Compute ideal duration scaled by energy & dynamics
 float SceneState::calculateIdealDuration(const MoodSnapshot& mood) const {
-    float energyFactor = constrain(mood.energy, 0.2f, 1.0f);
+    float energyFactor = constrain(mood.level, 0.2f, 1.0f);
     float dynFactor = constrain(mood.dynamics, 0.1f, 1.0f);
-    return 9000.0f + (5000.0f / (energyFactor + dynFactor));
+    return idealBaseMs + (idealSpanMs / (energyFactor + dynFactor));
+}
+
+void SceneState::refreshDurations() {
+    sceneMinDurationMs = calculateMinDuration(lastMood);
+    sceneIdealDurationMs = calculateIdealDuration(lastMood);
+}
+
+void SceneState::setMinBaseMs(float ms) {
+    minBaseMs = constrain(ms, 500.0f, 30000.0f);
+    refreshDurations();
+}
+
+void SceneState::setIdealBaseMs(float ms) {
+    idealBaseMs = constrain(ms, 1000.0f, 60000.0f);
+    refreshDurations();
+}
+
+void SceneState::setIdealSpanMs(float ms) {
+    idealSpanMs = constrain(ms, 0.0f, 60000.0f);
+    refreshDurations();
 }
 
 // Return elapsed time since scene start
@@ -56,8 +84,8 @@ void SceneState::debug() const {
     Serial.print(elapsed());
     Serial.print(F("ms | BPM: "));
     Serial.print(lastMood.bpm);
-    Serial.print(F(" | Energy: "));
-    Serial.print(lastMood.energy, 2);
+    Serial.print(F(" | Level: "));
+    Serial.print(lastMood.level, 2);
     Serial.print(F(" | Dynamics: "));
     Serial.print(lastMood.dynamics, 2);
     Serial.print(F(" | MinDur: "));

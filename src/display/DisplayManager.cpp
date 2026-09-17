@@ -144,10 +144,13 @@ void DisplayManager::drawMainScreen(const AudioFeatures& features, const String&
     if (bassBar) bassBar->setValue(features.bass);
     if (midBar) midBar->setValue(features.mid);
     if (trebleBar) trebleBar->setValue(features.treble);
-    if (powerBar) powerBar->setValue(features.loudness / 100.0f);
+    // level, not loudness. loudness is volume * 100 and volume is an absolute RMS
+    // that sits near 0.008 on the microphone in use, so both of these widgets
+    // read zero through music.
+    if (powerBar) powerBar->setValue(features.level);
 
     if (bpmWidget) bpmWidget->setValue(static_cast<int>(features.bpm), features.beatDetected);
-    if (powerValWidget) powerValWidget->setValue(static_cast<int>(features.loudness));
+    if (powerValWidget) powerValWidget->setValue(static_cast<int>(features.level * 100.0f));
 
     if (waveformWidget) {
         waveformWidget->updateData(features.waveform, NUM_SAMPLES, features.beatDetected);

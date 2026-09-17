@@ -16,14 +16,17 @@ public:
         // Base color from spectrum centroid (shifted a bit)
         uint8_t baseHue = fmod(audio.spectrumCentroid * 2.0 + hueOffset, 255);
 
-        // Brightness from volume
-        uint8_t baseBrightness = constrain(audio.volume * 255, 10, 255);
+        // Brightness from level, not volume. volume is the block's RMS in absolute
+        // units, so on the microphone in use it sits near 0.008 and this clamped
+        // up to its 10 floor, which is the near-black strip. level is the same
+        // loudness as a fraction of the loudest recent block, so it reaches 1 at
+        // any gain.
+        uint8_t baseBrightness = constrain(audio.hsvLevel() * 255.0f, 10, 255);
 
-        // Dynamics affect flicker intensity
-        float flicker = audio.dynamics * 255;
-
-        // Sparkle intensity from energy
-        int sparkles = constrain(audio.energy / 30, 0, 20);
+        // Sparkle intensity from level. energy is a raw magnitude sum in the
+        // hundreds, so dividing it by 30 pinned this at its 20 ceiling on every
+        // frame of real audio and it counted nothing.
+        int sparkles = constrain(int(audio.pixelLevel() * 20.0f), 0, 20);
 
         // Smooth rainbow background
         for (int i = 0; i < n; ++i) {
@@ -64,8 +67,10 @@ public:
             }
         }
 
-        // Peak flash on ends
-        if (audio.peak > 0.95f) {
+        // Peak flash on ends. Tested against level rather than peak: peak is the
+        // largest single sample in the block, which on this microphone does not
+        // reach 0.95 during music, so this never fired.
+        if (audio.level > 0.95f) {
             leds[0] = CRGB::White;
             leds[n - 1] = CRGB::White;
         }
@@ -86,7 +91,10 @@ public:
         // Wrapped rather than left to grow. At roughly 9 units a second this
         // passes float's exact-integer range in a few days of continuous running,
         // after which the increments stop landing.
-        hueOffset += audio.loudness / 100.0f;
+        // Driven by level, not loudness, for the same gain reason as the
+        // brightness above: loudness is volume * 100, so on this input it advances
+        // by about 0.008 a frame and the hue effectively stood still.
+        hueOffset += audio.pixelLevel() * 0.3f;
         if (hueOffset >= 255.0f || hueOffset < 0.0f) hueOffset = fmodf(hueOffset, 255.0f);
     }
 

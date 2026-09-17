@@ -19,6 +19,34 @@
 #define GAIN_SMOOTHING      0.92f    // Smoothing for gain level
 #define LOUDNESS_SMOOTHING  0.9f     // Smoothing for loudness calculation
 
+// The curve applied to level when it drives pixel brightness, as an exponent.
+// 1.0 is linear, 0.5 is a square root.
+//
+// PWM duty is linear in emitted light and the eye is not, so level mapped straight
+// to duty reads much darker than its number suggests. Measured against the
+// microphone in use, level sits near 0.16 for most of a track, which is 16 percent
+// duty, and the strips read as black between peaks while every check passed.
+//
+// This lifts only the low end: it passes through 0 and 1 and changes neither. Not
+// a floor, because a floor lifts silence too and silence has to stay dark for the
+// signal gate to mean anything.
+//
+// Applies to brightness written as a scale on CRGB. Brightness written through
+// CHSV's val needs AudioFeatures::hsvLevel instead, because FastLED squares that
+// field again on the way out and the two would not match. Which curve a given
+// animation wants is decided by which of the two it writes, not by preference.
+#define BRIGHTNESS_GAMMA    0.5f
+
+// The level follower, as one-pole coefficients: the fraction of the gap to the
+// target closed per analysed block, about 86 blocks a second.
+//
+// Attack is fast enough that a hit lands on the block it happens on, release slow
+// enough that its tail is visible. A single coefficient for both would have to
+// compromise between reacting and not flickering, which does neither well. Equal
+// values here would be a plain smoother, which reads as lagging the music.
+#define LEVEL_ATTACK        0.55f
+#define LEVEL_RELEASE       0.08f
+
 // ==== FFT Configuration ====
 #define FFT_SMOOTHING       0.8f     // Spectral smoothing for more stable bars
 #define FFT_BANDS           16       // Number of bands for visualization/spectrum

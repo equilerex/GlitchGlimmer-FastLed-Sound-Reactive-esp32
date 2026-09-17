@@ -18,9 +18,13 @@ class EnergyPulseRiverLayer : public VisualLayer {
 
 public:
     void update(const AudioFeatures& audio, const AudioHistory& snapshots) override {
-        speed = audio.energy * 0.5f;
+        // level, not energy. energy is a raw FFT magnitude sum in the hundreds,
+        // so energy * 0.5 moved position by hundreds of pixels a frame and the
+        // river was a strobe rather than a flow, and energy * 255 truncated to
+        // uint8_t made the hue noise.
+        speed = audio.level * 8.0f;
         position += speed;
-        hue = (uint8_t)(audio.energy * 255);
+        hue = (uint8_t)(audio.level * 255);
     }
 
     void render(CRGB* leds, int count) override {
@@ -29,9 +33,8 @@ public:
         // Reduced here, where the period is known. render() is the only place
         // that sees `count`, and the wave's period is exactly `count`, so
         // fmod(position, count) is identical to the unwrapped expression while
-        // keeping the accumulator bounded. update() moves position by up to
-        // energy * 0.5 a frame, which on real audio is hundreds, so left
-        // unreduced this reaches float's precision limit within minutes.
+        // keeping the accumulator bounded. Left unreduced this eventually
+        // reaches float's precision limit.
         position = fmodf(position, float(count));
 
         for (int i = 0; i < count; ++i) {
@@ -311,12 +314,20 @@ public:
 class EnergyFogLayer : public VisualLayer {
 public:
     void update(const AudioFeatures& now, const AudioHistory&) override {
-        energy = now.energy; // Store energy from audio features
+        // Stored curved, because the fog's brightness is the thing that was flat
+        // at the level this microphone reports. The hue map below reads the same
+        // value, so its 160..220 sweep moves with the curve as well; the band is
+        // narrow enough that this changes how blue the fog is, not what colour it
+        // is, and the brightness is the part that was wrong.
+        energy = now.hsvLevel();
     }
 
     void render(CRGB* leds, int count) override {
-        uint8_t hue = map(energy, 0, 2000, 160, 220);  // Bluish fog to white-hot
-        uint8_t brightness = constrain(energy / 10, 0, 180);
+        // Mapped against 0..1, not 0..2000. The old brightness was energy / 10
+        // against a raw sum in the hundreds, so it sat at its 180 ceiling on
+        // every frame and the fog was a flat wash.
+        uint8_t hue = map(energy * 255, 0, 255, 160, 220);  // Bluish fog to white-hot
+        uint8_t brightness = constrain(energy * 180, 0, 180);
         for (int i = 0; i < count; ++i) {
             leds[i] += CHSV(hue, 40, brightness);
         }
@@ -331,11 +342,14 @@ class LoudnessLightningLayer : public VisualLayer {
 
 public:
     void update(const AudioFeatures& now, const AudioHistory&) override {
-        lastLoudness = now.loudness;
+        // level, not loudness. loudness is volume * 100 and volume is an
+        // absolute RMS near 0.008 on the microphone in use, so the old
+        // `> 60.0f` test never fired and this layer never drew.
+        lastLoudness = now.level;
     }
 
     void render(CRGB* leds, int count) override {
-        if (lastLoudness > 60.0f && random(10) < 3) {
+        if (lastLoudness > 0.6f && random(10) < 3) {
             int start = random(0, count - 10);
             int length = random(5, 15);
             for (int i = start; i < start + length && i < count; ++i) {
@@ -354,7 +368,10 @@ public:
         if (history.size() < 10) return;
         float moodSum = 0;
         for (int i = 0; i < 10; ++i) {
-            moodSum += history[history.size() - 1 - i].volume;
+            // level, not volume, so the arc tracks loudness at any gain. The
+            // snapshot carries both now; volume alone sat near 0.008 on this
+            // microphone and the arc never changed hue.
+            moodSum += history[history.size() - 1 - i].level;
         }
         avgMood = moodSum / 10.0f;
     }
@@ -547,7 +564,7 @@ public:
         hueBase = now.spectrumCentroid * 2;  // Map to hue
         // Wrapped at 256, the modulus render() already applies. Letting it grow
         // also pushed (int)flow past INT_MAX, which is undefined on conversion.
-        flow += now.volume * 3.0f;
+        flow += now.level * 3.0f;
         if (flow >= 256.0f) flow -= 256.0f;
     }
 

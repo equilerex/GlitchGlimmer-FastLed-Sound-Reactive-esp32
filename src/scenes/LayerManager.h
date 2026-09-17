@@ -6,10 +6,12 @@
 #include "LayerTypes.h"
 #include "../animations/VisualLayer.h"  // Include the full definition of VisualLayer
 
-// Forward declarations to minimize header dependencies
+// Forward declarations to minimize header dependencies. CRGB is not among them:
+// VisualLayer.h above already pulls in FastLED.h, and on the browser build that
+// header brings fl::CRGB into the global namespace, which a second declaration of
+// the name here would make ambiguous.
 struct AudioFeatures;
 struct SceneDefinition;
-struct CRGB;
 
 // LayerManager: manages and composites multiple visual layers onto the LED buffer
 class LayerManager {

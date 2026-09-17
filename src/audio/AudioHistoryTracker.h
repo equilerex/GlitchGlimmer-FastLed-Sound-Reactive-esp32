@@ -17,6 +17,7 @@ public:
         // standard. The order below is the declaration order in AudioSnapshot.
         const AudioSnapshot s = {
             f.volume,
+            f.level,
             f.bass, f.mid, f.treble,
             f.spectrumCentroid,
             f.bpm,

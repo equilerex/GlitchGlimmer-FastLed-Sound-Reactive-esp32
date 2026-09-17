@@ -31,6 +31,7 @@
 
 #include "config/Config.h"
 #include "audio/AudioFeatures.h"
+#include "audio/AudioProcessor.h"
 #include "audio/AudioSnapshot.h"
 #include "audio/AudioHistoryTracker.h"
 #include "scenes/MoodHistory.h"
@@ -177,6 +178,7 @@ AudioFeatures scriptedAudio(int frame) {
     f.mid            = energy * 0.6f;
     f.treble         = energy * 0.3f;
     f.energy         = energy;
+    f.level          = energy;
     f.dynamics       = dynamics;
     f.bpm            = bpm;
     f.spectrumCentroid = 60.0f + energy * 120.0f;
@@ -500,10 +502,15 @@ void fillDeviceAudio(int frame, AudioFeatures& f, int16_t* wave, float* spectrum
     f.loudness         = level * 100.0f;
     f.peak             = level;
     f.average          = level * 0.6f;
-    f.bass             = constrain((bSum / bassLimit) / 100.0f, 0.0f, 1.0f);
-    f.mid              = constrain((mSum / (midLimit - bassLimit)) / 80.0f, 0.0f, 1.0f);
-    f.treble           = constrain((tSum / (half - midLimit)) / 50.0f, 0.0f, 1.0f);
+    // Shares of the total magnitude, matching AudioProcessor. The per-bin
+    // averages divided by 100, 80 and 50 that used to be here were the old
+    // firmware formula, and the recorded frames would no longer be what the
+    // device draws now that the firmware divides by the sum instead.
+    f.bass             = eTotal > 1e-6f ? bSum / eTotal : 0.0f;
+    f.mid              = eTotal > 1e-6f ? mSum / eTotal : 0.0f;
+    f.treble           = eTotal > 1e-6f ? tSum / eTotal : 0.0f;
     f.energy           = eTotal;
+    f.level            = level;
     f.spectrumCentroid = eTotal > 0 ? (cSum / eTotal) : 0.0f;
     f.dominantBand     = dom;
     f.frequency        = dom * SAMPLE_RATE / NUM_SAMPLES;
@@ -672,6 +679,178 @@ void checkAnimationSweep(bool verbose) {
                    " across " + std::to_string(kFrames) + " frames of device-scale audio");
         }
     }
+
+    delete[] wave;
+    delete[] spectrum;
+}
+
+// -----------------------------------------------------------------------------
+//  Check 6b - the strip is lit at the level this microphone actually reports
+//
+//  Every check above runs on fillDeviceAudio, whose five-phase table averages a
+//  level of 0.49. A live session on the microphone in use reported 0.159, three
+//  times lower, with litSum 586 of a possible 76500: under one percent of the
+//  strip's capacity, which reads as off. The sweep was green throughout, because
+//  no check in this file had ever run at the level the page sees.
+//
+//  Scored against the same animation at full level rather than against the
+//  strip's raw capacity. Capacity assumes all three channels at 255, which no
+//  saturated colour reaches: the tunnel's own sine fill peaks at about a fifth of
+//  capacity even at level 1.0, so a capacity bar would be a bar about saturation
+//  rather than about brightness. The ratio is scale-free and holds for every
+//  animation without a per-animation constant.
+// -----------------------------------------------------------------------------
+namespace {
+
+struct LitPeak {
+    double  sum        = 0.0;
+    uint8_t maxChannel = 0;
+};
+
+// Peak summed channels over a run at a fixed level. Peak rather than mean,
+// because an animation that only draws on a beat would otherwise be scored on the
+// frames between its beats.
+LitPeak peakLitSumAt(const AnimationMeta& meta, int n, int frames, int dtMs,
+                     int16_t* wave, float* spectrum, float level) {
+    std::vector<CRGB> buf(static_cast<size_t>(n), CRGB::Black);
+    Animation* anim = meta.create();
+    anim->begin();
+
+    LitPeak peak;
+    for (int frame = 0; frame < frames; ++frame) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
+
+        AudioFeatures f;
+        fillDeviceAudio(frame, f, wave, spectrum);
+
+        // level carries the run. The other amplitude fields are held at the ratios
+        // the live session reported against it, 0.041 for volume, 0.113 for peak
+        // and 0.033 for average, so an animation reading any of them still sees a
+        // self-consistent block rather than a level with a stale block around it.
+        f.level          = level;
+        f.volume         = level * 0.041f;
+        f.peak           = level * 0.113f;
+        f.average        = level * 0.033f;
+        f.loudness       = f.volume * 100.0f;
+        f.dynamics       = 0.68f;
+        f.signalPresence = level > 0.01f;
+        f.beatDetected   = (frame % 27 == 0) && level > 0.01f;
+        f.bassHits       = f.beatDetected ? 1 : 0;
+        simAdvance(dtMs);
+
+        fill_solid(buf.data(), n, CRGB::Black);
+        anim->update(buf.data(), n, f);
+
+        double  sum = 0.0;
+        uint8_t top = 0;
+        for (int i = 0; i < n; ++i) {
+            sum += buf[i].r + buf[i].g + buf[i].b;
+            const uint8_t m = std::max(buf[i].r, std::max(buf[i].g, buf[i].b));
+            if (m > top) top = m;
+        }
+        if (sum > peak.sum) {
+            peak.sum        = sum;
+            peak.maxChannel = top;
+        }
+    }
+
+    delete anim;
+    return peak;
+}
+
+}  // namespace
+
+void checkMeasuredLevelBrightness(bool verbose) {
+    const int kFrames = 900;
+    const int kDtMs   = 33;
+    const int n       = LED_0_NUM;
+
+    // The live session's level, and the ratio of the two runs below that the curve
+    // has to clear. Linear mapping gives 0.159, the square root gives 0.399, and
+    // the bar sits between them with room on both sides.
+    const float  kMicLevel = 0.159f;
+    const double kMinRatio = 0.30;
+
+    int16_t* wave     = new int16_t[NUM_SAMPLES];
+    float*   spectrum = new float[NUM_SAMPLES / 2];
+
+    // The curve's own contract, before any animation reads it. Passes through both
+    // ends and lifts what is between them, which is what makes it a brightness
+    // curve rather than a floor: a floor would lift silence too.
+    record("the brightness curve leaves silence at zero",
+           AudioFeatures{}.pixelLevel() == 0.0f,
+           "a default feature block reads level 0 and brightness " +
+           std::to_string(AudioFeatures{}.pixelLevel()) +
+           ", so the curve cannot light a strip the gate has closed");
+
+    {
+        AudioFeatures full;
+        full.level = 1.0f;
+        AudioFeatures quiet;
+        quiet.level = kMicLevel;
+        record("the brightness curve lifts a quiet moment without lifting silence",
+               full.pixelLevel() == 1.0f &&
+               quiet.pixelLevel() > kMicLevel * 2.0f &&
+               quiet.pixelLevel() < 1.0f,
+               "level " + std::to_string(kMicLevel) + " maps to brightness " +
+               std::to_string(quiet.pixelLevel()) + " and level 1 maps to " +
+               std::to_string(full.pixelLevel()));
+    }
+
+    // The composition the two curves exist to make true, pinned because getting it
+    // wrong is silent. hsv2rgb_rainbow squares CHSV's val on the way out, so the
+    // emitted duty of CHSV(h, s, hsvLevel) is the square of hsvLevel, which is
+    // pixelLevel. Written as a measurement of the conversion rather than of the
+    // arithmetic, so a FastLED upgrade that changes the squaring shows up here
+    // instead of as a strip that has quietly gone dark.
+    {
+        AudioFeatures q;
+        q.level = kMicLevel;
+        const uint8_t v = uint8_t(q.hsvLevel() * 255.0f);
+        const CRGB    emitted = CHSV(0, 255, v);   // hue 0 and full saturation put 255 in red
+        const double  duty = emitted.r / 255.0;
+
+        record("the HSV brightness curve composes with the library's own curve",
+               duty > 0.30 && duty < 0.50,
+               "level " + std::to_string(kMicLevel) + " emits red " +
+               std::to_string(emitted.r) + " through CHSV, duty " + std::to_string(duty) +
+               ", against " + std::to_string(q.pixelLevel()) + " through a linear scale");
+    }
+
+    bool allClear = true;
+    std::string detail;
+
+    for (size_t idx = 1; idx < static_cast<size_t>(AnimationType::COUNT); ++idx) {
+        const AnimationMeta& meta = animationCatalog[idx];
+        if (meta.type == AnimationType::NONE || !meta.create) continue;
+
+        setPhase(meta.name);
+
+        const LitPeak quiet = peakLitSumAt(meta, n, kFrames, kDtMs, wave, spectrum, kMicLevel);
+        const LitPeak full  = peakLitSumAt(meta, n, kFrames, kDtMs, wave, spectrum, 1.0f);
+        const double ratio = full.sum > 0.0 ? quiet.sum / full.sum : 1.0;
+
+        if (verbose) {
+            std::printf("  brightness %-24s quiet %8.0f ch %3u, full %8.0f ch %3u, ratio %.3f\n",
+                        meta.name, quiet.sum, unsigned(quiet.maxChannel),
+                        full.sum, unsigned(full.maxChannel), ratio);
+        }
+
+        if (ratio < kMinRatio) {
+            allClear = false;
+            detail += std::string(meta.name) + " holds " +
+                      std::to_string(int(ratio * 100.0)) + " percent; ";
+        }
+    }
+
+    record("every catalog animation stays lit at the microphone's level",
+           allClear,
+           allClear
+             ? "all animations hold at least " + std::to_string(int(kMinRatio * 100.0)) +
+               " percent of their full-level brightness at level " +
+               std::to_string(kMicLevel) + ", where a linear mapping holds 16"
+             : detail + "against a floor of " + std::to_string(int(kMinRatio * 100.0)) +
+               " percent at level " + std::to_string(kMicLevel));
 
     delete[] wave;
     delete[] spectrum;
@@ -1120,11 +1299,12 @@ void checkSceneTransitions() {
 
     if (intense.size() < 2) return;
 
-    // energy is the raw FFT magnitude sum on device, so it is in the thousands,
-    // not 0..1. The classifier's thresholds are what they are; this only needs a
-    // snapshot that lands on INTENSE, and 2000 with dynamics 0.8 does.
+    // level, not energy. The classifier tests its thresholds against level, which
+    // is 0..1 by construction. This check used to set energy to 2000 to land on
+    // INTENSE, which only worked while the classifier was comparing a raw
+    // magnitude sum against 0.8.
     MoodSnapshot mood;
-    mood.energy   = 2000.0f;
+    mood.level    = 1.0f;
     mood.dynamics = 0.8f;
     mood.bpm      = 120.0f;
 
@@ -1143,6 +1323,390 @@ void checkSceneTransitions() {
            selfPicks == 0,
            std::to_string(selfPicks) + " self-picks and " + std::to_string(others) +
            " alternatives in 400 draws of an otherwise even two-way choice");
+}
+
+// -----------------------------------------------------------------------------
+//  The real FFT, which nothing else here touches
+//
+//  Every other check builds an AudioFeatures by hand with scriptedAudio(), which
+//  is how features.volume, features.peak and features.loudness sat at zero while
+//  101 checks passed: analyzeAudio() computed them into AudioProcessor's members
+//  and never copied them into the struct it returns. On hardware that left
+//  NeonBeatTunnel (which scales by volume) rendering black, neonFlow clamped to
+//  its brightness floor, and the display's loudness bar reading zero.
+//
+//  This is also the only place the classifier meets a signal that came out of the
+//  FFT rather than out of a script, so it is where the energy scale can be seen.
+// -----------------------------------------------------------------------------
+void checkAudioProcessor() {
+    const float amplitude = 0.4f;
+    // Not named twoPi: arduinoFFT ships a twoPi macro, and it outranks a local.
+    constexpr float kTwoPi = 6.28318530718f;
+
+    // Bin 2, not a round 100 Hz. A whole number of cycles across the window makes
+    // the block's mean exactly zero, so the DC removal in submitSamples is a no-op
+    // and peak and volume are what the sine actually has. 100 Hz is 1.16 cycles
+    // over 512 samples, which leaves a real offset behind and moves the measured
+    // peak off the amplitude. Still under the 200 Hz bass limit, so the band split
+    // keeps a direction to check instead of one undifferentiated blob.
+    const float kToneHz = 2.0f * float(SAMPLE_RATE) / float(NUM_SAMPLES);
+    std::vector<float> samples(NUM_SAMPLES);
+    for (int i = 0; i < NUM_SAMPLES; ++i) {
+        samples[i] = amplitude * std::sin(kTwoPi * kToneHz * float(i) / float(SAMPLE_RATE));
+    }
+
+    AudioProcessor proc;
+    proc.submitSamples(samples.data(), samples.size());
+    const AudioFeatures f = proc.analyzeAudio();
+
+    const float rms = amplitude / std::sqrt(2.0f);
+    record("analyzeAudio reports the volume it measured",
+           std::fabs(f.volume - rms) < 0.02f,
+           "volume " + std::to_string(f.volume) + ", expected about " + std::to_string(rms));
+
+    record("analyzeAudio reports the peak it measured",
+           std::fabs(f.peak - amplitude) < 0.02f,
+           "peak " + std::to_string(f.peak) + ", expected " + std::to_string(amplitude));
+
+    // loudness is smoothed from zero, so one frame is one smoothing step toward
+    // volume * 100 rather than the converged value.
+    record("analyzeAudio reports a loudness tracking the volume",
+           f.loudness > 0.0f && f.loudness < f.volume * 100.0f,
+           "loudness " + std::to_string(f.loudness) + " after one frame at volume " +
+           std::to_string(f.volume));
+
+    float spectrumPeak = 0.0f;
+    for (int i = 1; i < NUM_SAMPLES / 2; ++i) spectrumPeak = std::max(spectrumPeak, f.spectrum[i]);
+    record("analyzeAudio fills the spectrum", spectrumPeak > 0.0f,
+           "largest bin magnitude " + std::to_string(spectrumPeak));
+
+    record("a 100 Hz tone lands in the bass band",
+           f.bass > f.mid && f.bass > f.treble,
+           "bass " + std::to_string(f.bass) + " mid " + std::to_string(f.mid) +
+           " treble " + std::to_string(f.treble));
+
+    // A signal that does not change must not change its classification. This is
+    // the invariant behind the mood flicker seen once the browser build started
+    // feeding the classifier live audio: a steady tone should be one mood, and
+    // any mood it reports should be a mood the rules can reach.
+    //
+    // The first frames are not counted. The gate ramps open over about ten frames
+    // and level is below every threshold until it has, so the classifier reports
+    // nothing for that fraction of a second. That is the gate doing its job on the
+    // silence before the tone, not an unstable classification, and what has to
+    // hold is the state it settles into.
+    constexpr int kSettleFrames = 20;
+    MoodHistory mood;
+    int changes = 0;
+    MoodType previous = MoodType::UNKNOWN;
+    bool sawUnknown = false;
+    for (int frame = 0; frame < 100; ++frame) {
+        proc.submitSamples(samples.data(), samples.size());
+        const AudioFeatures next = proc.analyzeAudio();
+        mood.update(next);
+        if (frame >= kSettleFrames) {
+            if (frame > kSettleFrames && mood.getCurrentMood() != previous) ++changes;
+            if (mood.getCurrentMood() == MoodType::UNKNOWN) sawUnknown = true;
+            previous = mood.getCurrentMood();
+        }
+    }
+
+    record("a steady tone keeps one mood once the gate has opened", changes == 0,
+           std::to_string(changes) + " mood changes in the " +
+           std::to_string(100 - kSettleFrames) + " frames after the gate ramped open");
+
+    // The signal came out of the FFT rather than out of a script, which makes this
+    // the only place the classifier meets a real measurement. It has to reach a
+    // mood, not sit on UNKNOWN.
+    record("the classifier reaches a mood for an FFT-scale signal",
+           !sawUnknown,
+           std::string("the settled frames of a 0.4 tone stayed on ") +
+           moodToString(mood.getCurrentMood()) + " at energy " +
+           std::to_string(f.energy));
+
+    // --- DC offset -----------------------------------------------------------
+    // The browser's lowest spectrum bar read full in silence as well as in music.
+    // The INMP441 carries a DC offset, the FFT applies its window before it
+    // transforms, and a windowed constant is not zero: the offset lands in the DC
+    // bin and its main lobe leaks across the lowest few bins, which is the whole
+    // of that first bar. Both the band loop and the display start at bin 1, so
+    // nothing downstream removed it.
+    std::vector<float> offsetSamples(NUM_SAMPLES);
+    for (int i = 0; i < NUM_SAMPLES; ++i) offsetSamples[i] = 0.3f + samples[i];
+
+    AudioProcessor procOffset;
+    procOffset.submitSamples(offsetSamples.data(), offsetSamples.size());
+    const AudioFeatures fo = procOffset.analyzeAudio();
+
+    float cleanLow = 0.0f, offsetLow = 0.0f, offsetPeakBin = 0.0f;
+    for (int i = 1; i <= 4; ++i) {
+        cleanLow  = std::max(cleanLow,  f.spectrum[i]);
+        offsetLow = std::max(offsetLow, fo.spectrum[i]);
+    }
+    for (int i = 0; i < NUM_SAMPLES / 2; ++i) {
+        offsetPeakBin = std::max(offsetPeakBin, fo.spectrum[i]);
+    }
+
+    record("a DC offset does not leak into the lowest spectrum bins",
+           offsetLow < cleanLow * 1.5f + 1.0f,
+           "lowest four bins peak at " + std::to_string(offsetLow) +
+           " with a 0.3 offset against " + std::to_string(cleanLow) + " without");
+
+    record("the DC bin is not the largest bin",
+           fo.spectrum[0] < offsetPeakBin,
+           "DC bin " + std::to_string(fo.spectrum[0]) +
+           " against a largest bin of " + std::to_string(offsetPeakBin));
+
+    // --- Silence gate --------------------------------------------------------
+    // Silence still showed a half-filled, active spectrum, because microphone
+    // self-noise and room rumble are broadband and lit every band. The floor and
+    // the gate are what make silence read as silence.
+    std::vector<float> silent(NUM_SAMPLES, 0.0005f);
+    AudioProcessor procSilent;
+    procSilent.submitSamples(silent.data(), silent.size());
+    const AudioFeatures fsil = procSilent.analyzeAudio();
+
+    record("a block below the noise floor is gated out",
+           !fsil.signalPresence && fsil.energy == 0.0f,
+           "signalPresence " + std::string(fsil.signalPresence ? "true" : "false") +
+           ", energy " + std::to_string(fsil.energy) + ", floor " +
+           std::to_string(fsil.noiseFloor));
+
+    record("a block above the noise floor opens the gate",
+           f.signalPresence,
+           "signalPresence " + std::string(f.signalPresence ? "true" : "false") +
+           ", floor " + std::to_string(f.noiseFloor));
+
+    // A block that is quiet but audible still has to read as level 0, or silence
+    // is the loudest thing on the recording once the reference has decayed.
+    record("a gated block reads as zero level",
+           fsil.level == 0.0f,
+           "level " + std::to_string(fsil.level) + " on a block below the floor");
+
+    // --- Normalised level ----------------------------------------------------
+    // AlienPulse and BassPulseStorm drove themselves from energy divided by a
+    // device-magnitude constant and rendered black, because the microphone in use
+    // runs about 40 dB below the scale those constants assumed. level is the
+    // replacement: the current block against the loudest recent one, so 0..1 at
+    // any gain. These two checks are what establish that it actually is.
+    // submitSamples only fills the buffers. analyzeAudio is what advances the
+    // gate and the reference, so the two have to alternate or thirty submits are
+    // one frame.
+    AudioProcessor procLevel;
+    AudioFeatures loudLevel;
+    for (int warm = 0; warm < 30; ++warm) {
+        procLevel.submitSamples(samples.data(), samples.size());
+        loudLevel = procLevel.analyzeAudio();
+    }
+
+    record("the loudest block seen reads as full level",
+           loudLevel.level > 0.95f,
+           "level " + std::to_string(loudLevel.level) + " on a repeated 0.4 tone");
+
+    // Held at a quarter for a stretch rather than submitted once. level is an
+    // enveloped ratio now, so a single quieter block is exactly what it is built to
+    // reject, and reading it after one block measures the release coefficient
+    // rather than the normalisation. Forty blocks is about half a second, which is
+    // long enough for the follower to arrive and short enough that the reference
+    // has not decayed far enough to matter. The reference does decay while these
+    // play, which is why the window is above a literal quarter rather than on it.
+    std::vector<float> quieter(samples.size());
+    for (size_t i = 0; i < quieter.size(); ++i) quieter[i] = samples[i] * 0.25f;
+
+    AudioFeatures quarterLevel;
+    for (int held = 0; held < 40; ++held) {
+        procLevel.submitSamples(quieter.data(), quieter.size());
+        quarterLevel = procLevel.analyzeAudio();
+    }
+
+    record("a quarter-amplitude passage settles a quarter of the level",
+           quarterLevel.level > 0.2f && quarterLevel.level < 0.4f,
+           "level " + std::to_string(quarterLevel.level) +
+           " held for forty blocks at a quarter of the amplitude that set the reference");
+
+    // --- BPM decay -----------------------------------------------------------
+    // The readout froze at its last measured value when the music stopped.
+    // currentBPM was assigned only inside the beat branch and never reset.
+    std::vector<float> quiet(NUM_SAMPLES);
+    for (int i = 0; i < NUM_SAMPLES; ++i) {
+        quiet[i] = 0.01f * std::sin(kTwoPi * kToneHz * float(i) / float(SAMPLE_RATE));
+    }
+
+    AudioProcessor procBpm;
+    for (int beatFrame = 0; beatFrame < 12; ++beatFrame) {
+        procBpm.submitSamples(samples.data(), samples.size());   // loud
+        procBpm.analyzeAudio();
+        simAdvance(400);
+        procBpm.submitSamples(quiet.data(), quiet.size());       // the gap
+        procBpm.analyzeAudio();
+        simAdvance(400);
+    }
+    const float bpmBefore = procBpm.analyzeAudio().bpm;
+
+    record("a beat train produces a BPM", bpmBefore > 0.0f,
+           "bpm " + std::to_string(bpmBefore) + " after 12 beats at 800 ms apart");
+
+    float bpmAfter = bpmBefore;
+    int quietFrames = 0;
+    for (; quietFrames < 2000 && bpmAfter > 0.0f; ++quietFrames) {
+        procBpm.submitSamples(quiet.data(), quiet.size());
+        bpmAfter = procBpm.analyzeAudio().bpm;
+        simAdvance(33);
+    }
+
+    record("the BPM falls back to zero once the beats stop",
+           bpmBefore > 0.0f && bpmAfter == 0.0f,
+           "bpm went from " + std::to_string(bpmBefore) + " to " + std::to_string(bpmAfter) +
+           " over " + std::to_string(quietFrames) + " quiet frames");
+
+    // --- Mood flicker --------------------------------------------------------
+    // The browser reported the mood value jumping several times a second, with or
+    // without music. The classifier reads instantaneous values, so the input has to
+    // cross one of its thresholds for this to be a real test rather than a signal
+    // that was never going to move: a sine and a single-sample spike have the same
+    // energy scale but opposite crest factors, and dynamics is the threshold they
+    // straddle.
+    std::vector<float> spiky(NUM_SAMPLES, 0.0f);
+    spiky[0] = 0.9f;
+
+    // Driven repeatedly for the same reason as procLevel above: level is held
+    // down by the gate until it has ramped, so a single frame of this block reads
+    // 0.12 rather than the 0.9 it settles at.
+    AudioProcessor procSpike;
+    AudioFeatures spike;
+    for (int warm = 0; warm < 20; ++warm) {
+        procSpike.submitSamples(spiky.data(), spiky.size());
+        spike = procSpike.analyzeAudio();
+    }
+
+    // The INTENSE gate is level > 0.8 and dynamics > 0.5, so the pair has to
+    // straddle both. The spike's processor has seen only that one block, so its
+    // level is 1.0 by construction: level is a fraction of the loudest block in
+    // the same processor's history.
+    record("the flicker test straddles a classifier threshold",
+           f.dynamics < 0.5f && spike.dynamics > 0.6f && spike.level > 0.8f,
+           "sine dynamics " + std::to_string(f.dynamics) + " against spike dynamics " +
+           std::to_string(spike.dynamics) + " at level " + std::to_string(spike.level) +
+           ", the INTENSE gate being level > 0.8 and dynamics > 0.5");
+
+    // The block alternates on every frame, so an undamped classifier changes on all
+    // 99 transitions while a damped one settles and holds.
+    AudioProcessor procFlicker;
+    MoodHistory flicker;
+    int flickerChanges = 0;
+    MoodType flickerPrevious = MoodType::UNKNOWN;
+    for (int frame = 0; frame < 100; ++frame) {
+        const std::vector<float>& block = (frame % 2 == 0) ? samples : spiky;
+        procFlicker.submitSamples(block.data(), block.size());
+        flicker.update(procFlicker.analyzeAudio());
+        if (frame > 0 && flicker.getCurrentMood() != flickerPrevious) ++flickerChanges;
+        flickerPrevious = flicker.getCurrentMood();
+    }
+
+    // The settled mood is checked as well as the count, because a mood frozen at
+    // UNKNOWN would change zero times and pass the count on its own. moodToString
+    // maps UNKNOWN to "Calm", so the detail line cannot be read as proof on its own.
+    record("an alternating signal does not flicker the mood",
+           flickerChanges <= 3 && flicker.getCurrentMood() != MoodType::UNKNOWN,
+           std::to_string(flickerChanges) + " mood changes across 100 frames of a signal "
+           "that alternates every frame, settling on " +
+           moodToString(flicker.getCurrentMood()));
+
+    // The counter the page reports as moodChanges. It lives in the firmware
+    // because the page derived it from a trace that only records with ?debug=1
+    // on, so a session opened without it reported zero changes however much the
+    // mood had moved, which reads as a classifier that is stuck. Counted outside
+    // the class here, so the check is that it observes the same transitions the
+    // harness does rather than that it agrees with itself.
+    record("the firmware's mood-change count matches the transitions observed",
+           flicker.getMoodChangeCount() == flickerChanges,
+           "firmware counted " + std::to_string(flicker.getMoodChangeCount()) +
+           ", the harness observed " + std::to_string(flickerChanges) +
+           " across the same 100 frames");
+
+    // --- Mood dwell and the moving dynamics thresholds ------------------------
+    // Both are new behaviour with nothing else guarding them. They are driven from
+    // scripted AudioFeatures rather than from the FFT, because what is under test
+    // is the rule the classifier applies to its inputs, not what the FFT makes of
+    // a waveform. MoodHistory stamps each snapshot from millis(), so the harness
+    // clock is what advances the dwell.
+    {
+        const auto feed = [](MoodHistory& m, const AudioFeatures& src, int frames) {
+            for (int i = 0; i < frames; ++i) {
+                simAdvance(33);
+                m.update(src);
+            }
+        };
+
+        AudioFeatures loud{};
+        loud.level = 0.95f;
+        loud.dynamics = 0.9f;
+        loud.bpm = 140.0f;
+
+        AudioFeatures quiet{};
+        quiet.level = 0.05f;
+        quiet.dynamics = 0.02f;
+        quiet.bpm = 60.0f;
+
+        MoodHistory dwell;
+        feed(dwell, loud, 30);
+        const MoodType loudMood = dwell.getCurrentMood();
+
+        record("a scripted loud block reaches a mood without waiting on UNKNOWN",
+               loudMood != MoodType::UNKNOWN,
+               "settled on " + std::string(moodToString(loudMood)));
+
+        // Arriving is not a change. Without this the counter would report a
+        // change on the first frame of every session, which is the one transition
+        // that is certainly not the mood moving.
+        record("arriving at a first mood is not counted as a change",
+               dwell.getMoodChangeCount() == 0,
+               "counter reads " + std::to_string(dwell.getMoodChangeCount()) +
+               " after settling from UNKNOWN on " + std::string(moodToString(loudMood)));
+
+        // 495 ms of the opposite condition. Under the 500 ms confirmation and well
+        // under the 2000 ms hold, so neither rule permits a change yet.
+        feed(dwell, quiet, 15);
+        record("a mood survives half a second of the opposite condition",
+               dwell.getCurrentMood() == loudMood,
+               "moved to " + std::string(moodToString(dwell.getCurrentMood())) +
+               " after 495 ms of the opposite condition, from " +
+               moodToString(loudMood));
+
+        // A further 1980 ms, so both the confirmation and the hold have passed.
+        feed(dwell, quiet, 60);
+        record("a mood yields once its minimum hold has passed",
+               dwell.getCurrentMood() != loudMood,
+               "still on " + std::string(moodToString(dwell.getCurrentMood())) +
+               " after 2475 ms of the opposite condition");
+
+        // The one place a real change is confirmed to have happened, so it is
+        // where the counter can be shown to move rather than only to hold still.
+        record("a confirmed change increments the mood-change count",
+               dwell.getMoodChangeCount() == 1,
+               "counter reads " + std::to_string(dwell.getMoodChangeCount()) +
+               " after one change, from " + std::string(moodToString(loudMood)) +
+               " to " + std::string(moodToString(dwell.getCurrentMood())));
+
+        // Each phase runs three seconds, which is inside the window's own memory:
+        // the point of the check is that the cut points follow the signal off the
+        // fixed pair, not that they converge on an exact pair of numbers.
+        AudioFeatures narrow{};
+        narrow.level = 0.5f;
+        narrow.bpm = 90.0f;
+        narrow.dynamics = 0.2f;
+        MoodHistory range;
+        feed(range, narrow, 90);
+        narrow.dynamics = 0.8f;
+        feed(range, narrow, 90);
+
+        const float low = range.getDynamicsLow();
+        const float high = range.getDynamicsHigh();
+        record("the dynamics thresholds move with the observed range",
+               low > 0.25f && high > 0.55f && high > low,
+               "cut points at " + std::to_string(low) + " and " + std::to_string(high) +
+               " after a signal running 0.2 to 0.8, where the fixed pair was 0.2 and 0.5");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1370,9 +1934,334 @@ int dumpFrames(const char* outDir, bool verbose) {
 
 } // namespace
 
+// -----------------------------------------------------------------------------
+//  Capture replay
+//
+//  The Record button in web/live.js writes what the browser actually fed the
+//  analyser into a .f32 file. This reads one back through the real
+//  AudioProcessor and reports what every feature did over it.
+//
+//  It exists because the microphone cannot be reached from here. A threshold
+//  tuned against a synthetic tone, or against Chrome's fake capture device,
+//  proves nothing about the input in use, and a report that the bands look wrong
+//  cannot be checked against anything. A capture turns the real input into a
+//  fixture that can be replayed after every edit, so a tuning change is measured
+//  rather than guessed at, and the whole loop costs one rebuild instead of a
+//  browser session per attempt.
+//
+//  Format, little-endian: 8 byte magic "GGCAP001", uint32 frame count, then that
+//  many blocks of NUM_SAMPLES float32.
+// -----------------------------------------------------------------------------
+namespace {
+
+struct Range {
+    float lo = 1e30f;
+    float hi = -1e30f;
+    float sum = 0.0f;
+    float last = 0.0f;
+    float previous = 0.0f;
+    float churn = 0.0f;          // summed |v - previous|
+    bool  seeded = false;
+    int   frames = 0;
+
+    void add(float v) {
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+        sum += v;
+        last = v;
+        if (seeded) churn += std::fabs(v - previous);
+        previous = v;
+        seeded = true;
+        ++frames;
+    }
+    float mean() const { return frames ? sum / float(frames) : 0.0f; }
+    float churnMean() const { return frames > 1 ? churn / float(frames - 1) : 0.0f; }
+
+    // How much of its own range the value covers per frame. This is the number
+    // that separates a value which is inside a sane range from one which is
+    // inside a sane range and unusable: at 0.5 the value crosses half its spread
+    // every frame whatever the audio is doing.
+    float churnShare() const {
+        const float span = hi - lo;
+        return span > 1e-6f ? churnMean() / span : 0.0f;
+    }
+};
+
+struct Tracked {
+    const char* name;
+    float (*get)(const AudioFeatures&);
+};
+
+const Tracked kTracked[] = {
+    {"level",           [](const AudioFeatures& f) { return f.level; }},
+    {"volume",          [](const AudioFeatures& f) { return f.volume; }},
+    {"loudness",        [](const AudioFeatures& f) { return f.loudness; }},
+    {"peak",            [](const AudioFeatures& f) { return f.peak; }},
+    {"average",         [](const AudioFeatures& f) { return f.average; }},
+    {"bass",            [](const AudioFeatures& f) { return f.bass; }},
+    {"mid",             [](const AudioFeatures& f) { return f.mid; }},
+    {"treble",          [](const AudioFeatures& f) { return f.treble; }},
+    {"energy",          [](const AudioFeatures& f) { return f.energy; }},
+    {"dynamics",        [](const AudioFeatures& f) { return f.dynamics; }},
+    {"bpm",             [](const AudioFeatures& f) { return f.bpm; }},
+    {"centroid",        [](const AudioFeatures& f) { return f.spectrumCentroid; }},
+    {"noiseFloor",      [](const AudioFeatures& f) { return f.noiseFloor; }},
+};
+
+constexpr size_t kTrackedCount = sizeof(kTracked) / sizeof(kTracked[0]);
+
+struct ReplayReport {
+    int                frames = 0;
+    std::vector<Range> stats;          // parallel to kTracked
+    Range              presence;
+    int                beats = 0;
+    int                moodChanges = 0;
+    int                moodFrames[5] = {0, 0, 0, 0, 0};
+    std::vector<unsigned long> dwells;
+
+    const Range* find(const char* name) const {
+        for (size_t i = 0; i < kTrackedCount; ++i) {
+            if (std::strcmp(kTracked[i].name, name) == 0) return &stats[i];
+        }
+        return nullptr;
+    }
+};
+
+// Reads a capture into one block of NUM_SAMPLES per frame. `why` is filled in on
+// failure so the caller can say whether the file was missing, truncated, or not a
+// capture at all, which are three different mistakes.
+bool loadCapture(const char* path, std::vector<std::vector<float>>& blocks, std::string& why) {
+    std::FILE* fp = std::fopen(path, "rb");
+    if (fp == nullptr) {
+        why = "cannot open";
+        return false;
+    }
+
+    char         magic[8] = {};
+    unsigned int frames   = 0;
+    if (std::fread(magic, 1, 8, fp) != 8 || std::memcmp(magic, "GGCAP001", 8) != 0) {
+        std::fclose(fp);
+        why = "the magic is not GGCAP001";
+        return false;
+    }
+    if (std::fread(&frames, 4, 1, fp) != 1) {
+        std::fclose(fp);
+        why = "no frame count";
+        return false;
+    }
+
+    blocks.clear();
+    blocks.reserve(frames);
+    std::vector<float> block(NUM_SAMPLES);
+    for (unsigned int i = 0; i < frames; ++i) {
+        const size_t got = std::fread(block.data(), sizeof(float), NUM_SAMPLES, fp);
+        if (got != NUM_SAMPLES) {
+            std::fclose(fp);
+            why = "truncated after " + std::to_string(i) + " of " +
+                  std::to_string(frames) + " frames";
+            return false;
+        }
+        blocks.push_back(block);
+    }
+    std::fclose(fp);
+    return true;
+}
+
+void writeCapture(const char* path, const std::vector<std::vector<float>>& blocks) {
+    std::FILE* fp = std::fopen(path, "wb");
+    if (fp == nullptr) return;
+    const unsigned int frames = static_cast<unsigned int>(blocks.size());
+    std::fwrite("GGCAP001", 1, 8, fp);
+    std::fwrite(&frames, 4, 1, fp);
+    for (const std::vector<float>& block : blocks) {
+        std::fwrite(block.data(), sizeof(float), NUM_SAMPLES, fp);
+    }
+    std::fclose(fp);
+}
+
+// Runs the blocks through the real pipeline. A frame is 33 ms, the harness's usual
+// step, so the beat detector's 250 ms refractory and the BPM's decay behave over a
+// capture the way they do live.
+ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks) {
+    ReplayReport report;
+    report.stats.resize(kTrackedCount);
+
+    AudioProcessor proc;
+    MoodHistory    mood;
+
+    MoodType      previousMood = MoodType::UNKNOWN;
+    unsigned long moodSince    = 0;
+
+    for (const std::vector<float>& block : blocks) {
+        proc.submitSamples(block.data(), block.size());
+        const AudioFeatures f = proc.analyzeAudio();
+        simAdvance(33);
+        ++report.frames;
+
+        for (size_t i = 0; i < kTrackedCount; ++i) report.stats[i].add(kTracked[i].get(f));
+        report.presence.add(f.signalPresence ? 1.0f : 0.0f);
+        if (f.beatDetected) ++report.beats;
+
+        mood.update(f);
+        const MoodType m = mood.getCurrentMood();
+        report.moodFrames[int(m)] += 1;
+        if (m != previousMood) {
+            if (previousMood != MoodType::UNKNOWN || report.moodChanges > 0) {
+                report.dwells.push_back(simNow() - moodSince);
+            }
+            ++report.moodChanges;
+            moodSince    = simNow();
+            previousMood = m;
+        }
+    }
+    return report;
+}
+
+void printCapture(const char* path, const ReplayReport& r) {
+    std::printf("capture replay: %s\n", path);
+    std::printf("%d frames, %.1f s at 33 ms\n\n", r.frames, double(r.frames) * 0.033);
+
+    std::printf("  %-12s %10s %10s %10s %10s %8s\n",
+                "value", "min", "max", "mean", "churn/frm", "churn%");
+    for (size_t i = 0; i < kTrackedCount; ++i) {
+        const Range& v = r.stats[i];
+        std::printf("  %-12s %10.4f %10.4f %10.4f %10.4f %7.1f%%\n",
+                    kTracked[i].name, v.lo, v.hi, v.mean(), v.churnMean(),
+                    double(v.churnShare()) * 100.0);
+    }
+
+    std::printf("\n  signal present  %.1f%% of frames\n", double(r.presence.mean()) * 100.0);
+    std::printf("  beats           %d (%.1f per second)\n",
+                r.beats, r.frames ? double(r.beats) / (double(r.frames) * 0.033) : 0.0);
+
+    std::printf("\n  mood changes    %d over %.1f s\n", r.moodChanges, double(r.frames) * 0.033);
+    for (int i = 0; i < 5; ++i) {
+        if (r.moodFrames[i] == 0) continue;
+        std::printf("    %-10s %5.1f%% of frames\n", moodToString(MoodType(i)),
+                    r.frames ? double(r.moodFrames[i]) * 100.0 / double(r.frames) : 0.0);
+    }
+    if (!r.dwells.empty()) {
+        std::vector<unsigned long> sorted = r.dwells;
+        std::sort(sorted.begin(), sorted.end());
+        unsigned long sum = 0;
+        for (unsigned long d : sorted) sum += d;
+        std::printf("    dwell ms   min %lu  median %lu  mean %lu  max %lu\n",
+                    sorted.front(), sorted[sorted.size() / 2], sum / sorted.size(),
+                    sorted.back());
+    }
+
+    std::printf("\n  churn%% is the mean frame-to-frame change as a fraction of the\n");
+    std::printf("  value's own range. Above about 10%% the value is crossing a tenth of\n");
+    std::printf("  its spread every frame, which is what a flickering reading is.\n");
+}
+
+int replayCapture(const char* path) {
+    std::vector<std::vector<float>> blocks;
+    std::string why;
+    if (!loadCapture(path, blocks, why)) {
+        std::printf("%s is not usable: %s\n", path, why.c_str());
+        return 1;
+    }
+    if (blocks.empty()) {
+        std::printf("%s holds no frames\n", path);
+        return 1;
+    }
+    printCapture(path, analyzeCapture(blocks));
+    return 0;
+}
+
+// The capture format is the only channel between the browser and here, so it gets
+// its own check. Without one, a change to the header layout or the block order
+// would show up as every tuning number being wrong rather than as a failure.
+void checkReplay() {
+    constexpr float kTwoPi  = 6.28318530718f;
+    constexpr float kToneHz = 2.0f * float(SAMPLE_RATE) / float(NUM_SAMPLES);
+
+    std::vector<float> tone(NUM_SAMPLES);
+    for (int i = 0; i < NUM_SAMPLES; ++i) {
+        tone[i] = 0.4f * std::sin(kTwoPi * kToneHz * float(i) / float(SAMPLE_RATE));
+    }
+    std::vector<float> silence(NUM_SAMPLES, 0.0f);
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "gg-replay-check";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path tonePath    = dir / "tone.f32";
+    const std::filesystem::path silencePath = dir / "silence.f32";
+    const std::filesystem::path junkPath    = dir / "junk.bin";
+
+    const int toneFrames    = 200;
+    const int silenceFrames = 100;
+    writeCapture(tonePath.string().c_str(),    std::vector<std::vector<float>>(size_t(toneFrames), tone));
+    writeCapture(silencePath.string().c_str(), std::vector<std::vector<float>>(size_t(silenceFrames), silence));
+
+    {
+        std::FILE* fp = std::fopen(junkPath.string().c_str(), "wb");
+        if (fp != nullptr) {
+            std::fwrite("not a capture at all", 1, 20, fp);
+            std::fclose(fp);
+        }
+    }
+
+    std::vector<std::vector<float>> blocks;
+    std::string why;
+    const bool loaded = loadCapture(tonePath.string().c_str(), blocks, why);
+    record("a capture round-trips through the file", loaded && blocks.size() == size_t(toneFrames),
+           loaded ? std::to_string(blocks.size()) + " frames read back"
+                  : "load refused it: " + why);
+
+    std::vector<std::vector<float>> unused;
+    std::string junkWhy;
+    record("a file that is not a capture is refused",
+           !loadCapture(junkPath.string().c_str(), unused, junkWhy) && unused.empty(),
+           "refused with: " + junkWhy);
+
+    if (loaded && blocks.size() == size_t(toneFrames)) {
+        const ReplayReport r = analyzeCapture(blocks);
+        record("a replayed capture reports every frame", r.frames == toneFrames,
+               std::to_string(r.frames) + " frames reported");
+
+        int moodTotal = 0;
+        for (int i = 0; i < 5; ++i) moodTotal += r.moodFrames[i];
+        record("a replayed capture classifies every frame", moodTotal == toneFrames,
+               std::to_string(moodTotal) + " of " + std::to_string(toneFrames) +
+               " frames carried a mood");
+
+        const Range* level = r.find("level");
+        record("a steady tone replays as a steady level",
+               level != nullptr && level->hi > 0.9f && level->churnShare() < 0.1f,
+               level ? "level " + std::to_string(level->lo) + " to " + std::to_string(level->hi) +
+                       ", churn " + std::to_string(level->churnShare() * 100.0f) + "%"
+                     : "level was not tracked");
+
+        record("a replayed tone reads as signal present", r.presence.mean() > 0.9f,
+               std::to_string(r.presence.mean() * 100.0f) + "% of frames");
+    }
+
+    std::vector<std::vector<float>> quiet;
+    std::string quietWhy;
+    if (loadCapture(silencePath.string().c_str(), quiet, quietWhy)) {
+        const ReplayReport r = analyzeCapture(quiet);
+        const Range* bpm = r.find("bpm");
+        record("a replayed silence reads as no signal", r.presence.mean() < 0.2f,
+               std::to_string(r.presence.mean() * 100.0f) + "% of frames");
+        record("a replayed silence ends with no tempo", bpm != nullptr && bpm->last < 1.0f,
+               bpm ? "final bpm " + std::to_string(bpm->last) : "bpm was not tracked");
+    } else {
+        record("a replayed silence reads as no signal", false, "silence capture would not load: " + quietWhy);
+        record("a replayed silence ends with no tempo", false, "silence capture would not load: " + quietWhy);
+    }
+
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     bool        verbose = true;
     const char* dumpDir = nullptr;
+    const char* replayPath = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--plain") == 0) colour  = false;
@@ -1380,7 +2269,14 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--dump-frames") == 0 && i + 1 < argc) {
             dumpDir = argv[++i];
         }
+        if (std::strcmp(argv[i], "--replay") == 0 && i + 1 < argc) {
+            replayPath = argv[++i];
+        }
     }
+
+    // A replay is a measurement of the real microphone, not a check, so it runs
+    // on its own and skips the watchdog and the assertions entirely.
+    if (replayPath != nullptr) return replayCapture(replayPath);
 
     enableVt();
     randomSeed(20260916);
@@ -1401,9 +2297,12 @@ int main(int argc, char** argv) {
     setPhase("checkHistorySizing");  checkHistorySizing();
     setPhase("checkLifecycle");      checkLifecycle(verbose);
     setPhase("checkAnimationSweep"); checkAnimationSweep(verbose);
+    setPhase("checkMeasuredLevel");  checkMeasuredLevelBrightness(verbose);
     setPhase("checkLayerSweep");     checkLayerSweep(verbose);
     setPhase("checkSoak");           checkSoak(verbose);
     setPhase("checkSceneTransitions"); checkSceneTransitions();
+    setPhase("checkAudioProcessor"); checkAudioProcessor();
+    setPhase("checkReplay");         checkReplay();
 
     g_watchdogRun.store(false, std::memory_order_relaxed);
     watchdog.join();

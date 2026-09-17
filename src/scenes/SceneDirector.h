@@ -46,7 +46,7 @@ public:
         if (!state) return;
         const SceneDefinition& first =
             registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
-        state->beginScene(&first, mood.getCurrentSnapshot());
+        state->beginScene(&first, mood.getCurrentSnapshot(), mood.getCurrentMood());
     }
 
     /*-------------------- helpers --------------------*/
@@ -72,10 +72,10 @@ public:
         // back by accident.
         const MoodSnapshot& now = mood.getCurrentSnapshot();
 
-        if (state->shouldTransition(now)) {
+        if (state->shouldTransition(now, mood.getCurrentMood())) {
             const SceneDefinition& nxt =
-                registry.pickSceneByMood(*state, now); // Use current mood snapshot instead
-            state->beginScene(&nxt, now);
+                registry.pickSceneByMood(*state, now);
+            state->beginScene(&nxt, now, mood.getCurrentMood());
         }
     }
 
@@ -94,7 +94,10 @@ public:
             if (random(100) < 70) lm.addLayerByType(LayerType::REACTIVE);
             lastBeat = now;
         }
-        if (af.energy > 0.6f && now - lastEnergy > 1500) {
+        // level, not energy. energy is a raw FFT magnitude sum in the hundreds,
+        // so the old `> 0.6f` was true on every frame and this injected an
+        // OVERLAY layer on the 1500 ms timer regardless of the audio.
+        if (af.level > 0.6f && now - lastEnergy > 1500) {
             if (random(100) < 40) lm.addLayerByType(LayerType::OVERLAY);
             lastEnergy = now;
         }
@@ -113,7 +116,7 @@ public:
         if (!state) return;
         const SceneDefinition& nxt =
             registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
-        state->beginScene(&nxt, mood.getCurrentSnapshot());
+        state->beginScene(&nxt, mood.getCurrentSnapshot(), mood.getCurrentMood());
     }
 
     /*-------------------- serial logging --------------------*/

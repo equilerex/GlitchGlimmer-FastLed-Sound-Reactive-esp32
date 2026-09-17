@@ -29,13 +29,19 @@ public:
 
         hueBase += (audio.beatDetected ? 10 : 1);
         // Wrapped at the sine's own period, so the wave is unchanged. Unbounded,
-        // and moving at up to 0.1 + 2.0 + energy*0.05 units a second, it loses
-        // float precision over a long run.
-        offset += deltaTime * (0.1f + audio.bass * 2.0f + audio.energy * 0.05f);
+        // and moving at up to 0.1 + 2.0 + 0.5 units a second, it loses float
+        // precision over a long run.
+        // level, not energy. energy is a raw FFT magnitude sum in the hundreds,
+        // so the old energy * 0.05 term contributed 5 to 50 units a second and
+        // swamped the two musical terms beside it.
+        offset += deltaTime * (0.1f + audio.bass * 2.0f + audio.pixelLevel() * 0.5f);
         if (offset >= 6.2831853f || offset < 0.0f) offset = fmodf(offset, 6.2831853f);
 
-        float squidWave = sin8(millis() / 8) / 255.0f;
-        float blobIntensity = audio.volume + (audio.dynamics * 0.5f);
+        // level, not volume, for the gain reason the rest of the sweep shares:
+        // volume is an absolute RMS near 0.008 on the microphone in use, which
+        // left this at barely its dynamics term. Curved, because the curve is
+        // what this expression is: a brightness.
+        float blobIntensity = audio.hsvLevel() + (audio.dynamics * 0.5f);
 
         for (int i = 0; i < n; ++i) {
             float wave = sinf((i * 0.3f) + offset) * blobIntensity * 255.0f;
