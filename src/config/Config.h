@@ -131,6 +131,38 @@
 // it, so the tempo comes from several and the outliers are discarded. Twelve is
 // about six seconds of a 120 BPM track, which is several bars rather than one.
 #define BEAT_BPM_WINDOW     12
+// The tempo readout after the beats stop, in milliseconds. It holds its last value
+// for the hold and then fades from it with the fade as the time constant. A
+// function of the clock rather than a per-block multiplier, which is what the 0.94
+// a block it replaces was: that made the speed of the fade depend on the loop rate
+// and took 103 BPM to zero inside a second once the two second hold had passed,
+// which reads as a plunge rather than as a fade. The hold doubles as the longest
+// gap that still counts as one more interval of the same tempo, since a gap longer
+// than it is a tempo already being faded.
+#define TEMPO_HOLD_MS       2000
+#define TEMPO_FADE_MS       4000.0f
+
+// ==== Noise Floor ====
+// A block may raise the noise floor only if its spectrum is noise-like, measured as
+// spectral flatness: the geometric mean of the magnitudes over their arithmetic
+// mean, which is near 1 for white noise and near 0 for a tone. It is the one thing
+// that separates a room from a track, because level does not. A loud room and a
+// loud compressed track are the same number, and that is how the floor came to
+// climb onto the music: every block cleared it, so it rose on nearly every block,
+// and at the end of a forty second track it sat at 89 percent of the signal. Both
+// multiples of it then failed, 2.5 for the silence gate and 4.0 for the beat
+// threshold, so the gate shut and the tempo went deaf together.
+//
+// Room tone and a cymbal wash and heavy distortion all sit above this, so a
+// broadband mix still raises the floor. The rise is slow and bounded for that case,
+// and NOISE_FLOOR_MAX is the bound.
+#define NOISE_FLAT_MIN   0.25f
+// The highest the floor may reach. A room this loud is loud enough that responding
+// to it is right, so nothing above it needs measuring, and bounding it keeps a
+// broadband track from walking the gate's threshold up out of reach: the gate needs
+// 2.5 times the floor, so this caps it at 0.026, and the beat threshold's floor
+// term at 0.04.
+#define NOISE_FLOOR_MAX  0.01f
 
 // ==== Display ====
 #define DEFAULT_BRIGHTNESS  150

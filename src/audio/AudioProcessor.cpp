@@ -140,6 +140,7 @@ void AudioProcessor::resetTracking() {
     loudness           = 0.0f;
     lastBeatTime   = millis();
     currentBPM     = 0.0f;
+    bpmAtLastBeat  = 0.0f;
     beatIntervalCount = 0;
     beatIntervalNext  = 0;
 }
@@ -196,17 +197,6 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // exists.
     features.average  = avg;
 
-    // Tracked silence baseline. It falls onto a quieter block slowly and climbs
-    // back more slowly still, so it follows a change of room without drifting up
-    // through the signal during a track's quiet passages.
-    if (volume < noiseFloor) {
-        noiseFloor -= 0.0002f;
-        if (noiseFloor < volume) noiseFloor = volume;
-    } else {
-        noiseFloor += 0.00002f;
-        if (noiseFloor > 0.5f) noiseFloor = 0.5f;
-    }
-
     // Hysteresis: open well above the floor, close closer to it, so a signal
     // sitting on the threshold does not chatter the whole spectral feature set.
     // Both thresholds are multiples of the floor rather than fixed amounts above
@@ -214,12 +204,15 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // microphone runs about 40 dB below it, so the absolute form left the gate
     // shut through music. Multiples hold at any gain. The small additive terms
     // only stop the gate opening on the first block, when the floor is still 0.
+    //
+    // Reads the floor this block left behind, since the floor is now measured
+    // after the FFT and the flatness that decides it comes from there. One block
+    // is 11.6 ms, which is under the gate's own ramp.
     if (signalPresence) {
         if (volume < noiseFloor * 1.5f + 0.0005f) signalPresence = false;
     } else {
         if (volume > noiseFloor * 2.5f + 0.001f) signalPresence = true;
     }
-    features.noiseFloor     = noiseFloor;
     features.signalPresence = signalPresence;
 
     // Frequency-domain analysis
@@ -232,6 +225,15 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     int midLimit  = 2000 * NUM_SAMPLES / SAMPLE_RATE;
     int half      = NUM_SAMPLES / 2;
     float eTotal=0, cSum=0, bSum=0, mSum=0, tSum=0;
+    // Spectral flatness, the geometric mean of the magnitudes over their arithmetic
+    // mean, accumulated here because this loop already walks the same bins. It is
+    // what tells a room from a track, and level cannot: a loud room and a loud
+    // compressed track are the same number, which is how the noise floor came to
+    // climb onto the music in the first place. A room's noise spreads over every
+    // bin, which puts the two means close together, and anything carrying a pitch
+    // concentrates its energy into a few, which pulls the geometric mean down.
+    float logSum  = 0.0f;
+    int   magBins = 0;
     for (int i=1;i<half;i++){
         float mag = vReal[i];
         if(i<=bassLimit) bSum+=mag;
@@ -239,6 +241,7 @@ AudioFeatures AudioProcessor::analyzeAudio() {
         else tSum+=mag;
         eTotal += mag;
         cSum    += mag * i;
+        if (mag > 1e-9f) { logSum += logf(mag); ++magBins; }
     }
     // The bands are each band's share of the total magnitude rather than an
     // absolute level divided by a constant. The old divisors were small enough
@@ -261,6 +264,32 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     }
     features.energy= eTotal;
     features.spectrumCentroid = eTotal>0? (cSum/eTotal): 0.0f;
+
+    const float spectralFlatness =
+        (magBins > 0 && eTotal > 1e-6f)
+            ? expf(logSum / float(magBins)) / (eTotal / float(magBins))
+            : 0.0f;
+
+    // Tracked silence baseline. It falls onto a quieter block at a fixed rate, and
+    // rises only onto a block whose spectrum is noise-like. See NOISE_FLAT_MIN in
+    // Config.h for why the spectrum decides it rather than the level, and
+    // NOISE_FLOOR_MAX for why the rise is bounded.
+    //
+    // The rise used to be unconditional, and during music nearly every block clears
+    // the floor, so it rose on nearly every block: at the end of a forty second
+    // track it had climbed to 89 percent of the signal it was supposed to be a floor
+    // under. Two things broke at once then, and both are multiples of it. The gate
+    // wanted 2.5 times it, which was above the signal, so the gate shut and the level
+    // went to zero with it. The beat detector wanted 4 times it, also above the
+    // signal, so the detector went deaf and the tempo faded out. That is one defect
+    // with both symptoms, and it is this comment's subject.
+    if (volume < noiseFloor) {
+        noiseFloor -= 0.0002f;
+        if (noiseFloor < volume) noiseFloor = volume;
+    } else if (spectralFlatness > NOISE_FLAT_MIN && noiseFloor < NOISE_FLOOR_MAX) {
+        noiseFloor += 0.00002f;
+    }
+    features.noiseFloor = noiseFloor;
 
     // The bass band's raw magnitude, before the gate touches it, which is what the
     // beat detector compares against the block before. Energy and not the share:
@@ -451,11 +480,12 @@ AudioFeatures AudioProcessor::analyzeAudio() {
         // interval moves the readout by tens of BPM when a beat lands a block early
         // or late, and a beat the detector misses doubles the interval and halves
         // the number, which is what an erratic readout is made of.
-        if (sinceBeat <= 2000) {
+        if (sinceBeat <= TEMPO_HOLD_MS) {
             beatIntervals[beatIntervalNext] = sinceBeat;
             beatIntervalNext = (beatIntervalNext + 1) % BEAT_BPM_WINDOW;
             if (beatIntervalCount < BEAT_BPM_WINDOW) ++beatIntervalCount;
-            currentBPM = 60000.0f / float(medianBeatInterval());
+            currentBPM    = 60000.0f / float(medianBeatInterval());
+            bpmAtLastBeat = currentBPM;
         }
         lastBeatTime = now;
     }
@@ -464,10 +494,20 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // rather than as stale. The intervals go with it, because the first beat after
     // a break would otherwise be averaged against a tempo that stopped a minute
     // ago and report a number belonging to neither.
-    if (sinceBeat > 2000) {
-        currentBPM *= 0.94f;
+    //
+    // The fade is a function of the elapsed time since the last beat rather than a
+    // per-block multiplier on the running value. The old form held for two seconds
+    // and then multiplied by 0.94 a block, so the number was gone inside another
+    // second and the speed of that depended on the loop rate, which is 86 a second
+    // on the device and up to 60 on the page and neither of them a clock. It also
+    // faded whatever the value had already decayed to, so two blocks arriving a
+    // little apart reported different tempos for the same silence.
+    if (sinceBeat > TEMPO_HOLD_MS) {
+        currentBPM = bpmAtLastBeat *
+                     expf(-float(sinceBeat - TEMPO_HOLD_MS) / TEMPO_FADE_MS);
         if (currentBPM < 1.0f) {
-            currentBPM = 0.0f;
+            currentBPM    = 0.0f;
+            bpmAtLastBeat = 0.0f;
             beatIntervalCount = 0;
             beatIntervalNext  = 0;
         }

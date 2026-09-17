@@ -39,12 +39,19 @@ private:
     unsigned long medianBeatInterval() const;
 
     // Silence tracking. noiseFloor is a slow follower of the quietest recent
-    // block, signalPresence is the hysteresis gate over it, and gateGain is that
-    // gate ramped, because a hard 0/1 switch strobes a signal sitting on the
-    // threshold.
+    // block, and it rises only while signalPresence is false, which is what stops a
+    // track raising the floor it is being measured against. signalPresence is the
+    // hysteresis gate over it, and gateGain is that gate ramped, because a hard 0/1
+    // switch strobes a signal sitting on the threshold.
     float noiseFloor     = 0.0f;
     bool  signalPresence = false;
     float gateGain       = 0.0f;
+
+    // The tempo as of the last beat, which the readout fades from once the beats
+    // stop. Fading the running value by a per-block factor made the speed of the
+    // fade depend on the loop rate and put a two second plateau in front of a
+    // plunge from the full tempo to zero inside a second.
+    float bpmAtLastBeat  = 0.0f;
 
     // dynamics is the span the envelope covers while its window is open, so these
     // are the top and the bottom of that window rather than a smoothed ratio. See

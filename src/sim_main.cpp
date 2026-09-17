@@ -1745,6 +1745,118 @@ void checkAudioProcessor() {
            std::to_string(bpmEnd) + " after it, against " + std::to_string(kSteadyBpm) +
            " for the train and " + std::to_string(kGapOnlyBpm) + " for the interval itself");
 
+    // --- the detector on sustained music -------------------------------------
+    // Every fixture above gives its "beat" as a step between a loud block and a
+    // near-silent one, and that near-silent block drags the noise floor back down
+    // every time. Music does not do that. Its quiet blocks sit a few dB under its
+    // loud ones rather than 26 dB, so the floor's slow rise is never pulled back and
+    // it climbs to the quiet end of the music's own range.
+    //
+    // The threshold is max(noiseFloor * 4, previousVolume * 0.35), so once the floor
+    // has climbed the first term is the whole threshold, and it is a multiple of the
+    // music's own quiet level rather than of the room's noise. Compressed material,
+    // whose quiet end is close to its loud end, then needs a rise the signal does not
+    // have, and the detector goes deaf partway into a track.
+    //
+    // The fixture is a kick every 500 ms over a bed that never falls silent, run for
+    // 40 seconds, which is shorter than one track. Detection has to still be
+    // happening at the end of it.
+    AudioProcessor procMusic;
+    std::vector<float> music(NUM_SAMPLES);
+    const int kMusicBlocks = 3440;      // 40 s at the device's 86 blocks a second
+    const int kMusicTail   = 860;       // the last 10 s
+    int   beatsTotal = 0, beatsTail = 0;
+    float floorEnd   = 0.0f, volumeEnd = 0.0f, levelEnd = 0.0f;
+    bool  presenceEnd = false;
+    for (int block = 0; block < kMusicBlocks; ++block) {
+        const bool kick = (block % 43) == 0;     // 43 blocks is 500 ms, so 120 BPM
+        for (int i = 0; i < NUM_SAMPLES; ++i) {
+            const float t = float(i) / float(SAMPLE_RATE);
+            float v = 0.100f * std::sin(kTwoPi * 220.0f * t)
+                    + 0.050f * std::sin(kTwoPi * 880.0f * t);
+            if (kick) v += 0.200f * std::sin(kTwoPi * 110.0f * t);
+            music[i] = v;
+        }
+        procMusic.submitSamples(music.data(), music.size());
+        const AudioFeatures f = procMusic.analyzeAudio();
+        if (f.beatDetected) {
+            ++beatsTotal;
+            if (block >= kMusicBlocks - kMusicTail) ++beatsTail;
+        }
+        floorEnd  = f.noiseFloor;
+        volumeEnd = f.volume;
+        levelEnd  = f.level;
+        presenceEnd = f.signalPresence;
+        simAdvance(12);
+    }
+
+    record("the detector still finds beats late in a sustained track",
+           beatsTail >= 15,
+           std::to_string(beatsTail) + " beats in the last 10 s of a 40 s track and " +
+           std::to_string(beatsTotal) + " in all of it, against 20 kicks, with the " +
+           "noise floor at " + std::to_string(floorEnd) + " and the signal at " +
+           std::to_string(volumeEnd) + ", so a four times floor threshold of " +
+           std::to_string(floorEnd * 4.0f) + ", signal present " +
+           std::to_string(presenceEnd) + " and level " + std::to_string(levelEnd));
+
+    // --- what may raise the floor ---------------------------------------------
+    // The rise is gated on the spectrum being noise-like, and these two fixtures
+    // are the same level over the same time with only that property differing.
+    //
+    // A room's noise has to raise the floor until the gate closes on it, because
+    // that is the floor's whole purpose: without it the gate's threshold falls back
+    // to its bare 0.001 additive term, which every room above that level clears, and
+    // the animations then run on room noise. A tone must not raise it, because a
+    // tone that raises the floor is a track raising the floor it is measured
+    // against, which is the defect above.
+    //
+    // Both are run at 0.004 RMS, which is the level this project's microphone
+    // reports for a room with a fan running, so neither is a claim about a quiet
+    // studio.
+    float roomFloorEnd = 0.0f, toneFloorEnd = 0.0f;
+    bool  roomPresenceEnd = true, tonePresenceEnd = false;
+    const int kFloorBlocks = 430;               // 5 s
+    {
+        AudioProcessor procRoom;
+        std::vector<float> room(NUM_SAMPLES);
+        long prng = 12345;
+        for (int block = 0; block < kFloorBlocks; ++block) {
+            for (int i = 0; i < NUM_SAMPLES; ++i) {
+                prng = (prng * 16807) % 2147483647;
+                room[i] = (float(prng) / 2147483647.0f * 2.0f - 1.0f) * 0.007f;
+            }
+            procRoom.submitSamples(room.data(), room.size());
+            const AudioFeatures f = procRoom.analyzeAudio();
+            roomFloorEnd    = f.noiseFloor;
+            roomPresenceEnd = f.signalPresence;
+            simAdvance(12);
+        }
+    }
+    record("a broadband room raises the noise floor until the gate closes",
+           roomFloorEnd > 0.0005f && !roomPresenceEnd,
+           "floor ended at " + std::to_string(roomFloorEnd) + " against a room of " +
+           "0.004 RMS, signal present " + std::to_string(roomPresenceEnd));
+
+    {
+        AudioProcessor procTone;
+        std::vector<float> tone(NUM_SAMPLES);
+        for (int block = 0; block < kFloorBlocks; ++block) {
+            for (int i = 0; i < NUM_SAMPLES; ++i) {
+                const float t = float(i) / float(SAMPLE_RATE);
+                tone[i] = 0.00566f * std::sin(kTwoPi * 440.0f * t);
+            }
+            procTone.submitSamples(tone.data(), tone.size());
+            const AudioFeatures f = procTone.analyzeAudio();
+            toneFloorEnd    = f.noiseFloor;
+            tonePresenceEnd = f.signalPresence;
+            simAdvance(12);
+        }
+    }
+    record("a tone at the same level does not raise it",
+           toneFloorEnd < 0.0005f && tonePresenceEnd,
+           "floor ended at " + std::to_string(toneFloorEnd) + " against a tone of " +
+           "0.004 RMS, signal present " + std::to_string(tonePresenceEnd));
+
     // --- Mood flicker --------------------------------------------------------
     // The browser reported the mood value jumping several times a second, with or
     // without music. The classifier reads instantaneous values, so the input has to
