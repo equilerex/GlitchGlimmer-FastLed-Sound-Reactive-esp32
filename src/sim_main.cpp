@@ -1345,22 +1345,16 @@ void checkSceneTransitions() {
 
     if (intense.size() < 2) return;
 
-    // level, not energy. The classifier tests its thresholds against level, which
-    // is 0..1 by construction. This check used to set energy to 2000 to land on
-    // INTENSE, which only worked while the classifier was comparing a raw
-    // magnitude sum against 0.8.
-    MoodSnapshot mood;
-    mood.level    = 1.0f;
-    mood.dynamics = 0.8f;
-    mood.bpm      = 120.0f;
-
+    // level, not energy, and named rather than derived. This fixture used to fill in
+    // level 1.0 and dynamics 0.8 to land on INTENSE under the fixed cuts the picker
+    // carried, which only worked while the picker was classifying for itself.
     SceneState state;
     state.activeScene = intense[0];
 
     int selfPicks = 0;
     int others    = 0;
     for (int i = 0; i < 400; ++i) {
-        const SceneDefinition& picked = reg.pickSceneByMood(state, mood);
+        const SceneDefinition& picked = reg.pickSceneByMood(state, MoodType::INTENSE);
         if (&picked == intense[0]) ++selfPicks;
         else                       ++others;
     }
@@ -1819,10 +1813,14 @@ void checkAudioProcessor() {
     {
         AudioProcessor procRoom;
         std::vector<float> room(NUM_SAMPLES);
-        long prng = 12345;
+        // long long, not long. long is 32 bits on Windows, so the multiply overflows
+        // there and the sequence is not the white noise this fixture is described as:
+        // it ran about three times louder than its own comment, and passed only
+        // because the bound it was testing sat above that.
+        long long prng = 12345;
         for (int block = 0; block < kFloorBlocks; ++block) {
             for (int i = 0; i < NUM_SAMPLES; ++i) {
-                prng = (prng * 16807) % 2147483647;
+                prng = (prng * 16807LL) % 2147483647LL;
                 room[i] = (float(prng) / 2147483647.0f * 2.0f - 1.0f) * 0.007f;
             }
             procRoom.submitSamples(room.data(), room.size());
@@ -1856,6 +1854,54 @@ void checkAudioProcessor() {
            toneFloorEnd < 0.0005f && tonePresenceEnd,
            "floor ended at " + std::to_string(toneFloorEnd) + " against a tone of " +
            "0.004 RMS, signal present " + std::to_string(tonePresenceEnd));
+
+    // --- the bound on the rise -----------------------------------------------
+    // A broadband passage is the case the flatness test cannot separate from a room.
+    // A cymbal wash, heavy distortion and a compressed mix all read noise-like, so
+    // they raise the floor, and the bound on the rise is the only thing between that
+    // and the defect above arriving by a longer route. This is the check that holds
+    // the bound: the floor may climb, but not to where the gate's threshold sits
+    // above the music that follows it.
+    //
+    // Twenty seconds of broadband material, then ten of music at the level this
+    // microphone reports. It asserts what the bound buys, so raising it fails here:
+    // at 0.01 the floor reaches its cap and the gate needs 0.026 against music of
+    // 0.02, which is the black strip and the deaf tempo again.
+    AudioProcessor procBroad;
+    std::vector<float> broad(NUM_SAMPLES);
+    long long bprng = 999;                    // see the note on the room fixture
+    for (int block = 0; block < 1720; ++block) {          // 20 s
+        for (int i = 0; i < NUM_SAMPLES; ++i) {
+            bprng = (bprng * 16807LL) % 2147483647LL;
+            broad[i] = (float(bprng) / 2147483647.0f * 2.0f - 1.0f) * 0.087f;
+        }
+        procBroad.submitSamples(broad.data(), broad.size());
+        procBroad.analyzeAudio();
+        simAdvance(12);
+    }
+    float broadFloorEnd = 0.0f, broadLevelEnd = 0.0f, broadVolumeEnd = 0.0f;
+    bool  broadPresenceEnd = false;
+    for (int block = 0; block < 860; ++block) {           // 10 s of music
+        for (int i = 0; i < NUM_SAMPLES; ++i) {
+            const float t = float(i) / float(SAMPLE_RATE);
+            broad[i] = 0.025f * std::sin(kTwoPi * 220.0f * t) +
+                       0.0125f * std::sin(kTwoPi * 880.0f * t);
+        }
+        procBroad.submitSamples(broad.data(), broad.size());
+        const AudioFeatures f = procBroad.analyzeAudio();
+        broadFloorEnd    = f.noiseFloor;
+        broadLevelEnd    = f.level;
+        broadVolumeEnd   = f.volume;
+        broadPresenceEnd = f.signalPresence;
+        simAdvance(12);
+    }
+    record("a broadband passage does not walk the gate out of reach",
+           broadPresenceEnd && broadLevelEnd > 0.05f,
+           "after 20 s of broadband material the floor sits at " +
+           std::to_string(broadFloorEnd) + ", the music after it reads " +
+           std::to_string(broadVolumeEnd) + " with signal present " +
+           std::to_string(broadPresenceEnd) + " and level " +
+           std::to_string(broadLevelEnd));
 
     // --- Mood flicker --------------------------------------------------------
     // The browser reported the mood value jumping several times a second, with or

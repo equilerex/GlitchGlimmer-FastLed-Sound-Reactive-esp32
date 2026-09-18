@@ -1,0 +1,14 @@
+{
+  "name": "glitchglimmer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Sound-reactive LED firmware. This manifest exists only to run the browser visualiser in web/ -- the firmware builds with PlatformIO and the WebAssembly with tools/build-wasm.sh.",
+  "scripts": {
+    "start": "node tools/serve-web.js",
+    "frames": "node tools/dump-frames.js",
+    "wasm": "bash tools/build-wasm.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

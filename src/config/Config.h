@@ -157,12 +157,22 @@
 // broadband mix still raises the floor. The rise is slow and bounded for that case,
 // and NOISE_FLOOR_MAX is the bound.
 #define NOISE_FLAT_MIN   0.25f
-// The highest the floor may reach. A room this loud is loud enough that responding
-// to it is right, so nothing above it needs measuring, and bounding it keeps a
-// broadband track from walking the gate's threshold up out of reach: the gate needs
-// 2.5 times the floor, so this caps it at 0.026, and the beat threshold's floor
-// term at 0.04.
-#define NOISE_FLOOR_MAX  0.01f
+// The highest the floor may reach. This bound is what keeps a track that reads as
+// noise-like from ratcheting the gate's threshold above the signal: without it the
+// floor climbs for as long as the track plays, the gate shuts on the first quiet
+// passage after it, and the strip goes black for the rest of the track. That is the
+// defect the flatness test exists to fix, arriving by a longer route.
+//
+// The value is set from the ratio the gate has to work in, which on this
+// microphone is about 0.006 RMS for a room against 0.02 to 0.03 for music. A floor
+// at 0.004 puts the gate's open threshold at 0.011 and the beat threshold's floor
+// term at 0.016, both under anything this microphone reports for music, so neither
+// can go deaf by construction. The cost is the benign direction: a room louder than
+// 0.004 is not tracked, so the gate stays open on it and the strip animates to room
+// noise. Animated noise is a worse-looking installation than a correct one and a far
+// better one than a black strip, and the ratio is thin enough on this input that the
+// margin has to be spent somewhere.
+#define NOISE_FLOOR_MAX  0.004f
 
 // ==== Display ====
 #define DEFAULT_BRIGHTNESS  150

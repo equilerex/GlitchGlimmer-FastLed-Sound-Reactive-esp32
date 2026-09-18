@@ -108,8 +108,13 @@ int gg_sample_count(void) { return NUM_SAMPLES; }
 // the new signal against the old signal's peak. Called on every change of source,
 // including the one at load, so the first reading is of the source actually in
 // use rather than of whatever the default filled the references with.
+//
+// The mood classifier is reset with it and is the same defect. Its smoothed values,
+// its adaptive dynamics window and the 150-snapshot window predictNextMood averages
+// are all built from the input that was playing, so a switch left the mood on
+// display as a verdict on audio that had stopped, for as long as the ring held it.
 EMSCRIPTEN_KEEPALIVE
-void gg_reset_analysis(void) { g_proc.resetTracking(); }
+void gg_reset_analysis(void) { g_proc.resetTracking(); g_mood.reset(); }
 
 // Where to write the microphone's time-domain samples, each normalised to -1..1.
 EMSCRIPTEN_KEEPALIVE

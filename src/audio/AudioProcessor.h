@@ -38,11 +38,11 @@ private:
     // itself, because the ring's order is its insertion order.
     unsigned long medianBeatInterval() const;
 
-    // Silence tracking. noiseFloor is a slow follower of the quietest recent
-    // block, and it rises only while signalPresence is false, which is what stops a
-    // track raising the floor it is being measured against. signalPresence is the
-    // hysteresis gate over it, and gateGain is that gate ramped, because a hard 0/1
-    // switch strobes a signal sitting on the threshold.
+    // Silence tracking. noiseFloor is a slow follower of the quietest recent block,
+    // and it may rise only onto a block whose spectrum is noise-like, which is what
+    // stops a track raising the floor it is being measured against. signalPresence is
+    // the hysteresis gate that reads the floor, and gateGain is that gate ramped,
+    // because a hard 0/1 switch strobes a signal sitting on the threshold.
     float noiseFloor     = 0.0f;
     bool  signalPresence = false;
     float gateGain       = 0.0f;

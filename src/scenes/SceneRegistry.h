@@ -7,7 +7,6 @@
 
 // Forward declarations to avoid circular includes
 struct SceneState;
-struct MoodSnapshot;
 
 struct SceneDefinition {
     AnimationType baseAnimation;
@@ -26,7 +25,9 @@ private:
 
 public:
     void registerDefaultScenes();
-    const SceneDefinition& pickSceneByMood(const SceneState& current, const MoodSnapshot& mood) const;
+    // Takes the classified mood rather than a snapshot to classify. See the
+    // definition for why the second classifier was removed.
+    const SceneDefinition& pickSceneByMood(const SceneState& current, MoodType mood) const;
     const SceneDefinition& get(size_t index) const;
     size_t count() const;
     const std::vector<SceneDefinition>& getAll() const;

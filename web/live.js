@@ -1021,12 +1021,14 @@ async function openMicQuietly() {
 // at 0.995 per frame, so every value read a fraction of the truth for about
 // thirteen seconds before climbing back. Nothing was wrong with the microphone.
 //
-// Both paths that change the source while frames are running come through here.
-// They each used to assign the variable and repaint the buttons, which is how the
-// page ended up with one input's statistics governing the other's readings.
+// Every path that changes the source comes through here, which is the only thing
+// holding the invariant together: one place assigns `source`, and it forgets the
+// references in the same breath.
 function selectSource(kind) {
   source = kind;
-  wasm._gg_reset_analysis();
+  // Guarded, because this is now reachable before the module has loaded: stop() is
+  // called on the way out of the live view whether or not start() got that far.
+  if (wasm) wasm._gg_reset_analysis();
   // And the two records the page keeps of the same signal. The spectrum's running
   // peaks and the trace's min and max are session-wide by design, and they are
   // still statistics of the input: carried across a switch they describe the
@@ -1122,7 +1124,7 @@ export async function start() {
   // promise only has to report a failure, since the source is already set.
   const params = new URLSearchParams(window.location.search);
   if (params.get('source') === 'demo') {
-    source = 'demo';
+    selectSource('demo');
     // Removed from the address as it is read. The page reloads itself when the
     // wasm module is rebuilt and a reload keeps the query string, so a link
     // followed once would put every later run of this page on the synthetic
@@ -1132,7 +1134,7 @@ export async function start() {
     history.replaceState(null, '', window.location.pathname +
                                 (rest ? '?' + rest : '') + window.location.hash);
   } else {
-    source = 'mic';
+    selectSource('mic');
     openMicQuietly();
   }
   paintButtons();
@@ -1148,7 +1150,15 @@ export function stop() {
   // Back to the microphone, which is the state the page rests in. This used to
   // return to the synthetic signal, so anything that stopped and restarted the
   // player silently moved the page onto audio nobody asked for.
-  source = 'mic';
+  //
+  // Through selectSource, because this is one of the two paths that changes the
+  // source and it is the one that made the leak reachable. Leaving the live view and
+  // coming back runs start() again on the module that is already loaded, so the
+  // references the previous source built are still in it, and the source variable was
+  // the only thing that said otherwise. Demo, then Recording, then Live again, and
+  // the microphone was being measured against the synthetic signal's peaks and
+  // classified against its dynamics window.
+  selectSource('mic');
   noteText = null;
 }
 

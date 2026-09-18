@@ -249,6 +249,39 @@ public:
     String getPredictedMoodName() const { return String(moodToString(predictedNextMood)); }
     size_t size() const { return history.size(); }
 
+    // Forget the window and every learned reference, so the next snapshot is
+    // classified on its own terms.
+    //
+    // Everything here is a statistic of audio that was playing. The classifier
+    // reads smoothed values, so it keeps testing the new input against a level the
+    // old one settled at. The dynamics window it adapts is the old input's spread.
+    // The hold clock and the candidate are a mood half-arrived at. And
+    // predictNextMood averages the whole 150-snapshot ring, so the prediction is a
+    // verdict on a signal that has stopped. The page switches between a synthetic
+    // signal and the microphone, and the two are about forty times apart in
+    // amplitude, so none of those references describe the input actually in use.
+    // Called from the same place as AudioProcessor::resetTracking, for the same
+    // reason.
+    void reset() {
+        history.clear();
+        current           = MoodSnapshot();
+        currentMood       = UNKNOWN;
+        predictedNextMood = UNKNOWN;
+        moodChangeCount   = 0;
+        smoothLevel       = 0.0f;
+        smoothDynamics    = 0.0f;
+        smoothBpm         = 0.0f;
+        candidate         = UNKNOWN;
+        candidateSince    = 0;
+        moodSince         = 0;
+        dynLo             = 0.0f;
+        dynHi             = 0.0f;
+        dynSpan           = 0.0f;
+        dynSeeded         = false;
+        dynLastMs         = 0;
+        smoothing         = false;
+    }
+
     // Read by the interface, so a session that never moved the mood reads as zero
     // changes rather than as no measurement. See the member's comment.
     int getMoodChangeCount() const { return moodChangeCount; }

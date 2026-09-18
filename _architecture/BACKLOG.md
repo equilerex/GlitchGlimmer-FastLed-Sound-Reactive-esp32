@@ -27,19 +27,13 @@ main.ino:48 skips controller.update() entirely whenever free heap drops below 20
 
 Status: OPEN
 
-VisualLayers.h:256 runs 'exp(-pow(...))' inside a per-LED loop. VisualLayers.h:231 and :127 call sin per LED. float arguments promote to software double, and ESP32 has no hardware double FPU. The cost scales with LED count, so it is invisible on a 10-LED strip and dominant on a 300-LED one.
-
-## The mood classifier compares a magnitude sum against 0..1 thresholds
-
-Status: OPEN
-
-`MoodHistory::classifyMood` and `SceneRegistry::pickSceneByMood` both test `m.energy > 0.8f`, `> 0.6f`, `< 0.3f` and `> 0.4f`. On device `AudioFeatures::energy` is the raw sum of 255 FFT magnitudes, so it runs in the hundreds to thousands and the first two tests are always true. The effect is that CALM is unreachable, scenes preferring CALM or FLOATY are only ever picked by the mood-blind fallback, and the mood display is effectively reporting `dynamics` alone. The host harness does not show this because its scripted `energy` is in the 0..1 range, which is precisely the mismatch. Fixing it means deciding on a scale first, either normalising `energy` at the source or writing the thresholds against the real range, so it is not a mechanical change. Same class as the inert tuning macros item above.
+`VisualLayers.h:298` runs `exp(-pow(...))` inside a per-LED loop, and `:265` and `:161` call `sin` per LED. Float arguments promote to software double and ESP32 has no hardware double FPU, so the cost scales with LED count: invisible on a 10-LED strip, dominant on a 300-LED one. This was latent rather than live until recently, because the whole scene path early-returned and none of it executed. Now that layers render it is real, and the earlier estimate was made against code that did not run, so measure frame time before optimising.
 
 ## Dead code and uninstantiated classes
 
 Status: OPEN
 
-LayerPool is never instantiated anywhere, so its getByType() returning std::vector<Entry> by value is latent rather than live. AlienSquirtTrailLayer is unused, as are WormholeVortexLayer and CentroidColorFlowLayer, which is why the phase wraps added to those two are hygiene rather than a live fix. MoodReactiveAnimation.h does not compile (mood.centroid and moodHistory.latest() do not exist) and is excluded from AnimationCatalog.h, so it silently rots. SettingIconWidget is declared in DisplayManager.h:67 but never constructed. ScrollingTextWidget is never instantiated.
+LayerPool is never instantiated anywhere, so its getByType() returning std::vector<Entry> by value is latent rather than live. AlienSquirtTrailLayer is unused, as are WormholeVortexLayer and CentroidColorFlowLayer, which is why the phase wraps added to those two are hygiene rather than a live fix. SettingIconWidget is declared and owned at DisplayManager.h:67 but never constructed, and ScrollingTextWidget at Widget.h:218 is never instantiated.
 
 ## Verbose ESP-IDF logging left on
 
@@ -53,14 +47,26 @@ Status: OPEN
 
 MainController.cpp constructs a SceneDirector with its own SceneRegistry and never attaches a SceneState, so every call on it early-returns. The display scene name now reads from the live director inside LEDStripController instead. Deleting this removes a redundant registry and a heap allocation. It is live code: the device build now includes `src/core/MainController.cpp`, so the dead director is compiled and constructed on every boot.
 
-## Layer pixel cost is live for the first time
-
-Status: OPEN
-
-The per-pixel exp, pow and sin calls in VisualLayers.h never executed, because the whole scene path was dead. Now that layers actually render, that cost is real. Measure frame time before optimising, since the earlier estimate was made against code that did not run.
-
 ## History depth is now a fixed 60KB of heap
 
 Status: OPEN
 
 `AudioHistory` is a fixed-capacity ring of 1500 `AudioSnapshot`s, so it holds 60000 bytes for the life of the program, allocated once at boot. The harness measures it as filling to that cap. The deepest live consumer is `MoodMemoryArcLayer`, which reads the last 10, and nothing else reads it at all. The capacity is carried over from the `std::deque` it replaced, where the same 1500 cost nothing up front. Shrinking it is a behaviour change rather than a cleanup, which is why it is not in the current work.
+
+## No LICENSE, so the repo is all-rights-reserved by default
+
+Status: OPEN
+
+There is no LICENSE file. That leaves the repository all-rights-reserved by default, which is the opposite of what an open README implies, and it is a choice rather than a defect. Decide the license and add the file, or state plainly that the code is not licensed for reuse. `package.json` deliberately carries no `license` field until this is settled.
+
+## Two AI-era FastLED guides in docs/ are unreferenced
+
+Status: OPEN
+
+`docs/_Fastled-animation-guidelines.md` and `docs/ai-fastled-guide.md` are AI-era guides that nothing in the repo references, and the vendored `.agents/skills/jookoi-fastled/` supersedes them for the same purpose. Two separate problems. The guidelines file still claims FastLED has no built-in named animations, which is false and is the era's defect class in prose rather than in code. And it carries the `_` private-layer prefix while being committed, which reads the prefix as a filename convention rather than as the privacy switch it is. Decide per file: correct it, delete it, or fold whatever is still true into the vendored skill.
+
+## AI_ASSIST_INSTRUCTIONS.MD targets a gitignored IDE directory
+
+Status: OPEN
+
+`AI_ASSIST_INSTRUCTIONS.MD` at the root is a prompt file for an IntelliJ assistant. Nothing in the repo reads it, it targets `.idea/`, which is now gitignored, and its only mention anywhere is the generated `graphify-out/GRAPH_REPORT.md`. Delete it unless an IDE still points at it.

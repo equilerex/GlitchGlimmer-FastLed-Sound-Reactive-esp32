@@ -27,11 +27,23 @@ public:
         uint8_t b = (uint8_t)(audio.trebleLevel * 255);
         CRGB blendColor = CRGB(r, g, b);
 
-        // Fade wave trail effect using sine modulation and spectrum
+        // Fade wave trail effect using sine modulation and spectrum.
+        //
+        // The bins are unnormalised FFT magnitudes, so their scale is whatever this
+        // input's level is and not 0..1: on real audio a bin passes 0.5 on the first
+        // frame, which took the fade term below zero and clamped the fade away, so
+        // the spectrum contributed nothing and the trail was the wobble alone. The
+        // reference is the block's own loudest bin, which is a statistic of this
+        // input rather than a claim about one microphone's gain.
+        float binPeak = 1e-6f;
+        for (int k = 0; k < NUM_SAMPLES / 2; ++k) {
+            if (audio.spectrum[k] > binPeak) binPeak = audio.spectrum[k];
+        }
+
         for (int i = 0; i < n; i++) {
             float t = (float)i / (float)n;
             float wobble = sinf(t * 10.0f + wavePhase) * 0.5f + 0.5f;
-            float spectrumMod = audio.spectrum[i % (NUM_SAMPLES / 2)] * 2.0f;
+            float spectrumMod = audio.spectrum[i % (NUM_SAMPLES / 2)] / binPeak;
             // level, not energy / 1800. The divisor was a guess about the input's
             // absolute scale: energy is a sum of 255 magnitudes and the microphone
             // in use reaches a few hundred, so this landed near 0.01 and the strip
@@ -39,12 +51,10 @@ public:
             // level this microphone actually reports it was 16 percent duty.
             const float pulse = audio.pixelLevel();
             CRGB c = blendColor;
-            // Both arguments are clamped at zero. fadeToBlackBy takes a uint8_t,
-            // and both expressions go negative on real audio: spectrum bins pass
-            // 0.5 (so 1 - spectrumMod does) and a pulse over 1 takes the lerp
-            // fraction with it. A negative float converted to uint8_t wraps to
-            // near-maximum, so these faded to black when they were meant to barely
-            // fade at all.
+            // Both arguments are still clamped. fadeToBlackBy takes a uint8_t and an
+            // over-unity pulse takes the lerp fraction with it, and a negative float
+            // converted to uint8_t wraps to near-maximum, so an unclamped one of
+            // these fades to black where it is meant to barely fade at all.
             const float fadeAmt = (1.0f - spectrumMod) * 80.0f;
             // Carries the pulse and the wave separately. The pulse scales the
             // pixel's brightness, which is a multiply on the colour; the wave is

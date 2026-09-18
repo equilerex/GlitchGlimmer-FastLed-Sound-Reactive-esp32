@@ -21,21 +21,19 @@ void SceneRegistry::registerDefaultScenes() {
     }
 }
 
-const SceneDefinition& SceneRegistry::pickSceneByMood(const SceneState& current, const MoodSnapshot& mood) const {
+const SceneDefinition& SceneRegistry::pickSceneByMood(const SceneState& current, MoodType mood) const {
     std::vector<const SceneDefinition*> matches;
 
-    // Determine the current mood type from the snapshot. This repeats
-    // MoodHistory::classifyMood, thresholds and all, and has to read the same
-    // field: it tested energy against 0.3..0.8, so every condition was true on
-    // every frame and the picker never agreed with the mood on the display.
-    MoodType currentMood = MoodType::UNKNOWN;
-    if (mood.level > 0.8f && mood.dynamics > 0.5f) currentMood = MoodType::INTENSE;
-    else if (mood.level > 0.6f && mood.bpm > 100) currentMood = MoodType::ENERGETIC;
-    else if (mood.level < 0.3f && mood.dynamics < 0.2f) currentMood = MoodType::CALM;
-    else if (mood.bpm < 80 && mood.level > 0.4f) currentMood = MoodType::FLOATY;
-
+    // The mood arrives classified rather than being derived here. This used to
+    // repeat MoodHistory::classifyMood's thresholds, which is two places for one
+    // answer to drift apart, and they had drifted: the classifier's dynamics cut
+    // points move with the observed range while the copy's sat at 0.5 and 0.2, and
+    // the copy read the raw per-frame snapshot while the classifier reads smoothed
+    // values. The picker could therefore choose a scene for a mood the display never
+    // named, and it did so exactly at the thresholds the adaptive cuts were
+    // introduced to fix.
     for (const auto& s : scenes) {
-        if (s.supportsMood(currentMood)) {
+        if (s.supportsMood(mood)) {
             matches.push_back(&s);
         }
     }

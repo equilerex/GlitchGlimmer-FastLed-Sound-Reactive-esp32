@@ -83,23 +83,70 @@ device pays. Allocation counts from the harness exclude it.
 
 ## Visualisation
 
-`web/` is a player for frame recordings the harness produces. It is not a
-JavaScript rewrite. The harness runs the real firmware code and writes the
-resulting pixels, so the recording and the firmware cannot drift apart.
+`web/` has two views over one canvas, and neither is a JavaScript rewrite. Both
+run the firmware's own code, so what you see cannot drift from what the device
+would do.
+
+| View | Driven by | Needs |
+|---|---|---|
+| Recording | Frames the harness writes with `--dump-frames` | `web/data/`, generated |
+| Live microphone | `src/` compiled to WebAssembly and stepped once per frame | `web/live/glitchglimmer.wasm`, generated, plus a microphone |
+
+The recording view replays a fixed audio timeline and runs no FFT. The live view
+hands the microphone's samples to `AudioProcessor` unchanged, so the FFT, the
+feature extraction, the beat detector and the mood classifier are all the
+firmware's.
 
 ![The frame player showing both strips mid-scene](docs/preview.png)
 
+### Run it
+
+Node is the only requirement, and there is nothing to install.
+
 ```
-pio run -e native
-.pio/build/native/program --dump-frames web/data    # program.exe on Windows
-python -m http.server 8000 --directory web
+npm start
 ```
 
-Then open `http://127.0.0.1:8000`. A specific moment can be linked directly
-with `?scenario=device&frame=500&paused=1`.
+Then open `http://127.0.0.1:8000`. A specific moment can be linked directly with
+`?scenario=device&frame=500&paused=1`. Pass a port with `npm start -- 8080`.
 
-Recordings are generated rather than committed, which is why the steps above
-come before the page works.
+### Recording view
+
+The frames are generated rather than committed, so the harness has to write them
+first.
+
+```
+npm run frames -- --build    # pio run -e native, then --dump-frames web/data
+```
+
+### Live view
+
+The Live microphone button needs the WebAssembly module. Sourcing `emsdk_env.sh`
+is the one part a script cannot do, so run this from a shell where Emscripten is
+on `PATH`.
+
+```
+source /path/to/emsdk/emsdk_env.sh
+npm run wasm -- --watch      # rebuild on save
+```
+
+Leave that running while editing an animation. The page polls
+`web/live/build.json` and reloads itself when a build lands, so the loop is edit,
+save, look at the page. Until the script has run once the module is missing and
+the live view 404s.
+
+### The server
+
+`npm start` runs `tools/serve-web.js`, a static server for `web/` with no
+dependencies, which is why it works on a bare clone with nothing installed but
+Node. It is not interchangeable with a plain file server, for two reasons. The
+module has to be served as `application/wasm` to be stream-compiled, and nothing
+under `web/` may be cached, because `build-wasm.sh` replaces the module and the
+recordings under paths that are already in the browser's cache. A cached copy of
+the module is indistinguishable from a rebuild that did not take.
+
+`python -m http.server 8000 --directory web` also works, and will serve you a
+stale module after a rebuild, because it answers conditional requests.
 
 `.github/workflows/pages.yml` is written to build them on every push to `main`
 and publish `web/`, but it cannot do that yet: Pages is not switched on in this
@@ -119,15 +166,18 @@ Until then the local steps above are the way to look at it.
 | `src/display/` | TFT layout, widgets and themes |
 | `include/` | `tft_setup.h`, the TFT_eSPI display configuration |
 | `sim/stubs/` | Arduino core stubs used only by the host build |
-| `web/` | The frame player |
-| `_architecture/` | Working notes. `TODO.md` is the live set, `BACKLOG.md` is unscheduled work, `plans/` holds the audit and the fix plan |
+| `tools/` | `build-wasm.sh` for the browser module, `serve-web.js` and `dump-frames.js` behind `npm run` |
+| `web/` | The two views, `web/data/` and `web/live/` both generated |
+| `AGENTS.md` | Stack rules and conventions for this repo, for contributors and agents alike |
+| `_architecture/` | Working notes. `TODO.md` is the live set, `BACKLOG.md` is unscheduled work, `ARCHITECTURE.md` is why the repo is shaped this way, `plans/` holds the audit and the fix plan |
 
 ## Where to start reading
 
-`_architecture/TODO.md` has the current measured state and is the shortest route
-into how the code got here. `_architecture/BACKLOG.md` lists what is known broken
-or unmeasured. The two files in `_architecture/plans/` are the defect audit and
-the plan that fixed it.
+`_architecture/ARCHITECTURE.md` is the shortest route into why the code is shaped
+the way it is, and it carries the reasoning behind the parts that look like
+tuning constants. `_architecture/TODO.md` is where the work stands now.
+`_architecture/BACKLOG.md` lists what is known broken or unmeasured. The two
+files in `_architecture/plans/` are the defect audit and the plan that fixed it.
 
 The scene pipeline is worth reading in this order: `src/audio/AudioProcessor.cpp`
 produces `AudioFeatures`, `src/scenes/MoodHistory.h` classifies a mood from it,

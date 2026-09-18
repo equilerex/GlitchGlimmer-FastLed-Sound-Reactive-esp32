@@ -39,7 +39,13 @@ public:
 
         for (int i = 0; i < count; ++i) {
             float phase = fmodf(position + i * 0.1f, float(count));
-            uint8_t bright = 128 + 127 * sin8((uint8_t)(phase));
+            // sin8 already spans the whole byte, 0 to 255 with its middle at 128,
+            // which is the 128 plus or minus 127 this was written as. Written out
+            // that way it was an int reaching 32513 assigned to a uint8_t, so it
+            // wrapped through the byte several times along the strip and the river
+            // was a one-pixel strobe train rather than a wave. This is the base
+            // layer of every scene.
+            uint8_t bright = sin8((uint8_t)(phase));
             leds[i] += CHSV(hue, 255, bright);
         }
     }
@@ -82,7 +88,11 @@ class NoiseFloorMistLayer : public VisualLayer {
 
 public:
     void update(const AudioFeatures& audio, const AudioHistory&) override {
-        baseHue = 160 + audio.noiseFloor * 80;
+        // As a fraction of the highest the floor may reach, not as 80 hue units per
+        // unit of floor. The floor is bounded by NOISE_FLOOR_MAX, so a fixed 80
+        // units per unit left the whole term inside one hue unit and this mist was
+        // the same colour on every frame of every scene.
+        baseHue = uint8_t(160.0f + audio.noiseFloor / NOISE_FLOOR_MAX * 60.0f);
     }
 
     void render(CRGB* leds, int count) override {

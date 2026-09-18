@@ -39,6 +39,11 @@ web/live/build.json
 sim-run.txt
 *.log
 
+# The root package.json carries the `npm start` static server and nothing else
+# depends on it, so this is only here to catch an install that a stray
+# dependency would otherwise leave untracked.
+node_modules/
+
 # Microphone captures from the live page's Record button. Float samples of
 # whatever was in the room, which is the user's environment rather than the
 # project's source, and the harness generates its own fixtures for the checks.

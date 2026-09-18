@@ -45,7 +45,7 @@ public:
     inline void begin() {
         if (!state) return;
         const SceneDefinition& first =
-            registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
+            registry.pickSceneByMood(*state, mood.getCurrentMood());
         state->beginScene(&first, mood.getCurrentSnapshot(), mood.getCurrentMood());
     }
 
@@ -74,7 +74,7 @@ public:
 
         if (state->shouldTransition(now, mood.getCurrentMood())) {
             const SceneDefinition& nxt =
-                registry.pickSceneByMood(*state, now);
+                registry.pickSceneByMood(*state, mood.getCurrentMood());
             state->beginScene(&nxt, now, mood.getCurrentMood());
         }
     }
@@ -115,7 +115,7 @@ public:
     inline void forceNextScene() {
         if (!state) return;
         const SceneDefinition& nxt =
-            registry.pickSceneByMood(*state, mood.getCurrentSnapshot());
+            registry.pickSceneByMood(*state, mood.getCurrentMood());
         state->beginScene(&nxt, mood.getCurrentSnapshot(), mood.getCurrentMood());
     }
 
