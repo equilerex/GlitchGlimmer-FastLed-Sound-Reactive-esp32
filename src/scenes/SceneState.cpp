@@ -6,7 +6,7 @@
 
 // Initialize default values
 SceneState::SceneState()
- : activeScene(nullptr), sceneStartMillis(0), sceneMinDurationMs(5000), sceneIdealDurationMs(12000), lastMood(), startMood(UNKNOWN), sceneChangeCount(0), totalUptimeMs(0)
+ : activeScene(nullptr), sceneStartMillis(0), sceneMinDurationMs(5000), sceneIdealDurationMs(12000), lastMood(), startMood(SILENT), sceneChangeCount(0), totalUptimeMs(0)
 {}
 
 // Begin a new scene with baseline mood snapshot

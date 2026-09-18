@@ -5,23 +5,65 @@
 #include "../audio/AudioFeatures.h"
 #include "../audio/SnapshotRing.h"
 
+// Display order, and deliberately not intensity order. SILENT, TEASE, BUILDUP,
+// DROP, DESCENT and WEIRD name the shape of a passage rather than how loud it is,
+// so they sit between rungs rather than on one, and comparing two MoodType values
+// does not compare intensity. Every rank comparison goes through ladderRank().
+//
+// The order walks the archetypal arc and returns to where it started: silence,
+// then up through the rungs with the structural moods at the points they happen,
+// the peak, and DESCENT closing the loop back onto SILENT. WEIRD is deliberately
+// the one that sits outside the arc, since an eclectic passage can be at any
+// intensity.
+//
+// MOOD_COUNT is a sentinel. classifyMood never returns it, the picker never
+// selects it, and moodToString renders it as "?". It exists because the mood
+// count was hardcoded as 5 in three places in the harness, so adding a mood
+// silently left two of them behind.
 enum MoodType {
-    CALM,
-    ENERGETIC,
-    INTENSE,
-    FLOATY,
-    UNKNOWN
+    SILENT, FLOATY, CALM, TEASE, DANCY,
+    BUILDUP, ENERGETIC, DROP, INTENSE, WEIRD,
+    DESCENT,
+    MOOD_COUNT
 };
 
 static const char* moodToString(MoodType mood) {
     switch (mood) {
-        case CALM: return "Calm";
+        case SILENT:    return "Silent";
+        case FLOATY:    return "Floaty";
+        case CALM:      return "Calm";
+        case TEASE:     return "Tease";
+        case DANCY:     return "Dancy";
+        case BUILDUP:   return "Buildup";
         case ENERGETIC: return "Energetic";
-        case INTENSE: return "Intense";
-        case FLOATY: return "Floaty";
-        case UNKNOWN: return "Calm";
+        case DROP:      return "DROP";
+        case INTENSE:   return "Intense";
+        case WEIRD:     return "Weeeeird";
+        case DESCENT:   return "Descent";
+        case MOOD_COUNT: break;
     }
-    return "Unknown";
+    return "?";
+}
+
+// The five rungs the ladder can return, quietest first. -1 means the mood is
+// not on the ladder at all: a structural mood, or MOOD_COUNT.
+inline int ladderRank(MoodType mood) {
+    switch (mood) {
+        case FLOATY:    return 0;
+        case CALM:      return 1;
+        case DANCY:     return 2;
+        case ENERGETIC: return 3;
+        case INTENSE:   return 4;
+        default:        return -1;
+    }
+}
+
+inline MoodType ladderMood(int rank) {
+    if (rank <= 0) return FLOATY;
+    if (rank == 1) return CALM;
+    if (rank == 2) return DANCY;
+    if (rank == 3) return ENERGETIC;
+    return INTENSE;
 }
 
 struct MoodSnapshot {
@@ -47,16 +89,37 @@ struct MoodSnapshot {
     float noiseFloor;
     bool signalPresence;
 
+    // What the structural half of the classifier reads. gateGain, buildup, the
+    // two flags and the anomaly count, and deliberately not spectralFlatness:
+    // that one is an input to the anomaly count rather than something the
+    // classifier tests, so carrying it here would be a field with no reader.
+    //
+    // gateGain is the reason this is a copy rather than a reference. The
+    // prediction averages the ring, and a snapshot left at the struct default
+    // would make a prediction about a silent window claim signal.
+    float gateGain;
+    float buildup;
+    float descent;
+    bool  dropDetected;
+    float anomaly;
+    bool  teaseDetected;
+
     float frequency;
 
     unsigned long timestamp;
 
+    // Listed explicitly rather than given in-class initialisers, so there is one
+    // site that says what a zero snapshot is. The default is the normal-reading
+    // one, not the off one: a hand-built snapshot must classify as a rung rather
+    // than as SILENT. See AudioFeatures::gateGain.
     MoodSnapshot()
         : volume(0), loudness(0), peak(0), average(0),
           bass(0), mid(0), treble(0),
           spectrumCentroid(0), dominantBand(0), dynamics(0), energy(0), level(0),
           beatDetected(false), bpm(0), bassHits(0),
           noiseFloor(0), signalPresence(false),
+          gateGain(1.0f), buildup(0), descent(0), dropDetected(false),
+          anomaly(0), teaseDetected(false),
           frequency(0), timestamp(0) {}
 };
 
@@ -93,9 +156,29 @@ private:
     // alternates whenever the signal sits on a threshold; without the first a
     // genuinely noisy signal changes mood several times a second, which is what
     // the browser reported as the mood value jumping like it had epilepsy.
-    MoodType candidate = UNKNOWN;
+    MoodType candidate = SILENT;
     unsigned long candidateSince = 0;
     unsigned long moodSince      = 0;
+
+    // Arriving at a first verdict is not a mood change. currentMood starts at
+    // SILENT because the interface needs something to display, which makes the
+    // boot value and a genuinely silent passage the same value, so this flag is
+    // what separates "no verdict yet" from "classified as silent". Without it the
+    // counter would report a change on the first frame of every session, which is
+    // the one transition that is certainly not the mood moving.
+    bool haveVerdict = false;
+
+    // Until when the display reads DROP, after one has fired. DROP is the only
+    // mood that is an event rather than a condition: dropDetected is true for one
+    // block, and the confirmation window would reject a single block before it
+    // could ever be shown, so a real drop would be the one mood the system could
+    // never report. The pin is the confirmation window's job done by hand, for
+    // the one case where the condition cannot last long enough to earn it.
+    //
+    // Lives here rather than in classifyMood, which stays a pure function of the
+    // snapshot so the harness can sweep the whole input space through it. A pin
+    // is a fact about the clock, not about the audio.
+    unsigned long dropPinUntil = 0;
 
     // The classifier's dynamics cut points move with the observed range rather
     // than sitting at 0.5 and 0.2. A fixed pair is a claim about one input's
@@ -125,8 +208,21 @@ private:
     float         dynDownPerSec = 0.3f;
     static constexpr float DYN_MIN_SPAN = 0.08f;
 
+    // The ladder's four edges, and the reason the classifier is total. See
+    // ladderRankFrom() for what the four overlapping booleans they replaced cost.
+    static constexpr float LADDER_EDGE_0 = 0.20f;   // FLOATY    | CALM
+    static constexpr float LADDER_EDGE_1 = 0.40f;   // CALM      | DANCY
+    static constexpr float LADDER_EDGE_2 = 0.60f;   // DANCY     | ENERGETIC
+    static constexpr float LADDER_EDGE_3 = 0.80f;   // ENERGETIC | INTENSE
+    static constexpr int   LADDER_RUNGS  = 5;
+
+    // What bpm has to clear to nudge a rung, either way. Not page-tunable: a
+    // tempo nudge is a property of the ladder, not a dial on the signal.
+    static constexpr float BPM_NUDGE_UP   = 120.0f;
+    static constexpr float BPM_NUDGE_DOWN = 80.0f;
+
 public:
-    MoodHistory() : currentMood(UNKNOWN), predictedNextMood(UNKNOWN) {}
+    MoodHistory() : currentMood(SILENT), predictedNextMood(SILENT) {}
 
     void setSmoothingRate(float rate) { smoothingRate = constrain(rate, 0.005f, 1.0f); }
     void setMinHoldMs(float ms)       { minHoldMs = (unsigned long)constrain(ms, 0.0f, 60000.0f); }
@@ -160,6 +256,12 @@ public:
         m.bassHits = f.bassHits;
         m.noiseFloor = f.noiseFloor;
         m.signalPresence = f.signalPresence;
+        m.gateGain = f.gateGain;
+        m.buildup = f.buildup;
+        m.descent = f.descent;
+        m.dropDetected = f.dropDetected;
+        m.anomaly = f.anomaly;
+        m.teaseDetected = f.teaseDetected;
         m.frequency = f.frequency;
         m.timestamp = millis();
 
@@ -208,23 +310,34 @@ public:
         if (dynHi < dynLo) { const float swap = dynHi; dynHi = dynLo; dynLo = swap; }
         dynSpan = dynHi - dynLo;
 
-        // Depleting UNKNOWN is not a mood change, it is the classifier arriving.
-        // Adopted at once, because there is nothing to protect: a held mood that
-        // must be outlasted exists only once a real one has been chosen, and
-        // requiring a candidate to persist before the first adoption leaves the
-        // classifier on UNKNOWN, which the interface displays as Calm and reads as
-        // a stuck mood rather than as an unsettled one.
+        // Two rules, and they do different jobs. Arriving at a first verdict is
+        // adopted at once, because there is nothing to protect: a held mood that
+        // must be outlasted exists only once a real one has been chosen.
         //
-        // Between two real moods both rules apply. The confirmation stops a signal
+        // Between two real moods both apply. The confirmation stops a signal
         // sitting on a threshold from alternating; the hold is the minimum dwell
         // the mood system did not have.
-        const MoodType raw = classifyMood(smoothed, currentMood);
-        if (raw == currentMood) {
-            candidate = UNKNOWN;
-        } else if (currentMood == UNKNOWN && raw != UNKNOWN) {
-            currentMood = raw;
-            moodSince   = m.timestamp;
-            candidate   = UNKNOWN;
+        //
+        // Neither is a step limiter. The ladder is an ordering used for matching,
+        // never a path the classifier walks, so a passage may jump from FLOATY
+        // straight to INTENSE and that is correct, because a track can do exactly
+        // that. The abruptness of such a jump is not answered here.
+        // A drop pins the display rather than being confirmed into it. Stamped
+        // before the verdict so the frame that fires the drop is already inside
+        // the window it opens.
+        if (m.dropDetected) dropPinUntil = m.timestamp + DROP_PIN_MS;
+
+        MoodType raw = classifyMood(smoothed);
+        if (m.timestamp < dropPinUntil) raw = DROP;
+
+        if (!haveVerdict) {
+            currentMood    = raw;
+            candidate      = raw;
+            moodSince      = m.timestamp;
+            candidateSince = m.timestamp;
+            haveVerdict    = true;
+        } else if (raw == currentMood) {
+            candidate = currentMood;
         } else if (raw != candidate) {
             candidate = raw;
             candidateSince = m.timestamp;
@@ -232,8 +345,8 @@ public:
                    m.timestamp - moodSince      >= minHoldMs) {
             currentMood = raw;
             moodSince   = m.timestamp;
-            candidate   = UNKNOWN;
-            // Only here. Both branches above leave the mood either unchanged or
+            candidate   = raw;
+            // Only here. The branches above leave the mood either unchanged or
             // arriving for the first time, and the comment above says why arriving
             // is not a change.
             ++moodChangeCount;
@@ -265,15 +378,17 @@ public:
     void reset() {
         history.clear();
         current           = MoodSnapshot();
-        currentMood       = UNKNOWN;
-        predictedNextMood = UNKNOWN;
+        currentMood       = SILENT;
+        predictedNextMood = SILENT;
         moodChangeCount   = 0;
         smoothLevel       = 0.0f;
         smoothDynamics    = 0.0f;
         smoothBpm         = 0.0f;
-        candidate         = UNKNOWN;
+        candidate         = SILENT;
         candidateSince    = 0;
         moodSince         = 0;
+        haveVerdict       = false;
+        dropPinUntil      = 0;
         dynLo             = 0.0f;
         dynHi             = 0.0f;
         dynSpan           = 0.0f;
@@ -293,63 +408,130 @@ public:
     bool  dynamicsThresholdsActive() const { return dynSpan > DYN_MIN_SPAN; }
 
 private:
-    // `held` is the mood currently on display. Its own condition is tested first
-    // and short-circuits, so a frame in which two conditions are both true keeps
-    // the classification it already had instead of alternating between them.
-    // The level thresholds are what they were written for, 0..1, and the field
-    // they read is level rather than energy. energy is a sum of 255 magnitudes in
-    // the hundreds, so every one of these was true on every frame: the classifier
-    // could never reach CALM and returned INTENSE whenever dynamics cleared 0.5,
-    // whatever was playing.
-    MoodType classifyMood(const MoodSnapshot& m, MoodType held) const {
-        // The dynamics cut points are 30 and 70 percent of the observed range.
-        // Below DYN_MIN_SPAN the input has no dynamic variation worth reading, so
-        // the dynamics clause is dropped rather than allowed to split its own
-        // noise and report a mood on the strength of it.
-        const bool  dynUsable = dynSpan > DYN_MIN_SPAN;
-        const float dynHigh   = dynLo + dynSpan * 0.7f;
-        const float dynLow    = dynLo + dynSpan * 0.3f;
+    // A total partition over level, with bpm and dynamics as nudges of at most
+    // one rung each. The nudge is the whole fix.
+    //
+    // This replaced four overlapping booleans that fell through to UNKNOWN.
+    // Enumerating their coverage leaves four bands with no mood at all: level
+    // 0.30-0.40, 0.40-0.60 at bpm >= 80, 0.60-0.80 at bpm <= 100, and level above
+    // 0.8 with a dynamics window too narrow to clear the cut. UNKNOWN then
+    // reached a picker whose fallback was a uniform draw over the whole catalog,
+    // so a third of the input range selected a scene at random while the
+    // interface read "Calm", because moodToString mapped UNKNOWN to Calm.
+    //
+    // `energetic = level > 0.6 && bpm > 100` is the shape of the bug: a gate ANDs
+    // a band away, so level 0.5 was unreachable whatever was playing. A gate
+    // removes a band from the ladder, and a removed band is exactly a dead band.
+    // A nudge of at most one rung cannot create one.
+    //
+    // The level thresholds are what they were always written for, 0..1, and the
+    // field they read is level rather than energy. energy is a sum of 255 FFT
+    // magnitudes, in the hundreds, so every one of the old threshold tests was
+    // true on every frame: the classifier could never reach CALM and returned
+    // INTENSE whenever dynamics cleared its cut, whatever was playing.
+    int ladderRankFrom(const MoodSnapshot& m) const {
+        int rung = 0;
+        if      (m.level >= LADDER_EDGE_3) rung = 4;
+        else if (m.level >= LADDER_EDGE_2) rung = 3;
+        else if (m.level >= LADDER_EDGE_1) rung = 2;
+        else if (m.level >= LADDER_EDGE_0) rung = 1;
 
-        const bool intense   = m.level > 0.8f && (!dynUsable || m.dynamics > dynHigh);
-        const bool energetic = m.level > 0.6f && m.bpm > 100;
-        const bool calm      = m.level < 0.3f && (!dynUsable || m.dynamics < dynLow);
-        const bool floaty    = m.bpm < 80 && m.level > 0.4f;
+        // bpm > 1 is required rather than defensive. bpm is exactly 0 whenever no
+        // tempo is known, which is every beatless passage, so a bare `bpm < 80`
+        // would push each of those down a rung for as long as it lasted.
+        if (m.bpm > BPM_NUDGE_UP) rung += 1;
+        else if (m.bpm > 1.0f && m.bpm < BPM_NUDGE_DOWN) rung -= 1;
 
-        switch (held) {
-            case INTENSE:   if (intense)   return INTENSE;   break;
-            case ENERGETIC: if (energetic) return ENERGETIC; break;
-            case CALM:      if (calm)      return CALM;      break;
-            case FLOATY:    if (floaty)    return FLOATY;    break;
-            default: break;
+        // Only when the observed range is wide enough to split. Below DYN_MIN_SPAN
+        // the input has no dynamic variation worth reading, and splitting its own
+        // noise would report a mood on the strength of it.
+        if (dynSpan > DYN_MIN_SPAN) {
+            if      (m.dynamics > dynLo + dynSpan * 0.7f) rung += 1;
+            else if (m.dynamics < dynLo + dynSpan * 0.3f) rung -= 1;
         }
 
-        if (intense)   return INTENSE;
-        if (energetic) return ENERGETIC;
-        if (calm)      return CALM;
-        if (floaty)    return FLOATY;
-        return UNKNOWN;
+        if (rung < 0)                 rung = 0;
+        if (rung > LADDER_RUNGS - 1)  rung = LADDER_RUNGS - 1;
+        return rung;
     }
 
+    // Two stages. The structural moods answer first, because each is a claim
+    // about the shape of a passage rather than about its loudness, and the same
+    // level is a hush before a drop or an ambient drift depending entirely on
+    // what came before it. The ladder answers everything else.
+    //
+    // The order among the structural ones is by how tightly each is tied to
+    // something that just happened. SILENT is the gate, the one condition that can
+    // say there is no audio here at all. DROP is an event and outranks
+    // everything. TEASE is anchored to an event as well, since its post-drop
+    // trigger is a drop within the last twelve seconds, and the aftermath of an
+    // event is named by the event. DESCENT and BUILDUP are standing measurements
+    // of a movement with nothing event-shaped behind them, and they take over
+    // once no event is in recent memory. WEIRD is the loosest, needing two of
+    // three, so it loses to all of them.
+    //
+    // TEASE ahead of DESCENT is the ordering that changed on review, and it
+    // matters because the two genuinely overlap: a drop is always followed by a
+    // fall, so the twelve seconds after one are both. Those twelve seconds go to
+    // TEASE, which is what was asked for, and DESCENT catches every wind-down
+    // that is not a drop's aftermath.
+    //
+    // No structural mood is reachable from every rung. The two that the ladder
+    // gates are gated in mirror image: BUILDUP needs the rung below ENERGETIC,
+    // because a climb that starts at the top is just loud music, and DESCENT
+    // needs it above CALM, because a fall that starts at the bottom is just
+    // quiet.
+    MoodType classifyMood(const MoodSnapshot& m) const {
+        if (m.gateGain < SILENT_GATE) return SILENT;
+        if (m.dropDetected)           return DROP;
+        if (m.teaseDetected)          return TEASE;
+
+        const int rung = ladderRankFrom(m);
+
+        if (m.buildup > 0.0f && rung < 3)                return BUILDUP;
+        if (m.descent > 0.0f && rung > 1)                return DESCENT;
+        if (m.anomaly >= WEIRD_ANOMALY_MIN && rung >= 2) return WEIRD;
+        return ladderMood(rung);
+    }
+
+public:
+    // The harness sweeps the whole input space through this, without the dwell.
+    // Asserting the partition is total needs to reach every input rather than
+    // whichever ones the hold and the confirmation happen to let through.
+    MoodType classifyForTest(const MoodSnapshot& m) const { return classifyMood(m); }
+
+private:
     MoodType predictNextMood() const {
         if (history.size() < 10) return currentMood;
 
-        float avgLevel = 0, avgBPM = 0, avgDynamics = 0;
+        float avgLevel = 0, avgBPM = 0, avgDynamics = 0, avgGate = 0;
 
         for (size_t i = 0; i < history.size(); ++i) {
             avgLevel += history[i].level;
             avgBPM += history[i].bpm;
             avgDynamics += history[i].dynamics;
+            avgGate += history[i].gateGain;
         }
 
         avgLevel /= history.size();
         avgBPM /= history.size();
         avgDynamics /= history.size();
+        avgGate /= history.size();
 
+        // gateGain is averaged and the rest of the structural fields are left at
+        // the snapshot default, which is the same distinction the smoothing above
+        // makes. The gate is a continuous quantity, so a window that was mostly
+        // silent is a silent window and the prediction should say so. The two
+        // flags and the two displacements are not: a one-block pulse has no mean,
+        // and a rising or falling passage averages to a mean that describes
+        // neither half, so a prediction built from them would claim a movement
+        // that stopped.
         MoodSnapshot temp;
         temp.level = avgLevel;
         temp.bpm = avgBPM;
         temp.dynamics = avgDynamics;
+        temp.gateGain = avgGate;
 
-        return classifyMood(temp, UNKNOWN);
+        return classifyMood(temp);
     }
 };

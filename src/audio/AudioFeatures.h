@@ -120,6 +120,70 @@ struct AudioFeatures {
 
     bool signalPresence = false;  // True if volume exceeds noise floor (e.g., > 0.05)
 
+    // ==== Structural detection ====
+    //
+    // Five moods name the shape of a passage rather than how loud it is: SILENT,
+    // TEASE, BUILDUP, DROP and WEIRD. The ladder cannot report any of them,
+    // because a quiet drift and a hush before a drop are the same level and the
+    // difference is entirely in what came before. These fields carry that.
+
+    // How far the gate has opened, 0..1. This is the one structural input that
+    // already existed, since the gate has to ramp anyway to stop a signal on the
+    // presence threshold from chattering. Exposed rather than re-derived.
+    //
+    // Defaults to 1.0f, not 0.0f, and that default is load-bearing. The harness
+    // builds AudioFeatures by hand in scriptedAudio and in every fixture, and none
+    // of those would learn about a new field. A 0.0f default would make every
+    // scripted frame read SILENT and break the dwell checks at once. Same rule as
+    // pixelLevel being a method: a producer that forgets has to get normal
+    // behaviour rather than a dead strip.
+    float gateGain = 1.0f;
+
+    // Displacement above the signal's own slow mean, and only while it is still
+    // climbing. Not dynamics, which is the width of the window the envelope has
+    // covered and so is equally large on a fall as on a rise.
+    //
+    // Zero means "not a buildup". Nonzero means one is being reported and the
+    // magnitude is how far above its own mean the signal sits, so the hold and
+    // the cooldown live in the detector and the classifier reads a single > 0.
+    // See BUILDUP_TAU_SEC.
+    float buildup = 0.0f;
+
+    // The same measurement on the other side of the slow mean, and the mirror of
+    // BUILDUP in every respect: a steady fall rather than a steady climb, so a
+    // passage that has simply settled at a lower level is not one. Both come out
+    // of the one follower, since a displacement is signed and the two fields are
+    // just its two halves named.
+    //
+    // Barely reachable after a drop, because a drop pins the mood for three
+    // seconds and TEASE claims the twelve after it. What it catches instead is
+    // the long wind-down at the end of a track and the retreat out of a chorus,
+    // which the ladder can only report as a sequence of rungs going down, and
+    // which reads as a run of changes rather than as one movement.
+    float descent = 0.0f;
+
+    // One block's pulse, not a state. A slam is an edge, so anything that
+    // required it to persist would miss the thing it exists to catch. Moods
+    // display it by pinning for DROP_PIN_MS rather than by holding this true.
+    bool dropDetected = false;
+
+    // Spectral flatness: the geometric mean of the magnitudes over their
+    // arithmetic mean, near 1 for noise and near 0 for a tone. Computed for the
+    // noise floor and discarded until now, which is why the floor can tell a room
+    // from a track and nothing else could.
+    float spectralFlatness = 0.0f;
+
+    // How many of WEIRD's three conditions hold, 0..3, counted only while its own
+    // hold and cooldown are satisfied. A count rather than a bool so a check can
+    // assert on how close a passage came, and so the threshold is one number to
+    // move rather than a nest of comparisons.
+    float anomaly = 0.0f;
+
+    // Tension without full energy: a breakdown after a drop, a hush before one, or
+    // a pulse that will not sustain. Any one of the three is enough, because to a
+    // listener they are the same thing.
+    bool teaseDetected = false;
+
     int16_t* waveform = nullptr;    // Pointer to time-domain samples
     size_t waveformSize = 0;        // Size of waveform buffer
     float spectrum[NUM_SAMPLES / 2] = {};   // FFT magnitudes

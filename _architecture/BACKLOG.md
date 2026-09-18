@@ -5,11 +5,11 @@
      BLOCKED names what it waits on. MOVED says where. DROPPED says why.
      Status never appears in the heading. Headings are undated topic titles. -->
 
-## Inert audio tuning macros in Config.h
+## Inert macros in Config.h
 
 Status: OPEN
 
-BEAT_THRESHOLD, MIN_BEAT_INTERVAL, GAIN_SMOOTHING, LOUDNESS_SMOOTHING, NOISE_THRESHOLD, FFT_SMOOTHING and MAX_AUDIO_LEVEL have zero uses outside Config.h. The live values are hardcoded instead (0.85f in AudioProcessor.h:23, 250 inline in the beat path). MIN_BEAT_INTERVAL declares 300 while the code uses 250, so the documented knob and the real one disagree. Deferred until the loop structure is fixed, because tuning sensitivity against a broken frame budget measures the wrong thing. The beat gates inside the layers have the same problem and may simply never fire, since BassShockwaveLayer wants beat detected and bass above 0.8 against a fixed divisor of 100.0 that nothing calibrates.
+The five macros this item named are dealt with: NOISE_THRESHOLD, MAX_AUDIO_LEVEL, LOUDNESS_SMOOTHING and FFT_SMOOTHING are deleted, and GAIN_SMOOTHING is `0.85f` and is now the only statement of that number rather than a `0.92f` reading against the `0.85f` that ran. What remains is the same defect seven more times. CHANNEL_COUNT, BITS_PER_SAMPLE, FFT_BANDS, FFT_MAX_SCALE, BAR_HEIGHT_MAX, MIN_SWITCH_INTERVAL and ENABLE_WEB_UI have zero uses outside Config.h. They stay, by the owner's decision on 2026-09-18. None of the seven traces to a caller or to a commit that removed one, so deleting it would discard the only record of an intent that may still be wanted. Each goes only once what it was for has been worked out, which is why FFT_BANDS and BAR_HEIGHT_MAX (display work that may still be wanted) and ENABLE_WEB_UI (a switch rather than a measurement) are named here rather than removed. MIN_BEAT_INTERVAL is 250 and is used, at AudioProcessor.cpp:477. The beat gates inside the layers have the same problem and may simply never fire, since BassShockwaveLayer wants beat detected and bass above 0.8 against a fixed divisor of 100.0 that nothing calibrates.
 
 ## Injected layers would never expire
 
@@ -27,13 +27,13 @@ main.ino:48 skips controller.update() entirely whenever free heap drops below 20
 
 Status: OPEN
 
-`VisualLayers.h:298` runs `exp(-pow(...))` inside a per-LED loop, and `:265` and `:161` call `sin` per LED. Float arguments promote to software double and ESP32 has no hardware double FPU, so the cost scales with LED count: invisible on a 10-LED strip, dominant on a 300-LED one. This was latent rather than live until recently, because the whole scene path early-returned and none of it executed. Now that layers render it is real, and the earlier estimate was made against code that did not run, so measure frame time before optimising.
+`src/animations/visual-layers/VisualLayers.h:328` runs `exp(-pow(...))` inside a per-LED loop, and `:295` and `:178` call `sin` per LED. Float arguments promote to software double and ESP32 has no hardware double FPU, so the cost scales with LED count: invisible on a 10-LED strip, dominant on a 300-LED one. This was latent rather than live until recently, because the whole scene path early-returned and none of it executed. Now that layers render it is real, and the earlier estimate was made against code that did not run, so measure frame time before optimising.
 
 ## Dead code and uninstantiated classes
 
 Status: OPEN
 
-LayerPool is never instantiated anywhere, so its getByType() returning std::vector<Entry> by value is latent rather than live. AlienSquirtTrailLayer is unused, as are WormholeVortexLayer and CentroidColorFlowLayer, which is why the phase wraps added to those two are hygiene rather than a live fix. SettingIconWidget is declared and owned at DisplayManager.h:67 but never constructed, and ScrollingTextWidget at Widget.h:218 is never instantiated.
+LayerPool is never instantiated anywhere, so its getByType() returning std::vector<Entry> by value is latent rather than live. AlienSquirtTrailLayer is unused. WormholeVortexLayer and CentroidColorFlowLayer are no longer in this list: both are reachable now that the twelve concrete `LayerType` values exist, so the phase wraps in them are live code rather than hygiene. SettingIconWidget is declared and owned at DisplayManager.h:67 but never constructed, and ScrollingTextWidget at Widget.h:218 is never instantiated.
 
 ## Verbose ESP-IDF logging left on
 
@@ -70,3 +70,15 @@ Status: OPEN
 Status: OPEN
 
 `AI_ASSIST_INSTRUCTIONS.MD` at the root is a prompt file for an IntelliJ assistant. Nothing in the repo reads it, it targets `.idea/`, which is now gitignored, and its only mention anywhere is the generated `graphify-out/GRAPH_REPORT.md`. Delete it unless an IDE still points at it.
+
+## Structural mood thresholds are unvalidated
+
+Status: OPEN
+
+TEASE is the fuzziest of the structural detectors and its definition is a first cut: three triggers (a drop inside twelve seconds, a hush with the level low and dynamics or buildup rising, a high-variance mid-mean level ring) with any one of them sufficient, and no hold of its own. WEIRD needs two of three, and the centroid condition depends on a span floor that no real recording has exercised. DESCENT and TEASE genuinely overlap, because a drop is always followed by a fall, and TEASE is placed first so the aftermath of an event is named by the event, which is a judgement rather than a measurement. None of it can be settled without a 60-120 s capture of a real track: the only capture is 2.3 s, shorter than every window these use. Blocked on that recording rather than on design.
+
+## Which layer set belongs on which intensity band
+
+Status: BLOCKED
+
+Blocked on a 60-120 s capture and a look at the live page. `SceneDefinition::layerTypes` is chosen by intensity band now instead of being the same two layers on every scene, which is what lets two scenes at different intensities composite differently. Which accent suits which band was decided by reading the layers rather than by looking at a strip, and ten of the twelve concrete layer types are reachable without any scene naming them, because choosing between alternatives that share a role is a visual judgement that cannot be made from the code. The sets themselves are a first cut: a quiet band gets a drone and a slow arc, the groove gets a streak and a beat pop, the peak gets a base with impact layers, and every one of those choices is a guess about what reads well at that intensity.

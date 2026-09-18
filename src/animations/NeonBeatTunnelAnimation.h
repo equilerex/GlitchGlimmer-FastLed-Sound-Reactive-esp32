@@ -4,10 +4,6 @@
 
 class NeonBeatTunnelAnimation : public Animation {
 public:
-    static constexpr MoodType mood = MoodType::ENERGETIC;
-    static constexpr float preferredTempo = 1.2f;
-    static constexpr float intensity = 0.9f;
-
     void update(CRGB* leds, int count, const AudioFeatures& f) override {
         if (count <= 0) return;
 

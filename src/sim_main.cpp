@@ -39,8 +39,8 @@
 #include "scenes/SceneState.h"
 #include "scenes/LayerTypes.h"
 #include "scenes/LayerManager.h"
-#include "animations/VisualLayer.h"
-#include "animations/VisualLayers.h"
+#include "animations/visual-layers/VisualLayer.h"
+#include "animations/visual-layers/VisualLayers.h"
 #include "animations/AlienPulse.h"
 #include "animations/neonFlow.h"
 #include "animations/PsychedelicInkSquirtAnimation.h"
@@ -187,6 +187,12 @@ AudioFeatures scriptedAudio(int frame) {
     f.bassHits       = (frame % 15 == 0) ? 1 : 0;
     f.noiseFloor     = 0.02f;
     f.signalPresence = energy > 0.10f;
+    // Written rather than left at its default, which exists so that a producer
+    // which forgets the field gets an open gate instead of a dead strip. Here the
+    // phase really does have no signal in it, so the gate says so. Hard 0 and 1
+    // rather than a ramp, because the script has no ramp to model: it is stating
+    // that the gate is shut, not drawing how it got there.
+    f.gateGain       = f.signalPresence ? 1.0f : 0.0f;
     return f;
 }
 
@@ -1160,9 +1166,10 @@ void checkLifecycle(bool verbose) {
 //  so no update leaves a value outside one period. That is what a wrong or
 //  missing modulus breaks, and it is what these checks assert.
 //
-//  Four sites are reachable from a build. The other two the plan named,
-//  WormholeVortexLayer and CentroidColorFlowLayer, are never instantiated
-//  anywhere in src/, so their wraps are hygiene rather than a live fix.
+//  Six sites. Two of them, WormholeVortexLayer and CentroidColorFlowLayer, were
+//  unreachable when the wraps went in, because nothing constructed them and the
+//  wraps were hygiene rather than a live fix. Both are reachable now that the
+//  twelve concrete layer types are wired, so all six are live.
 // -----------------------------------------------------------------------------
 namespace {
 
@@ -1324,45 +1331,209 @@ void checkSoak(bool verbose) {
 }
 
 // -----------------------------------------------------------------------------
-//  Check 9 - the scene picker does not re-pick the running scene
+//  Check 9 - the scene picker is deterministic
 //
-//  MoodType::INTENSE has two catalog scenes, so a mood match is genuinely
-//  ambiguous and the picker used to choose uniformly between them, the running
-//  one included. beginScene then reset the clock and nothing changed on screen.
+//  Three properties, and the middle one is what the old picker got wrong. It drew
+//  uniformly from the scenes matching the mood, and from the whole catalog when
+//  none matched, so an unserved mood redrew the strip at random on every change
+//  and the running scene could be drawn again, which reset the scene clock while
+//  nothing on screen moved.
 // -----------------------------------------------------------------------------
 void checkSceneTransitions() {
     SceneRegistry reg;
     reg.registerDefaultScenes();
 
-    std::vector<const SceneDefinition*> intense;
-    for (const SceneDefinition& s : reg.getAll()) {
-        if (s.supportsMood(MoodType::INTENSE)) intense.push_back(&s);
-    }
+    const size_t kAnimations = static_cast<size_t>(AnimationType::COUNT) - 1;  // less NONE
+    record("the catalog registers a scene per animation",
+           reg.count() == kAnimations,
+           std::to_string(reg.count()) + " scenes for " + std::to_string(kAnimations) +
+           " animations");
 
-    record("the catalog has more than one scene for a mood",
-           intense.size() > 1,
-           std::to_string(intense.size()) + " scenes prefer INTENSE; the check needs two");
+    if (reg.count() < 2) return;
 
-    if (intense.size() < 2) return;
-
-    // level, not energy, and named rather than derived. This fixture used to fill in
-    // level 1.0 and dynamics 0.8 to land on INTENSE under the fixed cuts the picker
-    // carried, which only worked while the picker was classifying for itself.
     SceneState state;
-    state.activeScene = intense[0];
 
+    // Determinism. Same state, same answer, every time. Worth its own check
+    // because the property is invisible from one call: the old picker returned a
+    // correct-looking scene once and a different one next.
+    const SceneDefinition* first = &reg.pickSceneByMood(state, MoodType::INTENSE);
+    int disagreements = 0;
+    for (int i = 0; i < 200; ++i) {
+        if (&reg.pickSceneByMood(state, MoodType::INTENSE) != first) ++disagreements;
+    }
+    record("the picker returns the same scene for the same state",
+           disagreements == 0,
+           std::to_string(disagreements) + " disagreements in 200 picks, landing on " +
+           std::string(first->name));
+
+    // And it does not read the generator at all, which is the stronger statement.
+    // Two seeds that disagree about everything else have to agree about this.
+    randomSeed(1);
+    const SceneDefinition* seeded = &reg.pickSceneByMood(state, MoodType::DANCY);
+    randomSeed(9999);
+    const SceneDefinition* reseeded = &reg.pickSceneByMood(state, MoodType::DANCY);
+    record("the picker does not draw from the random generator",
+           seeded == reseeded,
+           seeded == reseeded
+               ? std::string("both seeds chose ") + std::string(seeded->name)
+               : std::string("seed 1 chose ") + std::string(seeded->name) +
+                 ", seed 9999 chose " + std::string(reseeded->name));
+
+    // No mood re-picks the scene already running. beginScene would reset the
+    // clock and nothing would change on screen, while the next real transition is
+    // pushed out by a full scene duration.
     int selfPicks = 0;
-    int others    = 0;
-    for (int i = 0; i < 400; ++i) {
-        const SceneDefinition& picked = reg.pickSceneByMood(state, MoodType::INTENSE);
-        if (&picked == intense[0]) ++selfPicks;
-        else                       ++others;
+    for (int m = 0; m < MOOD_COUNT; ++m) {
+        const SceneDefinition& a = reg.pickSceneByMood(state, MoodType(m));
+        state.activeScene = &a;
+        if (&reg.pickSceneByMood(state, MoodType(m)) == &a) ++selfPicks;
+        state.activeScene = nullptr;
+    }
+    record("no mood re-picks the scene already running",
+           selfPicks == 0,
+           std::to_string(selfPicks) + " of " + std::to_string(int(MOOD_COUNT)) +
+           " moods returned the running scene again");
+
+    // The five rungs have to land on five different scenes, or the intensity axis
+    // carries nothing and every loud passage looks the same. This is the check
+    // that failed before the ladder existed: the catalog's intensities clustered
+    // at 0.8-0.9, so three of the five would have collapsed onto one scene.
+    std::vector<bool> seen(static_cast<size_t>(AnimationType::COUNT), false);
+    int distinct = 0;
+    std::string rungNames;
+    for (int r = 0; r < 5; ++r) {
+        const SceneDefinition& s = reg.pickSceneByMood(state, ladderMood(r));
+        const size_t idx = static_cast<size_t>(s.baseAnimation);
+        if (!seen[idx]) { seen[idx] = true; ++distinct; }
+        rungNames += std::string(moodToString(ladderMood(r))) + "->" + std::string(s.name) + " ";
+    }
+    record("the five rungs land on five different scenes",
+           distinct == 5,
+           std::to_string(distinct) + " distinct scenes across the five rungs: " + rungNames);
+}
+
+// -----------------------------------------------------------------------------
+//  Check 10 - the mood classifier is total
+//
+//  The check the original defect would have failed. The classifier tested four
+//  overlapping booleans and returned UNKNOWN when none held, which left a third of
+//  the input range unclassified, and UNKNOWN then reached a picker that drew at
+//  random. A sweep cannot be satisfied by a classifier with holes in it, which is
+//  the whole reason it is written as a sweep rather than as a few named cases.
+// -----------------------------------------------------------------------------
+void checkMoodPartition() {
+    MoodHistory mood;
+
+    // dynSpan is 0 on a fresh MoodHistory, so the dynamics nudge is inert here and
+    // this is the level and bpm grid alone. The dynamics nudge gets its own check
+    // below, driven through update(), because that is what builds the span.
+    const float bpms[] = {0.0f, 60.0f, 75.0f, 90.0f, 105.0f, 121.0f, 140.0f, 175.0f};
+
+    bool reached[5]   = {};
+    int  samples      = 0;
+    int  outOfRange   = 0;
+    int  nonMonotone  = 0;
+
+    for (float bpm : bpms) {
+        int previousRank = -1;
+        for (int li = 0; li <= 100; ++li) {
+            MoodSnapshot m;
+            m.level = float(li) / 100.0f;
+            m.bpm   = bpm;
+            const MoodType got = mood.classifyForTest(m);
+            const int      rank = ladderRank(got);
+            ++samples;
+            if (rank < 0 || rank > 4 || got == MOOD_COUNT) ++outOfRange;
+            else                                           reached[rank] = true;
+            if (previousRank >= 0 && rank < previousRank) ++nonMonotone;
+            previousRank = rank;
+        }
     }
 
-    record("the running scene is not re-picked while another matches",
-           selfPicks == 0,
-           std::to_string(selfPicks) + " self-picks and " + std::to_string(others) +
-           " alternatives in 400 draws of an otherwise even two-way choice");
+    record("every input classifies to a rung on the ladder",
+           outOfRange == 0,
+           std::to_string(outOfRange) + " of " + std::to_string(samples) +
+           " inputs returned something other than a rung");
+
+    // Non-vacuity. This is the assertion that would have caught the original bug
+    // outright: the old classifier could never return CALM on a real signal, and a
+    // sweep that never reaches a mood is a sweep over a partition with a hole in
+    // it.
+    int distinct = 0;
+    for (int r = 0; r < 5; ++r) if (reached[r]) ++distinct;
+    record("the sweep reaches all five rungs",
+           distinct == 5,
+           std::to_string(distinct) + " of 5 rungs reached over " +
+           std::to_string(samples) + " inputs");
+
+    record("raising level never lowers the rung",
+           nonMonotone == 0,
+           std::to_string(nonMonotone) + " drops across " + std::to_string(samples) +
+           " inputs");
+
+    // The bpm nudge, stated directly. 0.5 is the middle of the DANCY rung, so bpm
+    // alone decides between CALM, DANCY and ENERGETIC with level held fixed.
+    MoodSnapshot mid;
+    mid.level = 0.5f;
+    mid.bpm   = 60.0f;
+    const int slow = ladderRank(mood.classifyForTest(mid));
+    mid.bpm = 140.0f;
+    const int fast = ladderRank(mood.classifyForTest(mid));
+    mid.bpm = 0.0f;   // no tempo known, which must not read as a slow tempo
+    const int none = ladderRank(mood.classifyForTest(mid));
+    record("bpm nudges the rung by exactly one either way",
+           fast == slow + 2 && none == slow + 1,
+           "at level 0.5: bpm 60 gives rung " + std::to_string(slow) + ", bpm 140 gives " +
+           std::to_string(fast) + ", no tempo gives " + std::to_string(none));
+
+    // The dynamics nudge, which needs a real span, so the fixture drives a signal
+    // that varies and then probes the window that produced. The probe bpm is 95,
+    // which nudges in neither direction, so only dynamics moves the rung.
+    //
+    // The driver alternates on a one-second period rather than on every frame. The
+    // window is a follower of the smoothed value, not of the raw one, and the
+    // smoothing is a 5 percent lag, so a per-frame alternation is filtered down to
+    // a couple of hundredths before the follower ever sees it and the span never
+    // opens.
+    MoodHistory driven;
+    AudioFeatures wobble{};
+    wobble.level = 0.5f;
+    wobble.bpm   = 95.0f;
+    for (int i = 0; i < 300; ++i) {
+        wobble.dynamics = ((i / 30) % 2 == 0) ? 0.05f : 0.90f;
+        simAdvance(33);
+        driven.update(wobble);
+    }
+
+    MoodSnapshot probe;
+    probe.level = 0.5f;
+    probe.bpm   = 95.0f;
+    probe.dynamics = 0.05f;
+    const int dynLowRank = ladderRank(driven.classifyForTest(probe));
+    probe.dynamics = 0.90f;
+    const int dynHighRank = ladderRank(driven.classifyForTest(probe));
+    record("a dynamics reading inside the observed range nudges the rung",
+           driven.dynamicsThresholdsActive() && dynLowRank == 1 && dynHighRank == 3,
+           "at level 0.5, bpm 95: dynamics below the low cut gives rung " +
+           std::to_string(dynLowRank) + ", above the high cut gives " +
+           std::to_string(dynHighRank) + ", window " +
+           std::to_string(driven.getDynamicsLow()) + " to " +
+           std::to_string(driven.getDynamicsHigh()));
+
+    // Totality again, this time with the nudge live, since a nudge that could
+    // reach outside the ladder is the other way a hole gets in.
+    int spanOutOfRange = 0;
+    for (int li = 0; li <= 100; ++li) {
+        for (int di = 0; di <= 100; ++di) {
+            probe.level    = float(li) / 100.0f;
+            probe.dynamics = float(di) / 100.0f;
+            const int r = ladderRank(driven.classifyForTest(probe));
+            if (r < 0 || r > 4) ++spanOutOfRange;
+        }
+    }
+    record("the partition stays total with the dynamics nudge live",
+           spanOutOfRange == 0,
+           std::to_string(spanOutOfRange) + " of 10201 inputs fell off the ladder");
 }
 
 // -----------------------------------------------------------------------------
@@ -1430,39 +1601,188 @@ void checkAudioProcessor() {
     // feeding the classifier live audio: a steady tone should be one mood, and
     // any mood it reports should be a mood the rules can reach.
     //
-    // The first frames are not counted. The gate ramps open over about ten frames
-    // and level is below every threshold until it has, so the classifier reports
-    // nothing for that fraction of a second. That is the gate doing its job on the
-    // silence before the tone, not an unstable classification, and what has to
-    // hold is the state it settles into.
-    constexpr int kSettleFrames = 20;
+    // The first frames are not counted, and now for two reasons rather than one.
+    //
+    // The gate ramps open over about seventeen frames and level is below every
+    // threshold until it has, so the classifier has nothing to say for that
+    // fraction of a second. That is the gate doing its job on the silence before
+    // the tone, not an unstable classification.
+    //
+    // And with SILENT a real verdict rather than a sentinel, the boot SILENT is now
+    // subject to the mood's own minimum hold, so the first non-silent mood cannot
+    // be adopted before 2000 ms have passed. The gate crosses its threshold at
+    // frame 17 and the ladder does not settle until frame 61, because the hold is
+    // measured from a mood that was adopted at frame 0. Both are the design
+    // working, and what has to hold is the state it settles into, so the count
+    // starts well after both.
+    //
+    // The window is longer than the two checks above need, because the gate is an
+    // exponential approach and the level it produces is still climbing while it
+    // climbs. At frame 100 the gate reads 0.983 and the level is under it, which
+    // puts the smoothed level near the top ladder edge rather than past it, so the
+    // ladder is still legitimately crossing that edge and the count would catch a
+    // real transition rather than an unstable one. A steady signal that is still
+    // getting louder is not a steady signal. By frame 200 the gate is within
+    // 0.0003 of open and the ladder has stopped moving.
+    constexpr int kTotalFrames   = 260;
+    constexpr int kSettleFrames  = 200;
     MoodHistory mood;
     int changes = 0;
-    MoodType previous = MoodType::UNKNOWN;
-    bool sawUnknown = false;
-    for (int frame = 0; frame < 100; ++frame) {
+    bool havePrevious = false;
+    MoodType previous = SILENT;
+
+    // What the structural detectors do on a signal that has none of the shapes
+    // they look for. A tone is the cleanest negative case there is: it is steady,
+    // so it has no movement to report, and it is tonal, so it cannot look like an
+    // eclectic passage either.
+    int   toneDrops      = 0;
+    int   toneTeases     = 0;
+    float toneAnomaly    = 0.0f;
+    float toneMinGate    = 1.0f;
+
+    for (int frame = 0; frame < kTotalFrames; ++frame) {
         proc.submitSamples(samples.data(), samples.size());
         const AudioFeatures next = proc.analyzeAudio();
         mood.update(next);
+
+        if (next.dropDetected)  ++toneDrops;
+        if (next.teaseDetected) ++toneTeases;
+        toneAnomaly = std::max(toneAnomaly, next.anomaly);
+        if (frame >= kSettleFrames) toneMinGate = std::min(toneMinGate, next.gateGain);
+
         if (frame >= kSettleFrames) {
-            if (frame > kSettleFrames && mood.getCurrentMood() != previous) ++changes;
-            if (mood.getCurrentMood() == MoodType::UNKNOWN) sawUnknown = true;
+            if (havePrevious && mood.getCurrentMood() != previous) ++changes;
             previous = mood.getCurrentMood();
+            havePrevious = true;
         }
+        // The clock has to move, or the dwell windows never elapse and the
+        // assertion below is satisfied by nothing being possible rather than by
+        // nothing happening. The device analyses a block every 33 ms.
+        simAdvance(33);
     }
 
     record("a steady tone keeps one mood once the gate has opened", changes == 0,
            std::to_string(changes) + " mood changes in the " +
-           std::to_string(100 - kSettleFrames) + " frames after the gate ramped open");
+           std::to_string(kTotalFrames - kSettleFrames) +
+           " frames after the gate ramped open and the first hold expired");
 
     // The signal came out of the FFT rather than out of a script, which makes this
-    // the only place the classifier meets a real measurement. It has to reach a
-    // mood, not sit on UNKNOWN.
-    record("the classifier reaches a mood for an FFT-scale signal",
-           !sawUnknown,
+    // the only place the classifier meets a real measurement. It has to land on a
+    // rung of the ladder. The old assertion was that it did not land on UNKNOWN,
+    // which was a weaker claim: UNKNOWN was one of many ways to classify nothing,
+    // and the ladder now has no way to classify nothing at all.
+    record("the classifier reaches a rung for an FFT-scale signal",
+           ladderRank(previous) >= 0,
            std::string("the settled frames of a 0.4 tone stayed on ") +
-           moodToString(mood.getCurrentMood()) + " at energy " +
+           moodToString(previous) + " at energy " +
            std::to_string(f.energy));
+
+    // A steady tone is the negative case for all three structural detectors that
+    // look for something happening, and it is the case that matters: the failure
+    // these are built against is not a missed drop, it is a signal that is doing
+    // nothing being labelled as if it were.
+    record("a steady tone is not a drop",
+           toneDrops == 0,
+           std::to_string(toneDrops) + " drops across " + std::to_string(kTotalFrames) +
+           " frames of an unchanging tone");
+
+    record("a steady tone is not a tease",
+           toneTeases == 0,
+           std::to_string(toneTeases) + " teases across " + std::to_string(kTotalFrames) +
+           " frames of an unchanging tone");
+
+    record("a steady tone is not weird",
+           toneAnomaly < WEIRD_ANOMALY_MIN,
+           "anomaly peaked at " + std::to_string(toneAnomaly) + " against a threshold of " +
+           std::to_string(WEIRD_ANOMALY_MIN));
+
+    // The gate is the one structural input that already existed, and the tone is
+    // the cleanest way to see it settle: it has to be fully open by the end, or
+    // every threshold downstream is being read through a value that is still
+    // climbing.
+    //
+    // Measured over the settled window rather than from an earlier frame, because
+    // the gate is an exponential approach and its value at any frame is
+    // 1 - (1 - GATE_RAMP)^n. It passes GATE_SETTLED at frame 57 and reads 0.983 at
+    // frame 100, so a low frame count is asking for a value the ramp is not built
+    // to produce rather than catching it short.
+    record("the gate settles fully open on a steady signal",
+           toneMinGate > 0.95f,
+           "gateGain never fell below " + std::to_string(toneMinGate) +
+           " over the settled frames");
+
+    // The other direction of the same field, and the reason it is exposed at all.
+    // A gate at zero is the only thing that can say a passage has no audio in it,
+    // so it has to outrank every other structural condition: a drop and a silence
+    // cannot both be true, and if they somehow are, the silence is the honest
+    // reading because there is nothing there to hear.
+    {
+        MoodSnapshot silent;              // gateGain defaults to 1.0f
+        silent.gateGain = 0.0f;
+        silent.level = 0.95f;             // and it would otherwise read INTENSE
+        silent.bpm = 140.0f;
+        silent.dropDetected = true;       // and it would otherwise read DROP
+        silent.teaseDetected = true;
+        record("a shut gate reads as silent whatever else is set",
+               mood.classifyForTest(silent) == SILENT,
+               std::string("level 0.95 with drop and tease set classified as ") +
+               moodToString(mood.classifyForTest(silent)));
+
+        // And the boundary is the constant, not a value near it.
+        silent.gateGain = SILENT_GATE;
+        const MoodType atEdge = mood.classifyForTest(silent);
+        silent.gateGain = SILENT_GATE - 0.01f;
+        const MoodType belowEdge = mood.classifyForTest(silent);
+        record("the silence gate's threshold is where the constant says",
+               atEdge != SILENT && belowEdge == SILENT,
+               std::string("gateGain at ") + std::to_string(SILENT_GATE) + " reads " +
+               moodToString(atEdge) + ", just below reads " + moodToString(belowEdge));
+    }
+
+    // The two displacements are the one pair of conditions that cannot both hold,
+    // since they are the two halves of a signed quantity, and each is gated to the
+    // part of the ladder where it means something. A climb from the top of the
+    // ladder is just loud music and a fall from the bottom is just quiet, so the
+    // gates are what stop those two being reported as movements.
+    {
+        MoodSnapshot m;                   // gateGain defaults to 1.0f
+        m.buildup = 0.4f;
+        m.descent = 0.0f;
+
+        m.level = 0.10f;  const MoodType lowBuild  = mood.classifyForTest(m);
+        m.level = 0.50f;  const MoodType midBuild  = mood.classifyForTest(m);
+        m.level = 0.95f;  const MoodType highBuild = mood.classifyForTest(m);
+
+        record("a climb is a buildup until the ladder is already at the top",
+               lowBuild == BUILDUP && midBuild == BUILDUP && highBuild != BUILDUP,
+               std::string("buildup at level 0.10 reads ") + moodToString(lowBuild) +
+               ", at 0.50 reads " + moodToString(midBuild) + ", at 0.95 reads " +
+               moodToString(highBuild));
+
+        m.buildup = 0.0f;
+        m.descent = 0.4f;
+
+        m.level = 0.95f;  const MoodType highFall = mood.classifyForTest(m);
+        m.level = 0.50f;  const MoodType midFall  = mood.classifyForTest(m);
+        m.level = 0.10f;  const MoodType lowFall  = mood.classifyForTest(m);
+
+        record("a fall is a descent until the ladder is already at the bottom",
+               highFall == DESCENT && midFall == DESCENT && lowFall != DESCENT,
+               std::string("descent at level 0.95 reads ") + moodToString(highFall) +
+               ", at 0.50 reads " + moodToString(midFall) + ", at 0.10 reads " +
+               moodToString(lowFall));
+
+        // And the mirror is a mirror: a descent out of a drop's aftermath is the
+        // one place the two overlap, and the event's window is what decides it.
+        m = MoodSnapshot();
+        m.descent = 0.4f;
+        m.level   = 0.95f;
+        m.teaseDetected = true;
+        record("a tease claims the passage it is anchored to",
+               mood.classifyForTest(m) == TEASE,
+               std::string("a descent during a tease window reads ") +
+               moodToString(mood.classifyForTest(m)));
+    }
 
     // --- DC offset -----------------------------------------------------------
     // The browser's lowest spectrum bar read full in silence as well as in music.
@@ -1950,25 +2270,48 @@ void checkAudioProcessor() {
     // 99 transitions while a damped one settles and holds. The two blocks differ in
     // amplitude by a factor of four, which is the same alternation the level checks
     // above use and enough to cross the classifier's cut points.
+    //
+    // The clock has to move here for the same reason it does in the settle loop
+    // above, and the failure it avoids is the same one: with millis() frozen at the
+    // boot value the confirm and hold windows can never elapse, so the mood cannot
+    // leave the SILENT it booted into. The count then reads zero because nothing was
+    // possible rather than because nothing happened, which is what the settled-mood
+    // clause below is there to catch.
+    //
+    // Two counters, because two different claims are being made. flickerChanges
+    // runs the whole loop and is what the firmware's own counter is compared
+    // against, so it has to start from the same mood the firmware does: the
+    // constructor's SILENT, seeded before the first frame rather than after it.
+    // flickerSettled is the flicker claim itself and starts only once the ladder
+    // has had time to arrive.
+    constexpr int kFlickerFrames  = 260;
+    constexpr int kFlickerSettle  = 200;
     AudioProcessor procFlicker;
     MoodHistory flicker;
     int flickerChanges = 0;
-    MoodType flickerPrevious = MoodType::UNKNOWN;
-    for (int frame = 0; frame < 100; ++frame) {
+    int flickerSettled = 0;
+    MoodType flickerPrevious = SILENT;
+    for (int frame = 0; frame < kFlickerFrames; ++frame) {
         const std::vector<float>& block = (frame % 2 == 0) ? samples : quietTone;
         procFlicker.submitSamples(block.data(), block.size());
         flicker.update(procFlicker.analyzeAudio());
-        if (frame > 0 && flicker.getCurrentMood() != flickerPrevious) ++flickerChanges;
+
+        if (flicker.getCurrentMood() != flickerPrevious) {
+            ++flickerChanges;
+            if (frame >= kFlickerSettle) ++flickerSettled;
+        }
         flickerPrevious = flicker.getCurrentMood();
+        simAdvance(33);
     }
 
-    // The settled mood is checked as well as the count, because a mood frozen at
-    // UNKNOWN would change zero times and pass the count on its own. moodToString
-    // maps UNKNOWN to "Calm", so the detail line cannot be read as proof on its own.
+    // The settled mood is checked as well as the count, because a mood that never
+    // resolved would change zero times and pass the count on its own. Every value
+    // the enum can hold now prints as something other than a rung, so the check is
+    // that it landed on a rung rather than that it avoided one sentinel.
     record("an alternating signal does not flicker the mood",
-           flickerChanges <= 3 && flicker.getCurrentMood() != MoodType::UNKNOWN,
-           std::to_string(flickerChanges) + " mood changes across 100 frames of a signal "
-           "that alternates every frame, settling on " +
+           flickerSettled <= 3 && ladderRank(flicker.getCurrentMood()) >= 0,
+           std::to_string(flickerSettled) + " mood changes across the settled window of a "
+           "signal that alternates every frame, settling on " +
            moodToString(flicker.getCurrentMood()));
 
     // The counter the page reports as moodChanges. It lives in the firmware
@@ -1981,7 +2324,7 @@ void checkAudioProcessor() {
            flicker.getMoodChangeCount() == flickerChanges,
            "firmware counted " + std::to_string(flicker.getMoodChangeCount()) +
            ", the harness observed " + std::to_string(flickerChanges) +
-           " across the same 100 frames");
+           " across the same " + std::to_string(kFlickerFrames) + " frames");
 
     // --- Mood dwell and the moving dynamics thresholds ------------------------
     // Both are new behaviour with nothing else guarding them. They are driven from
@@ -2011,9 +2354,10 @@ void checkAudioProcessor() {
         feed(dwell, loud, 30);
         const MoodType loudMood = dwell.getCurrentMood();
 
-        record("a scripted loud block reaches a mood without waiting on UNKNOWN",
-               loudMood != MoodType::UNKNOWN,
-               "settled on " + std::string(moodToString(loudMood)));
+        record("a scripted loud block climbs to the top rung",
+               ladderRank(loudMood) == 4,
+               "settled on " + std::string(moodToString(loudMood)) + " at rung " +
+               std::to_string(ladderRank(loudMood)));
 
         // Arriving is not a change. Without this the counter would report a
         // change on the first frame of every session, which is the one transition
@@ -2021,7 +2365,7 @@ void checkAudioProcessor() {
         record("arriving at a first mood is not counted as a change",
                dwell.getMoodChangeCount() == 0,
                "counter reads " + std::to_string(dwell.getMoodChangeCount()) +
-               " after settling from UNKNOWN on " + std::string(moodToString(loudMood)));
+               " after settling on " + std::string(moodToString(loudMood)));
 
         // 495 ms of the opposite condition. Under the 500 ms confirmation and well
         // under the 2000 ms hold, so neither rule permits a change yet.
@@ -2381,7 +2725,7 @@ struct ReplayReport {
     Range              presence;
     int                beats = 0;
     int                moodChanges = 0;
-    int                moodFrames[5] = {0, 0, 0, 0, 0};
+    int                moodFrames[MOOD_COUNT] = {};
     std::vector<unsigned long> dwells;
 
     const Range* find(const char* name) const {
@@ -2454,7 +2798,8 @@ ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks) {
     AudioProcessor proc;
     MoodHistory    mood;
 
-    MoodType      previousMood = MoodType::UNKNOWN;
+    MoodType      previousMood = SILENT;
+    bool          havePrevious = false;
     unsigned long moodSince    = 0;
 
     for (const std::vector<float>& block : blocks) {
@@ -2470,10 +2815,12 @@ ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks) {
         mood.update(f);
         const MoodType m = mood.getCurrentMood();
         report.moodFrames[int(m)] += 1;
-        if (m != previousMood) {
-            if (previousMood != MoodType::UNKNOWN || report.moodChanges > 0) {
-                report.dwells.push_back(simNow() - moodSince);
-            }
+        if (!havePrevious) {
+            previousMood = m;
+            moodSince    = simNow();
+            havePrevious = true;
+        } else if (m != previousMood) {
+            report.dwells.push_back(simNow() - moodSince);
             ++report.moodChanges;
             moodSince    = simNow();
             previousMood = m;
@@ -2500,7 +2847,7 @@ void printCapture(const char* path, const ReplayReport& r) {
                 r.beats, r.frames ? double(r.beats) / (double(r.frames) * 0.033) : 0.0);
 
     std::printf("\n  mood changes    %d over %.1f s\n", r.moodChanges, double(r.frames) * 0.033);
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < MOOD_COUNT; ++i) {
         if (r.moodFrames[i] == 0) continue;
         std::printf("    %-10s %5.1f%% of frames\n", moodToString(MoodType(i)),
                     r.frames ? double(r.moodFrames[i]) * 100.0 / double(r.frames) : 0.0);
@@ -2587,7 +2934,7 @@ void checkReplay() {
                std::to_string(r.frames) + " frames reported");
 
         int moodTotal = 0;
-        for (int i = 0; i < 5; ++i) moodTotal += r.moodFrames[i];
+        for (int i = 0; i < MOOD_COUNT; ++i) moodTotal += r.moodFrames[i];
         record("a replayed capture classifies every frame", moodTotal == toneFrames,
                std::to_string(moodTotal) + " of " + std::to_string(toneFrames) +
                " frames carried a mood");
@@ -2666,6 +3013,7 @@ int main(int argc, char** argv) {
     setPhase("checkLayerSweep");     checkLayerSweep(verbose);
     setPhase("checkSoak");           checkSoak(verbose);
     setPhase("checkSceneTransitions"); checkSceneTransitions();
+    setPhase("checkMoodPartition");  checkMoodPartition();
     setPhase("checkAudioProcessor"); checkAudioProcessor();
     setPhase("checkReplay");         checkReplay();
 

@@ -2,9 +2,9 @@
 #pragma once
 
 #include <FastLED.h>
-#include "../audio/AudioFeatures.h"
-#include "../audio/AudioSnapshot.h"
-#include "../config/Config.h"
+#include "../../audio/AudioFeatures.h"
+#include "../../audio/AudioSnapshot.h"
+#include "../../config/Config.h"
 
 struct SquirtParticle {
     int position;

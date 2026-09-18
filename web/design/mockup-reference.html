@@ -1,0 +1,1024 @@
+<title>Glimmer Bench</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --void:   #08090b;
+    --stage:  #0b0d10;
+    --panel:  #121519;
+    --raised: #191d23;
+    --line:   #262c35;
+    --line-2: #333b46;
+    --ink:    #e8ebf0;
+    --ink-2:  #9aa4b2;
+    --mute:   #616c7a;
+    --hot:    #ff7a2f;
+    --hot-dim:#8a3d14;
+    --cool:   #48c7ff;
+    --ok:     #55d68a;
+
+    --ui: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--void);
+    color: var(--ink);
+    font-family: var(--ui);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .bench {
+    display: grid;
+    grid-template-columns: 268px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+  }
+
+  /* ---------- top bar ---------- */
+
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 0 16px;
+    height: 52px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    margin-right: 4px;
+  }
+  .brand b {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-size: 15px;
+  }
+  .brand span {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--mute);
+  }
+
+  .seg {
+    display: flex;
+    background: var(--void);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .seg button {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink-2);
+    font: 500 12px/1 var(--ui);
+    padding: 7px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] {
+    background: var(--raised);
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+  }
+  .seg button:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+
+  .topbar .spacer { flex: 1; }
+
+  .telemetry {
+    display: flex;
+    gap: 18px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .telemetry div { display: flex; flex-direction: column; gap: 2px; }
+  .telemetry dt { color: var(--mute); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .telemetry dd { margin: 0; color: var(--ink); }
+
+  /* ---------- rail ---------- */
+
+  .rail {
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+    padding: 4px 0 24px;
+  }
+
+  .group { border-bottom: 1px solid var(--line); padding: 14px 16px 16px; }
+  .group > h2 {
+    margin: 0 0 12px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--mute);
+    font-weight: 500;
+  }
+
+  .profiles { display: flex; flex-direction: column; gap: 4px; }
+  .profile {
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    color: var(--ink-2);
+    font-family: var(--ui);
+    font-size: 12.5px;
+  }
+  .profile:hover { background: var(--raised); }
+  .profile[aria-pressed="true"] {
+    background: var(--raised);
+    border-color: var(--hot-dim);
+    color: var(--ink);
+  }
+  .profile:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+  .profile .pitch {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--mute);
+    font-variant-numeric: tabular-nums;
+  }
+  .swatch { height: 18px; border-radius: 3px; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .field:first-of-type { margin-top: 0; }
+  .field label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 11.5px;
+    color: var(--ink-2);
+  }
+  .field label b {
+    font-family: var(--mono);
+    font-weight: 500;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+  }
+
+  input[type="range"] {
+    appearance: none;
+    width: 100%;
+    height: 18px;
+    background: transparent;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 3px; background: var(--line-2); border-radius: 2px;
+  }
+  input[type="range"]::-moz-range-track {
+    height: 3px; background: var(--line-2); border-radius: 2px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 13px; height: 13px; margin-top: -5px;
+    border-radius: 50%;
+    background: var(--hot);
+    border: 2px solid var(--panel);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--hot);
+    border: 2px solid var(--panel);
+  }
+  input[type="range"]:focus-visible { outline: 2px solid var(--hot); outline-offset: 2px; border-radius: 4px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    appearance: none;
+    border: 1px solid var(--line-2);
+    background: var(--void);
+    color: var(--ink-2);
+    font: 500 11.5px/1 var(--ui);
+    padding: 6px 9px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .chip:hover { border-color: var(--mute); color: var(--ink); }
+  .chip[aria-pressed="true"] {
+    background: var(--hot-dim);
+    border-color: var(--hot);
+    color: #ffd9c2;
+  }
+  .chip:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+
+  .note {
+    margin: 10px 0 0;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--mute);
+  }
+  .note code { font-family: var(--mono); color: var(--ink-2); font-size: 10.5px; }
+
+  /* ---------- stage ---------- */
+
+  .stage-wrap {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: 0;
+    background: var(--stage);
+  }
+
+  .stage {
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #stage { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+  .overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .hint {
+    position: absolute;
+    left: 14px; top: 12px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--mute);
+    background: rgba(8,9,11,0.55);
+    padding: 5px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+
+  .readout {
+    position: absolute;
+    right: 14px; top: 12px;
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 3px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    background: rgba(8,9,11,0.7);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 9px 11px;
+    color: var(--ink);
+  }
+  .readout i { color: var(--mute); font-style: normal; }
+  .readout .dot {
+    width: 9px; height: 9px; border-radius: 2px;
+    display: inline-block; vertical-align: -1px; margin-right: 6px;
+  }
+
+  /* ---------- bench footer ---------- */
+
+  .footer {
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    padding: 11px 16px 13px;
+    display: grid;
+    gap: 9px;
+  }
+  .footer header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .footer h2 {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--mute);
+    font-weight: 500;
+  }
+  .footer .spacer { flex: 1; }
+  #ruler { display: block; width: 100%; height: 62px; border-radius: 5px; background: var(--void); }
+
+  .legend {
+    display: flex; gap: 14px;
+    font-family: var(--mono); font-size: 10px; color: var(--mute);
+  }
+  .legend b { color: var(--ink-2); font-weight: 500; }
+
+  @media (max-width: 880px) {
+    body { overflow-y: auto; }
+    .bench { grid-template-columns: 1fr; height: auto; }
+    .rail { border-right: 0; border-bottom: 1px solid var(--line); }
+    .stage { height: 58vh; }
+    .topbar { flex-wrap: wrap; height: auto; padding-block: 10px; gap: 12px; }
+    .telemetry { width: 100%; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+
+<div class="bench">
+  <div class="topbar">
+    <div class="brand"><b>Glimmer Bench</b><span>fastled · wasm</span></div>
+
+    <div class="seg" role="group" aria-label="Surface">
+      <button type="button" data-surface="room" aria-pressed="true">Dark room</button>
+      <button type="button" data-surface="slat" aria-pressed="false">Slat wall</button>
+      <button type="button" data-surface="rod" aria-pressed="false">Bar rod</button>
+    </div>
+
+    <div class="seg" role="group" aria-label="Effect">
+      <button type="button" data-fx="bass" aria-pressed="true">BassPulseStorm</button>
+      <button type="button" data-fx="tunnel" aria-pressed="false">NeonBeatTunnel</button>
+      <button type="button" data-fx="fire" aria-pressed="false">Fire2012</button>
+      <button type="button" data-fx="aurora" aria-pressed="false">Aurora</button>
+    </div>
+
+    <span class="spacer"></span>
+
+    <dl class="telemetry">
+      <div><dt>LEDs</dt><dd id="t-count">—</dd></div>
+      <div><dt>Pitch</dt><dd id="t-pitch">—</dd></div>
+      <div><dt>Draw</dt><dd id="t-draw">—</dd></div>
+      <div><dt>Frame</dt><dd id="t-fps">—</dd></div>
+    </dl>
+  </div>
+
+  <aside class="rail">
+    <section class="group">
+      <h2>Strip</h2>
+      <div class="profiles" id="profiles" role="group" aria-label="LED profile"></div>
+      <p class="note" id="profile-note"></p>
+    </section>
+
+    <section class="group">
+      <h2>Physical</h2>
+      <div class="field">
+        <label for="len">Run length <b><span id="len-v">1.60</span> m</b></label>
+        <input id="len" type="range" min="0.3" max="5" step="0.05" value="1.6">
+      </div>
+      <div class="field">
+        <label for="bright">Master brightness <b><span id="bright-v">180</span>/255</b></label>
+        <input id="bright" type="range" min="8" max="255" step="1" value="180">
+      </div>
+      <p class="note">Count follows length ÷ pitch. Drag the run longer and pixels appear, the way ordering another metre does.</p>
+    </section>
+
+    <section class="group">
+      <h2>Shape</h2>
+      <div class="chips" id="shapes" role="group" aria-label="Path shape">
+        <button class="chip" type="button" data-shape="line" aria-pressed="true">Straight</button>
+        <button class="chip" type="button" data-shape="arc" aria-pressed="false">Arc</button>
+        <button class="chip" type="button" data-shape="zigzag" aria-pressed="false">Zigzag</button>
+        <button class="chip" type="button" data-shape="wrap" aria-pressed="false">Wrapped</button>
+        <button class="chip" type="button" data-shape="loose" aria-pressed="false">Draped</button>
+      </div>
+      <p class="note">Presets just move the handles. Drag any handle on the stage to freehand it.</p>
+    </section>
+
+    <section class="group">
+      <h2>Camera</h2>
+      <div class="field">
+        <label for="ev">Exposure <b><span id="ev-v">+0.0</span> EV</b></label>
+        <input id="ev" type="range" min="-2" max="3" step="0.1" value="0">
+      </div>
+      <div class="field">
+        <label for="spill">Room spill <b><span id="spill-v">100</span>%</b></label>
+        <input id="spill" type="range" min="0" max="220" step="5" value="100">
+      </div>
+      <div class="field">
+        <label for="grain">Sensor grain <b><span id="grain-v">14</span>%</b></label>
+        <input id="grain" type="range" min="0" max="60" step="1" value="14">
+      </div>
+      <p class="note">Blown-out cores are what make it read as light instead of paint. Push exposure until the peaks clip to white.</p>
+    </section>
+  </aside>
+
+  <div class="stage-wrap">
+    <div class="stage">
+      <canvas id="stage"></canvas>
+      <div class="overlay">
+        <div class="hint">Drag the handles · hover a pixel</div>
+        <div class="readout" id="readout" hidden>
+          <i>index</i><span id="r-idx">—</span>
+          <i>rgb</i><span><span class="dot" id="r-dot"></span><span id="r-hex">—</span></span>
+          <i>at</i><span id="r-mm">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <header>
+        <h2>Bench strip</h2>
+        <div class="legend">
+          <span><b>tick</b> every 10 px</span>
+          <span><b>fill</b> linear emission</span>
+          <span><b>bar</b> per-pixel luma</span>
+        </div>
+        <span class="spacer"></span>
+        <div class="legend"><span id="t-power">—</span></div>
+      </header>
+      <canvas id="ruler"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------------------------------------------------------------- profiles
+  // pitch / die / sigma are millimetres of real hardware. Continuity is not a
+  // special case: when sigma grows past pitch the dots merge on their own,
+  // which is exactly what a COB phosphor does.
+  const PROFILES = [
+    { id:"ws60",  name:"WS2812B 60/m",   pitch:16.7, die:5.0, sigma:2.4,  casing:"smd",   burst:0,   note:"Bare 5050 SMD. Hard dots, visible gaps under 2 m." },
+    { id:"ws144", name:"WS2812B 144/m",  pitch:6.9,  die:3.5, sigma:1.7,  casing:"smd",   burst:0,   note:"Dense 3535. Reads as a line at arm's length, dotty up close." },
+    { id:"sil",   name:"IP65 silicone",  pitch:16.7, die:5.0, sigma:11.0, casing:"sleeve",burst:0,   note:"Same 60/m strip inside a milky sleeve. Sleeve does the blending." },
+    { id:"cob",   name:"COB 480/m",      pitch:2.1,  die:1.8, sigma:3.4,  casing:"cob",   burst:0,   note:"sigma &gt; pitch, so pixels fuse into one continuous bar." },
+    { id:"bul",   name:"WS2811 bullet",  pitch:50.0, die:9.0, sigma:5.5,  casing:"bulb",  burst:0.35,note:"12 mm epoxy bullets. Bright point, dark cable between." },
+    { id:"fairy", name:"Fairy pip",      pitch:50.0, die:2.0, sigma:3.0,  casing:"pip",   burst:1.0, note:"Tiny die in clear epoxy. Scatters into a starburst." },
+  ];
+
+  const SHAPES = {
+    line:   [[0.08,0.50],[0.36,0.50],[0.64,0.50],[0.92,0.50]],
+    arc:    [[0.08,0.70],[0.34,0.30],[0.66,0.30],[0.92,0.70]],
+    zigzag: [[0.08,0.26],[0.36,0.72],[0.64,0.26],[0.92,0.72]],
+    wrap:   [[0.20,0.14],[0.50,0.38],[0.50,0.62],[0.80,0.86]],
+    loose:  [[0.08,0.30],[0.34,0.78],[0.66,0.72],[0.92,0.24]],
+  };
+
+  const S = {
+    profile: "ws60",
+    surface: "room",
+    fx: "bass",
+    shape: "line",
+    lengthM: 1.6,
+    brightness: 180,
+    ev: 0,
+    spill: 100,
+    grain: 14,
+    pts: SHAPES.line.map(p => p.slice()),
+    hover: -1,
+    drag: -1,
+  };
+
+  const prof = () => PROFILES.find(p => p.id === S.profile);
+
+  // ---------------------------------------------------------------- canvases
+  const stage = document.getElementById("stage");
+  const sx = stage.getContext("2d");
+  const ruler = document.getElementById("ruler");
+  const rx = ruler.getContext("2d");
+  const glow = document.createElement("canvas");
+  const gx = glow.getContext("2d");
+
+  let W = 0, H = 0, dpr = 1;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const r = stage.getBoundingClientRect();
+    W = Math.max(320, Math.round(r.width));
+    H = Math.max(240, Math.round(r.height));
+    stage.width = W * dpr; stage.height = H * dpr;
+    sx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    glow.width = W * dpr; glow.height = H * dpr;
+    gx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const rr = ruler.getBoundingClientRect();
+    ruler.width = Math.max(320, Math.round(rr.width)) * dpr;
+    ruler.height = 62 * dpr;
+    rx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  new ResizeObserver(resize).observe(stage);
+
+  // ------------------------------------------------------------------ spline
+  function catmull(pts, t) {
+    const n = pts.length;
+    const seg = Math.min(Math.floor(t * (n - 1)), n - 2);
+    const u = t * (n - 1) - seg;
+    const p0 = pts[Math.max(seg - 1, 0)], p1 = pts[seg];
+    const p2 = pts[seg + 1], p3 = pts[Math.min(seg + 2, n - 1)];
+    const u2 = u * u, u3 = u2 * u;
+    const f = (a, b, c, d) =>
+      0.5 * ((2 * b) + (-a + c) * u + (2 * a - 5 * b + 4 * c - d) * u2 + (-a + 3 * b - 3 * c + d) * u3);
+    return [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])];
+  }
+
+  const SAMPLES = 600;
+  let poly = [], cum = [], totalPx = 0;
+
+  function buildPath() {
+    const abs = S.pts.map(p => [p[0] * W, p[1] * H]);
+    poly = []; cum = []; totalPx = 0;
+    for (let i = 0; i <= SAMPLES; i++) {
+      const [x, y] = catmull(abs, i / SAMPLES);
+      poly.push([x, y]);
+      if (i) totalPx += Math.hypot(x - poly[i - 1][0], y - poly[i - 1][1]);
+      cum.push(totalPx);
+    }
+  }
+
+  function atLength(L) {
+    let lo = 0, hi = cum.length - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < L) lo = m + 1; else hi = m; }
+    return poly[lo];
+  }
+
+  // ------------------------------------------------------------- pixel layout
+  let leds = [], pxPerMM = 1, sigmaPx = 2, diePx = 2;
+
+  function layout() {
+    const p = prof();
+    pxPerMM = totalPx / (S.lengthM * 1000);
+    const pitchPx = Math.max(p.pitch * pxPerMM, 0.6);
+    sigmaPx = Math.max(p.sigma * pxPerMM, 1.1);
+    diePx = Math.max(p.die * pxPerMM * 0.5, 0.8);
+
+    const n = Math.max(2, Math.min(Math.floor(totalPx / pitchPx), 520));
+    leds = new Array(n);
+    const wrapped = S.shape === "wrap" && S.surface === "rod";
+    for (let i = 0; i < n; i++) {
+      const L = (i + 0.5) * (totalPx / n);
+      const [x, y] = atLength(L);
+      // Wrapped around a rod: the run spirals, so half of it is behind.
+      const z = wrapped ? Math.cos(i * 0.42) : 0;
+      leds[i] = { x: wrapped ? x + z * 26 : x, y, z, r: 0, g: 0, b: 0 };
+    }
+  }
+
+  // ------------------------------------------------------------------ effects
+  // Stand-in frames only. The real page feeds the WASM module's byte array in
+  // here untouched; nothing below cares where the RGB came from.
+  const hsv = (h, s, v) => {
+    h = ((h % 1) + 1) % 1;
+    const i = Math.floor(h * 6), f = h * 6 - i;
+    const q = [v, v * (1 - s * f), v * (1 - s), v * (1 - s * (1 - f))];
+    const m = [[0,3,2],[1,0,2],[2,0,3],[2,1,0],[3,2,0],[0,2,1]][i % 6];
+    return [q[m[0]] * 255, q[m[1]] * 255, q[m[2]] * 255];
+  };
+
+  let bassEnv = 0, trebEnv = 0, beat = 0, noiseSeed = new Float32Array(600);
+  for (let i = 0; i < noiseSeed.length; i++) noiseSeed[i] = Math.random();
+
+  function fakeAudio(t, dt) {
+    const bpm = 124, phase = (t * bpm / 60) % 1;
+    if (phase < beat) bassEnv = 1;
+    beat = phase;
+    bassEnv = Math.max(0, bassEnv - dt * 2.6);
+    trebEnv = Math.max(0, Math.max(trebEnv - dt * 5, (Math.sin(t * 11.3) * 0.5 + 0.5) * 0.45));
+  }
+
+  function renderFrame(t) {
+    const n = leds.length, k = S.brightness / 255;
+    for (let i = 0; i < n; i++) {
+      const u = i / (n - 1);
+      let r = 0, g = 0, b = 0;
+      if (S.fx === "bass") {
+        const core = Math.exp(-Math.pow((u - 0.5) * (5.5 - bassEnv * 3.6), 2) * 6);
+        const comet = Math.exp(-Math.pow(((u - (t * 0.31) % 1) + 1) % 1 - 0.0, 2) * 260);
+        const c = hsv(0.72 + bassEnv * 0.2, 0.9, Math.min(1, core * (0.35 + bassEnv)));
+        const c2 = hsv(0.05, 0.75, comet * trebEnv * 1.6);
+        r = c[0] + c2[0]; g = c[1] + c2[1]; b = c[2] + c2[2];
+      } else if (S.fx === "tunnel") {
+        const band = Math.sin((u * 9 - t * 2.2) * Math.PI * 2) * 0.5 + 0.5;
+        const c = hsv(0.55 + u * 0.28 + t * 0.03, 0.85, Math.pow(band, 3) * (0.45 + bassEnv * 0.75));
+        r = c[0]; g = c[1]; b = c[2];
+      } else if (S.fx === "fire") {
+        const h = noiseSeed[(i * 3 + Math.floor(t * 22)) % noiseSeed.length];
+        const heat = Math.pow(1 - u, 1.6) * (0.55 + h * 0.6) * (0.75 + bassEnv * 0.4);
+        r = Math.min(255, heat * 340);
+        g = Math.min(255, Math.max(0, heat - 0.28) * 330);
+        b = Math.min(255, Math.max(0, heat - 0.72) * 380);
+      } else {
+        const w = Math.sin(u * 3.1 + t * 0.55) * 0.5 + Math.sin(u * 7.7 - t * 0.31) * 0.5;
+        const c = hsv(0.36 + w * 0.13, 0.72, Math.max(0, 0.22 + w * 0.5));
+        r = c[0]; g = c[1]; b = c[2];
+      }
+      const L = leds[i];
+      L.r = Math.min(255, r * k); L.g = Math.min(255, g * k); L.b = Math.min(255, b * k);
+    }
+  }
+
+  // ------------------------------------------------------------------ camera
+  // Photographic, not additive-blend-and-hope: gamma to linear, gain from EV,
+  // then whatever clips past 1.0 gets pushed toward white. That desaturating
+  // blowout is the whole difference between light and paint.
+  const gain = () => Math.pow(2, S.ev);
+
+  function expose(r, g, b) {
+    const k = gain();
+    let lr = Math.pow(r / 255, 2.2) * k, lg = Math.pow(g / 255, 2.2) * k, lb = Math.pow(b / 255, 2.2) * k;
+    const peak = Math.max(lr, lg, lb);
+    const over = Math.max(0, Math.min(1, (peak - 0.85) / 1.4));
+    const enc = v => Math.pow(Math.min(1, v), 1 / 2.2);
+    const mix = (a) => a + (1 - a) * over * 0.92;
+    return [mix(enc(lr)) * 255, mix(enc(lg)) * 255, mix(enc(lb)) * 255, Math.min(1, peak)];
+  }
+
+  // ---------------------------------------------------------------- surfaces
+  function paintSurface() {
+    sx.fillStyle = "#08090b";
+    sx.fillRect(0, 0, W, H);
+
+    if (S.surface === "room") {
+      const g = sx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "#0d1014"); g.addColorStop(0.72, "#0a0c0f"); g.addColorStop(1, "#06070a");
+      sx.fillStyle = g; sx.fillRect(0, 0, W, H);
+      sx.strokeStyle = "rgba(255,255,255,0.035)";
+      sx.lineWidth = 1;
+      sx.beginPath(); sx.moveTo(0, H * 0.78); sx.lineTo(W, H * 0.78); sx.stroke();
+    }
+
+    if (S.surface === "slat") {
+      sx.fillStyle = "#101216"; sx.fillRect(0, 0, W, H);
+      const pitch = 34;
+      for (let y = 0; y < H; y += pitch) {
+        const g = sx.createLinearGradient(0, y, 0, y + pitch);
+        g.addColorStop(0, "#191d22"); g.addColorStop(0.62, "#14171c"); g.addColorStop(1, "#0a0c0f");
+        sx.fillStyle = g; sx.fillRect(0, y, W, pitch - 5);
+        sx.fillStyle = "#050607"; sx.fillRect(0, y + pitch - 5, W, 5);
+      }
+    }
+
+    if (S.surface === "rod") {
+      const g = sx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "#0c0e12"); g.addColorStop(1, "#07080b");
+      sx.fillStyle = g; sx.fillRect(0, 0, W, H);
+    }
+  }
+
+  function paintRod() {
+    const cx = W * 0.5, w = 52;
+    const g = sx.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
+    g.addColorStop(0, "#0a0b0e"); g.addColorStop(0.32, "#2a2f38");
+    g.addColorStop(0.5, "#3c434f"); g.addColorStop(0.75, "#1b1f26"); g.addColorStop(1, "#070809");
+    sx.fillStyle = g;
+    sx.fillRect(cx - w / 2, -10, w, H + 20);
+  }
+
+  // ------------------------------------------------------------------ render
+  function drawGlowPass(subset) {
+    gx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    gx.clearRect(0, 0, W, H);
+    gx.globalCompositeOperation = "lighter";
+
+    const p = prof();
+    const halo = Math.max(sigmaPx * 2.6, 3);
+
+    for (const L of subset) {
+      const [r, g, b, peak] = expose(L.r, L.g, L.b);
+      if (peak < 0.004) continue;
+      const depth = L.z < 0 ? 0.55 : 1;
+      const rad = gx.createRadialGradient(L.x, L.y, 0, L.x, L.y, halo);
+      rad.addColorStop(0, `rgba(${r|0},${g|0},${b|0},${0.95 * depth})`);
+      rad.addColorStop(0.28, `rgba(${r|0},${g|0},${b|0},${0.42 * depth})`);
+      rad.addColorStop(1, `rgba(${r|0},${g|0},${b|0},0)`);
+      gx.fillStyle = rad;
+      gx.beginPath(); gx.arc(L.x, L.y, halo, 0, 6.2832); gx.fill();
+
+      if (p.burst > 0 && peak > 0.12) {
+        const arm = halo * (1.8 + p.burst * 2.6) * Math.min(1, peak * 1.4);
+        gx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${0.26 * p.burst * depth})`;
+        gx.lineWidth = Math.max(1, diePx * 0.5);
+        gx.beginPath();
+        gx.moveTo(L.x - arm, L.y); gx.lineTo(L.x + arm, L.y);
+        gx.moveTo(L.x, L.y - arm); gx.lineTo(L.x, L.y + arm);
+        gx.stroke();
+      }
+    }
+    gx.globalCompositeOperation = "source-over";
+  }
+
+  function compositeGlow(subset) {
+    if (!subset.length) return;
+    drawGlowPass(subset);
+
+    // spill: the same emission, blurred wide and screened onto the surface
+    const spill = S.spill / 100;
+    if (spill > 0.01) {
+      sx.save();
+      sx.globalCompositeOperation = "screen";
+      sx.globalAlpha = Math.min(1, spill * 0.55);
+      sx.filter = `blur(${Math.round(Math.max(sigmaPx * 6, 16))}px)`;
+      sx.drawImage(glow, 0, 0, W, H);
+      sx.restore();
+    }
+
+    // halo: unblurred, additive
+    sx.save();
+    sx.globalCompositeOperation = "lighter";
+    sx.drawImage(glow, 0, 0, W, H);
+    sx.restore();
+
+    // cores: the physical die, clipped hot
+    const p = prof();
+    sx.save();
+    sx.globalCompositeOperation = "lighter";
+    for (const L of subset) {
+      const [r, g, b, peak] = expose(L.r, L.g, L.b);
+      if (peak < 0.02) continue;
+      const hotness = Math.min(1, peak * 1.25);
+      const cr = r + (255 - r) * hotness * 0.8;
+      const cg = g + (255 - g) * hotness * 0.8;
+      const cb = b + (255 - b) * hotness * 0.8;
+      sx.fillStyle = `rgba(${cr|0},${cg|0},${cb|0},${0.55 + 0.45 * hotness})`;
+      sx.beginPath();
+      if (p.casing === "cob" || p.casing === "sleeve") {
+        sx.arc(L.x, L.y, Math.max(diePx, sigmaPx * 0.55), 0, 6.2832);
+      } else {
+        sx.arc(L.x, L.y, diePx, 0, 6.2832);
+      }
+      sx.fill();
+    }
+    sx.restore();
+  }
+
+  function drawHardware() {
+    // unlit substrate, so a dark run still reads as a physical object
+    const p = prof();
+    sx.save();
+    sx.strokeStyle = p.casing === "pip" ? "rgba(150,160,175,0.16)" : "rgba(120,128,140,0.11)";
+    sx.lineWidth = p.casing === "cob" ? Math.max(3, sigmaPx * 1.1)
+                 : p.casing === "sleeve" ? Math.max(5, sigmaPx * 0.9)
+                 : p.casing === "pip" ? 0.8 : Math.max(2.5, diePx * 1.6);
+    sx.lineCap = "round"; sx.lineJoin = "round";
+    sx.beginPath();
+    sx.moveTo(poly[0][0], poly[0][1]);
+    for (let i = 1; i < poly.length; i += 4) sx.lineTo(poly[i][0], poly[i][1]);
+    sx.stroke();
+    sx.restore();
+  }
+
+  function drawHandles() {
+    sx.save();
+    for (let i = 0; i < S.pts.length; i++) {
+      const x = S.pts[i][0] * W, y = S.pts[i][1] * H;
+      const active = S.drag === i;
+      sx.strokeStyle = active ? "#ff7a2f" : "rgba(232,235,240,0.5)";
+      sx.fillStyle = "rgba(8,9,11,0.72)";
+      sx.lineWidth = active ? 2 : 1.25;
+      sx.beginPath(); sx.arc(x, y, active ? 9 : 7, 0, 6.2832);
+      sx.fill(); sx.stroke();
+    }
+    sx.restore();
+  }
+
+  function drawGrain() {
+    const amt = S.grain / 100;
+    if (amt < 0.01) return;
+    sx.save();
+    sx.globalAlpha = amt * 0.5;
+    sx.globalCompositeOperation = "overlay";
+    const step = 3;
+    for (let i = 0; i < 900; i++) {
+      const x = Math.random() * W, y = Math.random() * H;
+      const v = Math.random() > 0.5 ? 255 : 0;
+      sx.fillStyle = `rgb(${v},${v},${v})`;
+      sx.fillRect(x, y, step, step);
+    }
+    sx.restore();
+  }
+
+  // ------------------------------------------------------------------ ruler
+  function drawRuler() {
+    const rw = ruler.width / dpr, rh = 62;
+    rx.clearRect(0, 0, rw, rh);
+    rx.fillStyle = "#08090b"; rx.fillRect(0, 0, rw, rh);
+
+    const n = leds.length;
+    const pad = 10, span = rw - pad * 2;
+    const cw = span / n;
+
+    for (let i = 0; i < n; i++) {
+      const [r, g, b] = expose(leds[i].r, leds[i].g, leds[i].b);
+      const x = pad + i * cw;
+      rx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+      rx.fillRect(x, 8, Math.max(cw - (cw > 4 ? 1 : 0), 0.6), 24);
+      const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      rx.fillStyle = "rgba(255,255,255,0.32)";
+      rx.fillRect(x, 54 - luma * 16, Math.max(cw - 1, 0.6), luma * 16);
+    }
+
+    rx.strokeStyle = "rgba(255,255,255,0.14)";
+    rx.fillStyle = "#616c7a";
+    rx.font = '9px "IBM Plex Mono", monospace';
+    for (let i = 0; i < n; i += 10) {
+      const x = pad + i * cw;
+      rx.beginPath(); rx.moveTo(x, 34); rx.lineTo(x, 39); rx.stroke();
+      if (cw * 10 > 28) rx.fillText(String(i), x + 2, 47);
+    }
+
+    if (S.hover >= 0 && S.hover < n) {
+      const x = pad + S.hover * cw;
+      rx.strokeStyle = "#ff7a2f"; rx.lineWidth = 1;
+      rx.strokeRect(x - 1, 6, Math.max(cw, 2) + 2, 28);
+    }
+  }
+
+  // ------------------------------------------------------------------- loop
+  let last = performance.now(), fpsAvg = 16, drawAvg = 0;
+
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    const t = now / 1000;
+    const t0 = performance.now();
+
+    buildPath();
+    layout();
+    fakeAudio(t, dt);
+    renderFrame(t);
+
+    paintSurface();
+
+    if (S.surface === "rod" && S.shape === "wrap") {
+      compositeGlow(leds.filter(L => L.z < 0));
+      paintRod();
+      compositeGlow(leds.filter(L => L.z >= 0));
+    } else {
+      drawHardware();
+      compositeGlow(leds);
+    }
+
+    drawGrain();
+    drawHandles();
+    drawRuler();
+
+    const dur = performance.now() - t0;
+    drawAvg += (dur - drawAvg) * 0.08;
+    fpsAvg += (dt * 1000 - fpsAvg) * 0.08;
+    updateTelemetry();
+
+    requestAnimationFrame(frame);
+  }
+
+  function updateTelemetry() {
+    const p = prof();
+    document.getElementById("t-count").textContent = String(leds.length);
+    document.getElementById("t-pitch").textContent = p.pitch.toFixed(1) + " mm";
+    document.getElementById("t-draw").textContent = drawAvg.toFixed(1) + " ms";
+    document.getElementById("t-fps").textContent = fpsAvg.toFixed(1) + " ms";
+
+    let sum = 0;
+    for (const L of leds) sum += (L.r + L.g + L.b) / 765;
+    const mA = sum * 60;
+    document.getElementById("t-power").textContent =
+      `draw ≈ ${(mA / 1000).toFixed(2)} A @ 5 V · ${(mA * 5 / 1000).toFixed(1)} W`;
+  }
+
+  // ------------------------------------------------------------- interaction
+  function stagePos(e) {
+    const r = stage.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  }
+
+  stage.addEventListener("pointerdown", e => {
+    const [x, y] = stagePos(e);
+    for (let i = 0; i < S.pts.length; i++) {
+      if (Math.hypot(S.pts[i][0] * W - x, S.pts[i][1] * H - y) < 16) {
+        S.drag = i; stage.setPointerCapture(e.pointerId); return;
+      }
+    }
+  });
+
+  stage.addEventListener("pointermove", e => {
+    const [x, y] = stagePos(e);
+    if (S.drag >= 0) {
+      S.pts[S.drag] = [Math.max(0.02, Math.min(0.98, x / W)), Math.max(0.03, Math.min(0.97, y / H))];
+      setPressed("shapes", "shape", null);
+      return;
+    }
+    let best = -1, bd = 18;
+    for (let i = 0; i < leds.length; i++) {
+      const d = Math.hypot(leds[i].x - x, leds[i].y - y);
+      if (d < bd) { bd = d; best = i; }
+    }
+    S.hover = best;
+    const box = document.getElementById("readout");
+    if (best < 0) { box.hidden = true; return; }
+    const L = leds[best];
+    const hex = "#" + [L.r, L.g, L.b].map(v => Math.round(v).toString(16).padStart(2, "0")).join("").toUpperCase();
+    box.hidden = false;
+    document.getElementById("r-idx").textContent = `${best} / ${leds.length - 1}`;
+    document.getElementById("r-hex").textContent = hex;
+    document.getElementById("r-dot").style.background = hex;
+    document.getElementById("r-mm").textContent =
+      `${Math.round((best + 0.5) * prof().pitch)} mm`;
+  });
+
+  const endDrag = () => { S.drag = -1; };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+  stage.addEventListener("pointerleave", () => {
+    S.hover = -1;
+    document.getElementById("readout").hidden = true;
+  });
+
+  // ------------------------------------------------------------------ wiring
+  function setPressed(containerId, attr, value) {
+    const host = document.getElementById(containerId) ||
+                 document.querySelector(`[data-group="${containerId}"]`);
+    if (!host) return;
+    host.querySelectorAll(`[data-${attr}]`).forEach(b => {
+      b.setAttribute("aria-pressed", String(b.dataset[attr] === value));
+    });
+  }
+
+  const railProfiles = document.getElementById("profiles");
+  const profileNote = document.getElementById("profile-note");
+
+  PROFILES.forEach(p => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "profile";
+    b.dataset.profile = p.id;
+    b.setAttribute("aria-pressed", String(p.id === S.profile));
+    const sw = p.casing === "cob" ? "linear-gradient(90deg,#f6d9a8,#ffe9c4)"
+             : p.casing === "sleeve" ? "linear-gradient(90deg,#3b4049,#5a6170)"
+             : p.casing === "pip" ? "repeating-linear-gradient(90deg,#2a2f38 0 6px,#8ad6ff 6px 7px)"
+             : p.casing === "bulb" ? "repeating-linear-gradient(90deg,#20252c 0 8px,#ffd9a8 8px 11px)"
+             : "repeating-linear-gradient(90deg,#1b1f26 0 4px,#d9e4ff 4px 6px)";
+    b.innerHTML = `<span class="swatch" style="background:${sw}"></span>
+                   <span>${p.name}</span>
+                   <span class="pitch">${p.pitch.toFixed(1)}mm</span>`;
+    b.addEventListener("click", () => {
+      S.profile = p.id;
+      railProfiles.querySelectorAll(".profile").forEach(x =>
+        x.setAttribute("aria-pressed", String(x.dataset.profile === p.id)));
+      profileNote.innerHTML = p.note;
+    });
+    railProfiles.appendChild(b);
+  });
+  profileNote.innerHTML = prof().note;
+
+  document.querySelectorAll("[data-surface]").forEach(b => {
+    b.addEventListener("click", () => {
+      S.surface = b.dataset.surface;
+      document.querySelectorAll("[data-surface]").forEach(x =>
+        x.setAttribute("aria-pressed", String(x === b)));
+      if (S.surface === "rod") {
+        S.shape = "wrap";
+        S.pts = SHAPES.wrap.map(p => p.slice());
+        document.querySelectorAll("[data-shape]").forEach(x =>
+          x.setAttribute("aria-pressed", String(x.dataset.shape === "wrap")));
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-fx]").forEach(b => {
+    b.addEventListener("click", () => {
+      S.fx = b.dataset.fx;
+      document.querySelectorAll("[data-fx]").forEach(x =>
+        x.setAttribute("aria-pressed", String(x === b)));
+    });
+  });
+
+  document.querySelectorAll("[data-shape]").forEach(b => {
+    b.addEventListener("click", () => {
+      S.shape = b.dataset.shape;
+      S.pts = SHAPES[S.shape].map(p => p.slice());
+      document.querySelectorAll("[data-shape]").forEach(x =>
+        x.setAttribute("aria-pressed", String(x === b)));
+    });
+  });
+
+  const bind = (id, key, fmt) => {
+    const el = document.getElementById(id), out = document.getElementById(id + "-v");
+    const apply = () => { S[key] = parseFloat(el.value); out.textContent = fmt(S[key]); };
+    el.addEventListener("input", apply);
+    apply();
+  };
+  bind("len", "lengthM", v => v.toFixed(2));
+  bind("bright", "brightness", v => String(v | 0));
+  bind("ev", "ev", v => (v >= 0 ? "+" : "") + v.toFixed(1));
+  bind("spill", "spill", v => String(v | 0));
+  bind("grain", "grain", v => String(v | 0));
+
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>

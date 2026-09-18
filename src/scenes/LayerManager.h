@@ -4,7 +4,7 @@
 #include <memory>
 #include <cstdint>
 #include "LayerTypes.h"
-#include "../animations/VisualLayer.h"  // Include the full definition of VisualLayer
+#include "../animations/visual-layers/VisualLayer.h"  // Include the full definition of VisualLayer
 
 // Forward declarations to minimize header dependencies. CRGB is not among them:
 // VisualLayer.h above already pulls in FastLED.h, and on the browser build that

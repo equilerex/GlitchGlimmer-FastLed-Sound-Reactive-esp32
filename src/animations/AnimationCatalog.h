@@ -4,18 +4,12 @@
 #include <functional>
 #include <vector>
 #include "../scenes/MoodHistory.h"
-#include "../animations/Animation.h"
+#include "Animation.h"
 
-// Include all your animations here:
-#include "../animations/AlienPulse.h"
-#include "../animations/MultiLayeredHybridAnimation.h"
-#include "../animations/neonFlow.h"
-#include "../animations/PsychedelicInkSquirtAnimation.h"
-#include "../animations/PsychedelicTunnelAnimation.h"
-#include "../animations/AlienBreathAnimation.h"
-#include "../animations/BassPulseStormAnimation.h"
-#include "../animations/NeonBeatTunnelAnimation.h"
-#include "../scenes/MoodHistory.h"
+// Animation headers stay in AnimationCatalog.cpp. FastLED's fx/1d/pacifica.h
+// defines members out of line with no inline, so including PacificaAnimation.h
+// from this header made every TU that reached the catalog emit the same
+// strong symbols and the device link failed.
 
 
 enum class AnimationType {
@@ -28,6 +22,33 @@ enum class AnimationType {
     NEON_FLOW,
     PSYCHEDELIC_INK_SQUIRTS,
     ALIEN_PULSE,
+    AURORA_DRIFT,
+    PACIFICA,
+    NOISE_WAVE,
+    FIRE2012,
+    GRADIENT_WASH,
+    ETHERAL_PLASMA_DRIFT,
+    TWILIGHT_RIPPLE,
+    LAVA_LAMP,
+    BEAT_SCANNER,
+    GLITCHED_CYBER,
+    BEAT_DROP,
+    TWO_SIN,
+    COLOR_WAVES,
+    RISING_TENSION,
+    STROBE_PULSE,
+    POP_FADE,
+    TOMORROWLAND_STAGE,
+    COLOR_SLAM,
+    HYPER_SPIN,
+    SPACE_WIZARDS,
+    PLAYA_CHAOS,
+    THREE_SIN_TWO,
+    HEARTBEAT,
+    GENTLE_PULSE_WAVE,
+    MOONLIGHT,
+    FOREST_CANOPY,
+    LAVA_CYBER_STORM,
     COUNT
 };
 

@@ -2,8 +2,8 @@
 
 #include <FastLED.h>
 #include <Arduino.h>  // Added for String type
-#include "../audio/AudioFeatures.h"
-#include "../audio/AudioSnapshot.h"
+#include "../../audio/AudioFeatures.h"
+#include "../../audio/AudioSnapshot.h"
 
 class VisualLayer {
 public:

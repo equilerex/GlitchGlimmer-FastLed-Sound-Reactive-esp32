@@ -11,17 +11,15 @@
 import { LedCanvas, Spectrum, showError, hideError } from './render.js';
 import { Trace, debugEnabled } from './telemetry.js';
 
-const canvas = document.getElementById('view');
-const spectrumCanvas = document.getElementById('spectrum');
-const micButton = document.getElementById('mic');
-const demoButton = document.getElementById('demo');
-const noteLabel = document.getElementById('live-note');
-const sceneLabel = document.getElementById('scene-live');
-const moodLabel = document.getElementById('mood-live');
-const predictedLabel = document.getElementById('predicted-live');
-const bpmLabel = document.getElementById('bpm-live');
-const levelBar = document.getElementById('level-live');
-const beatLamp = document.getElementById('beat-live');
+let canvas = null;
+let spectrumCanvas = null;
+const noteLabel = null;
+const sceneLabel = null;
+const moodLabel = null;
+const predictedLabel = null;
+const bpmLabel = null;
+const levelBar = null;
+const beatLamp = null;
 
 // The firmware's FFT is sized for this rate and maps bins to bass, mid and treble
 // with it, so the graph is asked for the same number and the bands land where the
@@ -251,18 +249,15 @@ function readFeatures() {
   };
 }
 
+import { state } from './state.js';
+
 function updateHud(f) {
-  sceneLabel.textContent = f.scene;
-  moodLabel.textContent = f.mood;
-  predictedLabel.textContent = f.predicted;
-
-  bpmLabel.textContent = f.bpm > 0 ? f.bpm.toFixed(0) : '—';
-
-  // loudness is volume * 100 on the firmware side, so 50 is a loud signal rather
-  // than a quiet one. Volume itself is the RMS of the samples, which rarely
-  // climbs much past 0.4 even for something mixed loud.
-  levelBar.style.width = Math.min(100, f.loudness * 2).toFixed(0) + '%';
-  beatLamp.classList.toggle('on', f.beat > 0);
+  state.live.scene = f.scene;
+  state.live.mood = f.mood;
+  state.live.predicted = f.predicted;
+  state.live.bpm = f.bpm;
+  state.live.level = f.loudness; // loudness is volume * 100
+  state.live.beat = f.beat;
 
   paintState(f);
 }
@@ -426,10 +421,7 @@ function appendRow(parent, row) {
   }
 
   if (row.note) {
-    const note = document.createElement('div');
-    note.className = 'state-note';
-    note.textContent = row.note;
-    parent.append(note);
+    el.title = row.note;
   }
 }
 
@@ -929,6 +921,7 @@ function step() {
   // frame the synthetic signal drove would send the next debugging session after
   // the wrong input.
   f.source = micLive ? 'mic' : 'demo';
+  f.drawMs = leds.lastDrawMs;
   trace.frame(f);
 }
 
@@ -939,9 +932,8 @@ function frame() {
 }
 
 function paintButtons() {
-  micButton.setAttribute('aria-pressed', String(source === 'mic'));
-  demoButton.setAttribute('aria-pressed', String(source === 'demo'));
-  noteLabel.textContent = noteText ?? (source === 'mic'
+  state.live.source = source;
+  state.live.note = noteText ?? (source === 'mic'
     ? 'Analysing the microphone. Bass, mid and treble are the firmware\'s own bands.'
     : 'Showing a synthetic signal. Start the microphone to drive it with sound.');
 }
@@ -1039,7 +1031,7 @@ function selectSource(kind) {
   if (spectrum) spectrum.reset();
 }
 
-async function setSource(kind) {
+export async function setSource(kind) {
   if (kind === source) return;
 
   if (kind === 'mic') {
@@ -1095,6 +1087,8 @@ export async function start() {
   }
 
   if (!leds) {
+    canvas = document.getElementById('view');
+    spectrumCanvas = document.getElementById('spectrum');
     leds = new LedCanvas(canvas, engine.counts);
     spectrum = new Spectrum(spectrumCanvas);
     buildState();
@@ -1163,8 +1157,6 @@ export function stop() {
 }
 
 export function init() {
-  micButton.addEventListener('click', () => setSource('mic'));
-  demoButton.addEventListener('click', () => setSource('demo'));
   window.addEventListener('resize', () => {
     if (!running) return;
     leds.resize();

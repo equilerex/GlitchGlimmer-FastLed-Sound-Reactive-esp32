@@ -4,10 +4,6 @@
 
 class BassPulseStormAnimation : public Animation {
 public:
-    static constexpr MoodType mood = MoodType::INTENSE;
-    static constexpr float preferredTempo = 1.0f;
-    static constexpr float intensity = 1.0f;
-
     void update(CRGB* leds, int count, const AudioFeatures& f) override {
         if (count <= 0) return;
 

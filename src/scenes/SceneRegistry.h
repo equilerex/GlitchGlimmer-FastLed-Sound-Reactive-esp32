@@ -11,11 +11,16 @@ struct SceneState;
 struct SceneDefinition {
     AnimationType baseAnimation;
     std::vector<LayerType> layerTypes;
-    std::vector<MoodType> preferredMoods;
+    // Structural moods only: SILENT, TEASE, BUILDUP, DESCENT, DROP, WEIRD. A ladder mood
+    // here would be inert, and worse than inert. Eight catalog scenes each
+    // carrying their own animation's mood would each win their own mood outright
+    // and the intensity axis would never be consulted, so CALM would always be
+    // Alien Breath whatever the rest of the catalog grew into.
+    std::vector<MoodType> structuralMoods;
     String name;
 
-    bool supportsMood(MoodType mood) const {
-        return std::find(preferredMoods.begin(), preferredMoods.end(), mood) != preferredMoods.end();
+    bool isTaggedFor(MoodType mood) const {
+        return std::find(structuralMoods.begin(), structuralMoods.end(), mood) != structuralMoods.end();
     }
 };
 

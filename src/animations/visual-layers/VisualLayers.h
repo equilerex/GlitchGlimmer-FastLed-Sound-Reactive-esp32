@@ -1,13 +1,12 @@
-// ====== AlienSquirtTrailLayer.h ======
 #pragma once
 
 #include <FastLED.h>
 #include <cmath>
 
-#include "../animations/VisualLayer.h"
-#include "../audio/AudioFeatures.h"
-#include "../config/Config.h"
-#include "../audio/AudioSnapshot.h"
+#include "VisualLayer.h"
+#include "../../audio/AudioFeatures.h"
+#include "../../config/Config.h"
+#include "../../audio/AudioSnapshot.h"
 
 
 // === Layer 4: Energy Pulse River ===
@@ -110,14 +109,32 @@ public:
 
 // === Layer 7: Dynamics Flicker Storm ===
 class DynamicsFlickerStormLayer : public VisualLayer {
+    // The share of pixels that flicker on a given frame. A member rather than
+    // audio.dynamics read again in render(), so that what the flicker is drawn from
+    // and what the compositor scales by cannot disagree.
+    float density = 0.0f;
+
 public:
     void update(const AudioFeatures& audio, const AudioHistory&) override {
-        opacity = audio.dynamics * 1.0f;
+        // opacity is the compositor's share of the light. Every other layer here sets
+        // it to a constant and this one drove it from dynamics, which made it double as
+        // an effect control: dynamics reads 0.00 to 0.26 on the real microphone, so the
+        // layer sat black for most of a track and dim for the rest, at a share that
+        // wandered with the loudness window rather than with anything the storm is.
+        opacity = 0.6f;
+
+        // dynamics is a fraction of the window it has itself measured, so it is already
+        // normalised and the mapping needs no constant about this input's gain. The
+        // floor is what stops the layer costing a frame while drawing nothing, and
+        // gateGain is what stops it drawing in a silent room: the flicker is drawn at
+        // random rather than scaled by level, so unlike the other layers it does not
+        // inherit the gate for free.
+        density = (0.4f + 0.6f * audio.dynamics) * audio.gateGain;
     }
 
     void render(CRGB* leds, int count) override {
         for (int i = 0; i < count; ++i) {
-            if (random8() < opacity * 255) {
+            if (random8() < density * 255) {
                 leds[i] += CHSV(random8(), 200, random8(32, 128));
             }
         }
@@ -166,23 +183,36 @@ public:
     const char* getName() const override { return "EnergySpiralLayer"; }
 };
 class DominantBandTrailLayer : public VisualLayer {
-    int pos = 0;
+    // A member, not a function-local static. As a static it was one array shared by
+    // every instance and by both strips, so two strips running this layer wrote
+    // through each other's trail.
+    //
+    // Sized to LED_0_NUM, which the firmware treats as the longest strip. That was an
+    // assumption when the array was written and is now checked: the render loop is
+    // bounded below, because indexing it by an arbitrary strip length overruns the
+    // moment a strip is longer than 100.
+    float heat[LED_0_NUM] = {};
     float decay = 0.9f;
+    int   band  = 0;
 
 public:
     void update(const AudioFeatures& now, const AudioHistory&) override {
-        pos = map(now.dominantBand, 0, NUM_SAMPLES / 2, 0, LED_0_NUM - 1); // assuming LED_0_NUM is longest strip
+        // The band is remembered rather than mapped here, because update() is not told
+        // how long the strip is. Mapping it against LED_0_NUM put the head off the end
+        // of any longer strip and in the wrong place on the ten-pixel one.
+        band = now.dominantBand;
     }
 
     void render(CRGB* leds, int count) override {
-        static float heat[LED_0_NUM] = {};
-        for (int i = 0; i < count; ++i) {
+        const int trail = count < LED_0_NUM ? count : LED_0_NUM;
+        const int pos   = map(band, 0, NUM_SAMPLES / 2, 0, trail - 1);
+        for (int i = 0; i < trail; ++i) {
             heat[i] *= decay;
         }
-        if (pos >= 0 && pos < count) {
+        if (pos >= 0 && pos < trail) {
             heat[pos] = 1.0f;
         }
-        for (int i = 0; i < count; ++i) {
+        for (int i = 0; i < trail; ++i) {
             leds[i] += CHSV(140, 255, heat[i] * 255);
         }
     }

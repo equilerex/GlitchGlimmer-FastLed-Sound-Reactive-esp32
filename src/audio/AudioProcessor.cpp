@@ -143,6 +143,49 @@ void AudioProcessor::resetTracking() {
     bpmAtLastBeat  = 0.0f;
     beatIntervalCount = 0;
     beatIntervalNext  = 0;
+
+    // The structural state. Every member here is a statistic of the source that
+    // has just been switched away from, and the switch is the one moment that is
+    // knowable rather than inferred. The slow mean is the clearest case: it is a
+    // mean of the old source's level, and the demo signal is roughly forty times
+    // louder than the microphone, so a displacement measured against it would
+    // report DESCENT from the first block of the quieter source for as long as the
+    // follower took to arrive, which is the same ten seconds BUILDUP_TAU_SEC names.
+    clearStructure();
+
+    // The drop clock is stamped with now, like the beat clock above, so the
+    // cooldown applies from the switch rather than being already expired. A drop
+    // reported immediately on a new source would be a claim about audio the
+    // detector never heard. Not part of clearStructure, which runs every frame the
+    // gate is shut: re-stamping it there would keep pushing the cooldown out and
+    // leave a passage's first eight seconds unable to report a drop.
+    lastDropMs = millis();
+}
+
+void AudioProcessor::clearStructure() {
+    slowLevel        = 0.0f;
+    slowSeeded       = false;
+    structuralLastMs = 0;
+
+    buildupActive    = false;
+    buildupHoldSince = 0;
+    buildupFromLevel = 0.0f;
+
+    descentActive    = false;
+    descentHoldSince = 0;
+    descentFromLevel = 0.0f;
+
+    quietSince = 0;
+    quietHeld  = false;
+
+    for (int i = 0; i < TEASE_WINDOW; ++i) levelRing[i] = 0.0f;
+    levelRingCount = 0;
+    levelRingNext  = 0;
+
+    centHi     = 0.0f;
+    centLo     = 0.0f;
+    centSeeded = false;
+    weirdSince = 0;
 }
 
 // Insertion sort on a copy of at most BEAT_BPM_WINDOW elements. The ring keeps its
@@ -269,6 +312,7 @@ AudioFeatures AudioProcessor::analyzeAudio() {
         (magBins > 0 && eTotal > 1e-6f)
             ? expf(logSum / float(magBins)) / (eTotal / float(magBins))
             : 0.0f;
+    features.spectralFlatness = spectralFlatness;
 
     // Tracked silence baseline. It falls onto a quieter block at a fixed rate, and
     // rises only onto a block whose spectrum is noise-like. See NOISE_FLAT_MIN in
@@ -312,6 +356,7 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // rather than switched, because a hard 0/1 strobes a signal sitting on the
     // threshold; see GATE_RAMP in Config.h for the rate and why it slowed.
     gateGain += ((signalPresence ? 1.0f : 0.0f) - gateGain) * GATE_RAMP;
+    features.gateGain = gateGain;
     features.energy *= gateGain;
     for (int i = 0; i < half; ++i) features.spectrum[i] *= gateGain;
     // The three bands are gated below instead, after their smoothing and their
@@ -519,7 +564,239 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // was unreachable.
     features.bassHits     = beat ? 1 : 0;
 
+    updateStructure(features, now);
+
     previousVolume     = volume;
     previousBassEnergy = bassEnergy;
     return features;
+}
+
+// The structural detectors: BUILDUP, DESCENT, DROP, TEASE and WEIRD. SILENT needs
+// nothing here, since the gate is already ramped and features.gateGain carries it.
+//
+// Placed after the beat detector rather than before it, because DROP's breadth
+// condition reads the three bandLevels and TEASE's post-drop trigger reads the
+// beat clock. It is last because it consumes and does not feed: nothing below it
+// in the frame depends on what it concludes, so a detector that is wrong can only
+// mislabel a passage and cannot move the numbers the animations draw from.
+void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now) {
+    // The gate's own ramp is not music. See GATE_SETTLED for what it would
+    // otherwise be read as and why the threshold sits where it does. Nothing is
+    // reported while it is climbing, and every window is discarded rather than
+    // merely ignored, because the ring and the centroid span would otherwise carry
+    // the ramp into the first seconds after the gate opened and the fake-out test
+    // would read the ramp's own variance as a pulse that does not sustain.
+    if (gateGain < GATE_SETTLED) {
+        clearStructure();
+        return;
+    }
+
+    const float level = features.level;
+
+    // One follower, two moods. Seeded from the first block it is allowed to see, so
+    // the first frame is a displacement against real audio rather than against a
+    // zero the follower then climbs away from.
+    if (!slowSeeded) {
+        slowLevel  = level;
+        slowSeeded = true;
+    }
+    if (structuralLastMs == 0) structuralLastMs = now;
+    float dt = float(now - structuralLastMs) * 0.001f;
+    // Clamped, so a first frame from a zero timestamp cannot move the follower the
+    // whole way and a stall between frames cannot either. Same guard the mood's
+    // dynamics window uses, for the same reason.
+    if (dt > 0.1f) dt = 0.1f;
+    if (dt > 0.0f) slowLevel += (level - slowLevel) * (1.0f - expf(-dt / BUILDUP_TAU_SEC));
+    structuralLastMs = now;
+
+    const float displacement = level - slowLevel;
+
+    // ==== BUILDUP and DESCENT ====
+    //
+    // The same measurement with the sign used, so the two cannot both be true. The
+    // hold starts when the displacement crosses its threshold and is dropped the
+    // moment it falls back, so the reported state is a sustained movement rather
+    // than a sample that happened to be high. `fromLevel` is the level at the
+    // moment the hold began, which is what makes the climb condition a measurement
+    // of the movement rather than of the level: a plateau sitting high crosses the
+    // displacement threshold on its own noise and then climbs nothing.
+    //
+    // No cooldown on either. See BUILDUP_HOLD_MS for why, and note that the
+    // follower supplies the property a cooldown would have been protecting: a
+    // movement that stops ends its own displacement as the mean catches up.
+    if (displacement >= BUILDUP_LEVEL) {
+        if (buildupHoldSince == 0) {
+            buildupHoldSince = now;
+            buildupFromLevel = level;
+        }
+        if (now - buildupHoldSince >= BUILDUP_HOLD_MS &&
+            level - buildupFromLevel >= BUILDUP_CLIMB) {
+            buildupActive = true;
+        }
+    } else {
+        buildupHoldSince = 0;
+        buildupActive    = false;
+    }
+
+    if (displacement <= -DESCENT_LEVEL) {
+        if (descentHoldSince == 0) {
+            descentHoldSince = now;
+            descentFromLevel = level;
+        }
+        if (now - descentHoldSince >= DESCENT_HOLD_MS &&
+            descentFromLevel - level >= DESCENT_FALL) {
+            descentActive = true;
+        }
+    } else {
+        descentHoldSince = 0;
+        descentActive    = false;
+    }
+
+    // Reported as a displacement so a reader can see how hard the movement is, and
+    // zero when there is no movement, which is the single test the classifier
+    // makes. See the field's comment in AudioFeatures.
+    features.buildup = buildupActive ? displacement : 0.0f;
+    features.descent = descentActive ? -displacement : 0.0f;
+
+    // ==== DROP ====
+    //
+    // Four conditions and none of them is one a beat can satisfy. The breadth test
+    // is the load-bearing one: a beat is low end and nothing else, which is exactly
+    // what BEAT_BASS_RISE exploits to tell a rhythm from a voice, and a kick cannot
+    // light all three bands against their own recent peaks at once. A drop does it
+    // by construction.
+    //
+    // The quiet condition is what stops a drop firing mid-chorus, and it encodes
+    // the musical fact that a drop follows a breakdown or a buildup rather than
+    // arriving in the middle of a loud passage. It reads the slow mean rather than
+    // the instantaneous level, so a single quiet block inside a loud passage is not
+    // a breakdown.
+    if (slowLevel < DROP_QUIET_LEVEL) {
+        if (!quietHeld) {
+            quietHeld  = true;
+            quietSince = now;
+        }
+    } else {
+        quietHeld = false;
+    }
+
+    const bool armed = quietHeld && (now - quietSince >= DROP_ARM_MS);
+    if (armed &&
+        displacement >= DROP_SCALE &&
+        features.bassLevel   >= DROP_BAND_LEVEL &&
+        features.midLevel    >= DROP_BAND_LEVEL &&
+        features.trebleLevel >= DROP_BAND_LEVEL &&
+        now - lastDropMs >= DROP_COOLDOWN_MS) {
+        features.dropDetected = true;
+        lastDropMs = now;
+    }
+
+    // ==== TEASE ====
+    //
+    // Three triggers, any one of which is enough, because to a listener they are
+    // the same thing: tension without full energy. A breakdown after a drop, a hush
+    // before one, and a pulse that will not sustain.
+    //
+    // No hold and no cooldown of its own, deliberately. The mood system already has
+    // both at confirmMs and minHoldMs, and a second pair here would open a dead zone
+    // where a genuinely teasing passage is not reported at all, which is the failure
+    // the total partition exists to remove.
+    levelRing[levelRingNext] = level;
+    levelRingNext = (levelRingNext + 1) % TEASE_WINDOW;
+    if (levelRingCount < TEASE_WINDOW) ++levelRingCount;
+
+    bool fakeOut = false;
+    if (levelRingCount >= TEASE_WINDOW) {
+        float mean = 0.0f;
+        for (int i = 0; i < TEASE_WINDOW; ++i) mean += levelRing[i];
+        mean /= float(TEASE_WINDOW);
+
+        float variance = 0.0f;
+        for (int i = 0; i < TEASE_WINDOW; ++i) {
+            const float d = levelRing[i] - mean;
+            variance += d * d;
+        }
+        variance /= float(TEASE_WINDOW);
+
+        fakeOut = variance > TEASE_VARIANCE &&
+                  mean > TEASE_MEAN_LOW && mean < TEASE_MEAN_HIGH;
+    }
+
+    const bool postDrop = lastDropMs != 0 && now - lastDropMs < TEASE_POST_DROP_MS;
+    const bool hush     = level < TEASE_LOW_LEVEL &&
+                          (features.buildup > 0.0f ||
+                           features.dynamics > TEASE_HUSH_DYNAMICS);
+
+    features.teaseDetected = features.gateGain >= SILENT_GATE &&
+                             (postDrop || hush || fakeOut);
+
+    // ==== WEIRD ====
+    //
+    // Two of three, and each is a rate of change or a band membership rather than a
+    // level, so a stable passage scores zero whatever its spectrum is. That is the
+    // property that keeps a quiet drifting ambient passage at CALM instead of
+    // turning it into this, along with the ladder gate in the classifier.
+    //
+    // Flatness is the value the noise floor already computes and used to discard.
+    const float span = centHi - centLo;
+    const float mid  = (centHi + centLo) * 0.5f;
+    const float centroidShare =
+        (span > WEIRD_CENTROID_MIN_SPAN) ? fabsf(features.spectrumCentroid - mid) / span : 0.0f;
+
+    const float spread = tempoSpread();
+
+    int score = 0;
+    if (centroidShare > WEIRD_CENTROID_SHARE)                       ++score;
+    if (spread > WEIRD_TEMPO_SPREAD)                                ++score;
+    if (features.spectralFlatness > WEIRD_FLAT_MIN &&
+        features.spectralFlatness < WEIRD_FLAT_MAX)                 ++score;
+
+    // The window is a two-sided follower rather than a rise/fall pair, because the
+    // centroid move in both directions and a window that only ever widened would
+    // make the share a shrinking number over the course of a track.
+    if (!centSeeded) {
+        centLo = centHi = features.spectrumCentroid;
+        centSeeded = true;
+    } else {
+        const float up   = 1.0f - expf(-dt / 4.0f);
+        const float down = 1.0f - expf(-dt / 12.0f);
+        if (features.spectrumCentroid > centHi) centHi += (features.spectrumCentroid - centHi) * up;
+        else                                    centHi -= (centHi - features.spectrumCentroid) * down;
+        if (features.spectrumCentroid < centLo) centLo += (features.spectrumCentroid - centLo) * up;
+        else                                    centLo -= (centLo - features.spectrumCentroid) * down;
+    }
+
+    // Held, and no cooldown after it. The hold is what rejects a passage that
+    // flickers across two of three for a moment, and clearing it the moment the
+    // score drops means re-entry costs another full WEIRD_HOLD_MS of sustained
+    // evidence. A cooldown on top of that would only open a dead zone where a
+    // genuinely eclectic passage stops being reported, which is the failure the
+    // total partition exists to remove.
+    if (score >= int(WEIRD_ANOMALY_MIN)) {
+        if (weirdSince == 0) weirdSince = now;
+    } else {
+        weirdSince = 0;
+    }
+    const bool held = weirdSince != 0 && now - weirdSince >= WEIRD_HOLD_MS;
+
+    features.anomaly = held ? float(score) : 0.0f;
+}
+
+// The spread of the remembered inter-beat intervals over their median. Zero when
+// there are too few intervals to say anything, which reads as a steady tempo
+// rather than as an unstable one: a detector that had not yet seen six beats has
+// no evidence of eclecticism and should not be inventing it.
+float AudioProcessor::tempoSpread() const {
+    if (beatIntervalCount < WEIRD_TEMPO_MIN_HITS) return 0.0f;
+
+    const float median = float(medianBeatInterval());
+    if (median <= 0.0f) return 0.0f;
+
+    unsigned long lo = beatIntervals[0];
+    unsigned long hi = beatIntervals[0];
+    for (int i = 1; i < beatIntervalCount; ++i) {
+        if (beatIntervals[i] < lo) lo = beatIntervals[i];
+        if (beatIntervals[i] > hi) hi = beatIntervals[i];
+    }
+    return float(hi - lo) / median;
 }

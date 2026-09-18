@@ -4,10 +4,6 @@
 
 class PsychedelicTunnelAnimation : public Animation {
 public:
-    static constexpr MoodType mood = MoodType::FLOATY;
-    static constexpr float preferredTempo = 0.5f;  // Slower
-    static constexpr float intensity = 0.8f;
-
     void update(CRGB* leds, int count, const AudioFeatures& f) override {
         if (count <= 0) return;
 

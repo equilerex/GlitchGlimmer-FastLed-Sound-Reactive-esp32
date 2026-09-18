@@ -1,11 +1,11 @@
-#include "../animations/VisualLayer.h"  // Make sure this is first for full definition visibility
+#include "../animations/visual-layers/VisualLayer.h"  // Make sure this is first for full definition visibility
 #include "LayerManager.h"
 #include <FastLED.h>
 #include <algorithm>
 #include <cstring>
 #include <Arduino.h>
 #include "SceneRegistry.h"
-#include "../animations/VisualLayers.h"
+#include "../animations/visual-layers/VisualLayers.h"
 
 namespace {
 // Ceiling on active layers. Scene layers live until the scene changes, so this is
@@ -196,6 +196,45 @@ void LayerManager::addLayerByType(LayerType t, Args&&... args) {
             break;
         case LayerType::TRANSITION:
             layer = new TrebleSparkleLayer();
+            break;
+        // The concrete layers. Same shape as the roles above: one value names one
+        // class, so a scene that wants a specific alternative does not have to name a
+        // role and hope. See LayerTypes.h for why both kinds exist.
+        case LayerType::DOMINANT_BAND_FIRE_TRAIL:
+            layer = new DominantBandFireTrailLayer();
+            break;
+        case LayerType::DYNAMICS_FLICKER_STORM:
+            layer = new DynamicsFlickerStormLayer();
+            break;
+        case LayerType::TRIWAVE_BEAT:
+            layer = new TriwaveBeatLayer();
+            break;
+        case LayerType::ENERGY_SPIRAL:
+            layer = new EnergySpiralLayer();
+            break;
+        case LayerType::DOMINANT_BAND_TRAIL:
+            layer = new DominantBandTrailLayer();
+            break;
+        case LayerType::WAVEFORM_SCRIBBLE:
+            layer = new WaveformScribbleLayer();
+            break;
+        case LayerType::WORMHOLE_VORTEX:
+            layer = new WormholeVortexLayer();
+            break;
+        case LayerType::LOUDNESS_LIGHTNING:
+            layer = new LoudnessLightningLayer();
+            break;
+        case LayerType::CENTROID_GLOW_WIPE:
+            layer = new CentroidGlowWipeLayer();
+            break;
+        case LayerType::BPM_WAVE_PULSE:
+            layer = new BPMWavePulseLayer();
+            break;
+        case LayerType::BPM_BEAT_FLASH:
+            layer = new BPMBeatFlashLayer();
+            break;
+        case LayerType::CENTROID_COLOR_FLOW:
+            layer = new CentroidColorFlowLayer();
             break;
         default:
             layer = new SpectralRibbonLayer(); // Fallback

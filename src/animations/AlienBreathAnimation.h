@@ -4,10 +4,6 @@
 
 class AlienBreathAnimation : public Animation {
 public:
-    static constexpr MoodType mood = MoodType::CALM;
-    static constexpr float preferredTempo = 0.3f;
-    static constexpr float intensity = 0.4f;
-
     void update(CRGB* leds, int count, const AudioFeatures& f) override {
         if (count <= 0) return;
 

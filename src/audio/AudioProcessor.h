@@ -19,7 +19,7 @@ private:
     ArduinoFFT<float>* FFT;
 
     // State for smoothing, level detection, and beat timing
-    float gainSmoothing   = 0.85f;
+    float gainSmoothing   = GAIN_SMOOTHING;
     float volume          = 0.0f;
     float previousVolume  = 0.0f;
     float loudness        = 0.0f;
@@ -90,6 +90,75 @@ private:
     float smoothMid    = 0.0f;
     float smoothTreble = 0.0f;
     bool  bandsSeeded  = false;
+
+    // ==== Structural detection ====
+    //
+    // Everything below answers "what shape is this passage" rather than "how loud
+    // is it", and every window is in milliseconds because the device analyses a
+    // block every 33 ms and the page steps once per frame.
+
+    // The signal's own slow mean, and the one follower the two displacements are
+    // both read from. A signed displacement has two halves and the two moods are
+    // those halves named, so a single mean serves BUILDUP and DESCENT rather than
+    // two of them that could disagree. See BUILDUP_TAU_SEC for the time constant,
+    // which is set by the ramp speed it has to be able to see.
+    float         slowLevel       = 0.0f;
+    bool          slowSeeded      = false;
+    unsigned long structuralLastMs = 0;
+
+    // BUILDUP. The displacement has to hold for BUILDUP_HOLD_MS before it counts,
+    // and the climb is measured from the level at the moment the displacement
+    // began, so a plateau wobbling across the threshold is not a climb. No
+    // cooldown, see BUILDUP_HOLD_MS.
+    bool          buildupActive    = false;
+    unsigned long buildupHoldSince = 0;
+    float         buildupFromLevel = 0.0f;
+
+    // DESCENT. The mirror, with DESCENT_FALL in place of BUILDUP_CLIMB.
+    bool          descentActive    = false;
+    unsigned long descentHoldSince = 0;
+    float         descentFromLevel = 0.0f;
+
+    // DROP's preceding quiet. A drop follows a breakdown, so the passage has to
+    // have been quiet for DROP_ARM_MS before a slam counts, and at most one drop
+    // is reported per DROP_COOLDOWN_MS so the mood cannot park there.
+    unsigned long quietSince = 0;
+    bool          quietHeld  = false;
+    unsigned long lastDropMs = 0;
+
+    // TEASE's fake-out test. A level whose mean stays mid while its variance is
+    // high is a pulse that does not sustain, which is what teasing is. The ring is
+    // fixed-capacity and written in place, like every other history here.
+    float levelRing[TEASE_WINDOW] = {0};
+    int   levelRingCount = 0;
+    int   levelRingNext  = 0;
+
+    // WEIRD's centroid test. The distance from the middle of the window the
+    // centroid has covered, against the width of that window, so a steady passage
+    // scores zero whatever its spectrum is and a drifting one does not.
+    float centHi      = 0.0f;
+    float centLo      = 0.0f;
+    bool  centSeeded  = false;
+    unsigned long weirdSince = 0;
+
+    // The spread of the remembered beat intervals over their median, which is the
+    // strongest eclectic signal available and costs one pass over twelve numbers.
+    // Zero when there are too few intervals to say.
+    float tempoSpread() const;
+
+    // Return every structural detector to its unseeded state, without touching the
+    // audio tracking around it. Two callers: the reset that follows a change of
+    // input, and the guard at the top of updateStructure, which has to discard the
+    // same set of windows because they were filled while the gate was shut and
+    // measure the gate's ramp rather than the music.
+    void clearStructure();
+
+    // Everything above, run over the finished feature block. Separate from
+    // analyzeAudio rather than inline because it is the half of that function
+    // concerned with the shape of a passage, and the arithmetic in it is easier to
+    // check against the constants it reads when it is not interleaved with the
+    // spectrum.
+    void updateStructure(AudioFeatures& features, unsigned long now);
 
 public:
     AudioProcessor();            // Construct and initialize FFT resources

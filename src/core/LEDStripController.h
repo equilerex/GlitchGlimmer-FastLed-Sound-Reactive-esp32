@@ -96,7 +96,14 @@ struct LEDStrip {
         currentType = type;
         delete currentAnim;
         currentAnim = animationFactory(type)();
-        if (currentAnim) currentAnim->update(leds, length, af);
+        if (currentAnim) {
+            // The one moment an animation's clock can be started, since the object is
+            // rebuilt on every type change rather than reused. An animation that
+            // measures its own delta from millis() would otherwise read the time since
+            // boot as its first frame's elapsed time and integrate it.
+            currentAnim->begin();
+            currentAnim->update(leds, length, af);
+        }
     }
 
     inline void update(const AudioFeatures& af,

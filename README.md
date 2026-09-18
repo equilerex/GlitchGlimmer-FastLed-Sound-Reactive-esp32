@@ -7,21 +7,28 @@ independently, and a small TFT shows the current scene, mood and levels.
 
 ## Status
 
-Both build environments are green and the host harness passes 101 checks. The
+Both build environments are green and the host harness passes 200 checks. The
 firmware **has not been run on hardware**. Everything below the build is
 verified by simulation and by reading the code, not by watching a strip.
 
-Two known gaps are worth stating up front rather than discovering later:
+Three known gaps are worth stating up front rather than discovering later:
 
-- The mood classifier's thresholds are written against a 0..1 energy scale, but
-  on device `AudioFeatures::energy` is a raw sum of 255 FFT magnitudes, in the
-  hundreds to thousands. `CALM` is therefore unreachable on hardware. The host
-  harness scripted its energy in the 0..1 range, so it does not show this.
-  `_architecture/BACKLOG.md` carries it.
-- Audio tuning macros in `src/config/Config.h` (`BEAT_THRESHOLD`,
-  `MIN_BEAT_INTERVAL` and others) have no call sites. The values that actually
-  run are hardcoded elsewhere, and `MIN_BEAT_INTERVAL` disagrees with its
-  hardcoded counterpart.
+- The classifier's structural moods (`Silent`, `Tease`, `Buildup`, `Descent`,
+  `DROP`, `Weeeird`) are detected, but no scene is tagged for one, so
+  `pickSceneByMood`'s structural branch is still empty and all six fall through
+  to the intensity axis. Their thresholds are also untuned against any
+  recording. `_architecture/TODO.md` carries it.
+- Seven more macros in `src/config/Config.h` have no call sites
+  (`CHANNEL_COUNT`, `BITS_PER_SAMPLE`, `FFT_BANDS`, `FFT_MAX_SCALE`,
+  `BAR_HEIGHT_MAX`, `MIN_SWITCH_INTERVAL`, `ENABLE_WEB_UI`). Five of the same
+  kind were deleted, along with the `GAIN_SMOOTHING` that declared `0.92f`
+  against the `0.85f` that ran. These seven stay by decision: none traces to a
+  caller or to a commit that removed one, so each is the only record of an
+  intent that may still be wanted, and they go only once that intent is known.
+- The mood arc has never been observed on real audio. The only capture is 2.3
+  seconds long, shorter than the classifier's hold and confirmation windows, so
+  it can show that a value moves but not that it settles. Tuning waits on a
+  longer recording.
 
 ## Hardware
 
@@ -51,7 +58,7 @@ pio run -e ttgo-t1 -t upload # needs the board connected
 
 The device environment compiles at `-std=gnu++11`, which is what catches any
 C++17 or newer construct reaching device-reachable code. Current size is RAM
-8.2 percent and flash 32.6 percent.
+8.9 percent and flash 33.4 percent.
 
 ## Tests
 
@@ -72,10 +79,12 @@ and without them it exits with no output rather than an error.
 pio run -e native -t exec
 ```
 
-101 checks cover the scene and layer lifecycle over 3000 frames, a sweep of all
+200 checks cover the scene and layer lifecycle over 3000 frames, a sweep of all
 eight catalog animations at two strip lengths, every reachable layer factory,
-device-scale audio with a populated spectrum and waveform, and a soak of the
-float phase accumulators for 20000 frames each.
+device-scale audio with a populated spectrum and waveform, the mood partition
+over 800 level-and-tempo inputs and 10201 more with the dynamics nudge live, the
+structural detectors against signals that do not have their shape, and a soak of
+the float phase accumulators for 20000 frames each.
 
 One thing the harness cannot see: `sim/stubs/Arduino.h` aliases `String` to
 `std::string`, whose small-string optimisation hides the per-frame churn the
@@ -162,7 +171,8 @@ Until then the local steps above are the way to look at it.
 | `src/` | Firmware. `main.ino` holds `setup()` and `loop()`, `sim_main.cpp` is the host harness |
 | `src/audio/` | I2S capture, FFT, feature extraction, history rings |
 | `src/scenes/` | Scene registry and director, mood history, layer manager and pool |
-| `src/animations/` | The eight catalog animations and the compositing layers |
+| `src/animations/` | Catalog base animations |
+| `src/animations/visual-layers/` | Compositor layer classes |
 | `src/display/` | TFT layout, widgets and themes |
 | `include/` | `tft_setup.h`, the TFT_eSPI display configuration |
 | `sim/stubs/` | Arduino core stubs used only by the host build |

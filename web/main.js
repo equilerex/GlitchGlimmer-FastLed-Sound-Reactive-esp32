@@ -1,45 +1,214 @@
-// Mode switch between the two players.
-//
-// Both draw to the same canvas, so exactly one may be driving it at a time:
-// switching stops the outgoing player rather than only hiding its controls, or
-// the two would paint over each other at their own frame rates.
-
+import { createApp } from 'vue';
+import { state } from './state.js';
 import * as recording from './app.js';
 import * as live from './live.js';
+import { PROFILES, profileById } from './viz/profiles.js';
+import { SURFACES } from './viz/surface.js';
+import { SHAPES } from './viz/path.js';
+import { BenchStrip } from './viz/BenchStrip.js';
+import { loadHw, bindView } from './viz/hwStore.js';
 
-const panes = {
-  recording: document.getElementById('pane-recording'),
-  live: document.getElementById('pane-live'),
-};
-const modeButtons = Array.from(document.querySelectorAll('button[data-mode]'));
+const app = createApp({
+  data() {
+    return {
+      s: state,
+      profiles: PROFILES,
+      surfaces: SURFACES,
+      shapes: Object.keys(SHAPES),
+      boundView: null,
+      bench: null,
+      benchCounts: null,
+      hwLoaded: false
+    };
+  },
+  computed: {
+    profileNote() {
+      const strip = this.s.hw.strips[this.s.hw.activeStrip];
+      return strip ? profileById(strip.profile).note : '';
+    }
+  },
+  methods: {
+    async selectMode(next) {
+      if (next === this.s.mode) return;
 
-let mode = null;
+      if (this.s.mode === 'recording') recording.stop();
+      if (this.s.mode === 'live') live.stop();
 
-async function select(next) {
-  if (next === mode) return;
+      this.s.mode = next;
 
-  if (mode === 'recording') recording.stop();
-  if (mode === 'live') live.stop();
+      if (next === 'recording') await recording.start();
+      else await live.start();
 
-  mode = next;
-  for (const [id, pane] of Object.entries(panes)) pane.hidden = id !== next;
-  for (const button of modeButtons) {
-    button.setAttribute('aria-pressed', String(button.dataset.mode === next));
+      this.bindRendererWhenReady();
+    },
+    
+    // Recording actions
+    togglePlay() {
+      recording.togglePlay();
+    },
+    scrubTo(event) {
+      recording.scrubTo(parseInt(event.target.value));
+    },
+    playScenario(index) {
+      recording.playScenario(index);
+    },
+
+    // Live actions
+    useMic() {
+      live.setSource('mic');
+    },
+    useDemo() {
+      live.setSource('demo');
+    },
+    updateTuning(index, value) {
+      live.updateTuning(index, parseFloat(value));
+    },
+
+    // Hardware rail actions
+    syncHw() {
+      if (this.syncView) this.syncView();
+    },
+    selectProfile(id) {
+      const strip = this.s.hw.strips[this.s.hw.activeStrip];
+      if (!strip) return;
+      strip.profile = id;
+      this.syncHw();
+    },
+    applyShape(name) {
+      const strip = this.s.hw.strips[this.s.hw.activeStrip];
+      if (!strip) return;
+      strip.shape = name;
+      strip.pts = SHAPES[name].map((p) => p.slice());
+      this.syncHw();
+    },
+    // Drawn from the profile's own casing rather than a per-type image, for the
+    // same reason the renderer has no per-type branch: a new strip type should
+    // be a row in the table and nothing else.
+    swatchFor(p) {
+      if (p.casing === 'cob') return 'linear-gradient(90deg,#f6d9a8,#ffe9c4)';
+      if (p.casing === 'sleeve') return 'linear-gradient(90deg,#3b4049,#5a6170)';
+      if (p.casing === 'pip') return 'repeating-linear-gradient(90deg,#2a2f38 0 6px,#8ad6ff 6px 7px)';
+      if (p.casing === 'bulb') return 'repeating-linear-gradient(90deg,#20252c 0 8px,#ffd9a8 8px 11px)';
+      return 'repeating-linear-gradient(90deg,#1b1f26 0 4px,#d9e4ff 4px 6px)';
+    },
+
+    // app.js and live.js each build their own StripView on the same canvas, so
+    // switching mode replaces the instance underneath us. Binding therefore has
+    // to be repeatable rather than a one-time hookup: without this the bench,
+    // the inspector and the fit readout stop updating after the first switch.
+    bindRenderer() {
+      const view = document.getElementById('view').__view;
+      if (!view || view === this.boundView) return !!view;
+
+      if (!this.hwLoaded) {
+        Object.assign(this.s.hw, loadHw(view.counts));
+        this.hwLoaded = true;
+      }
+      if (!this.bench) {
+        this.bench = new BenchStrip(document.getElementById('bench'), view.counts);
+        this.benchCounts = view.counts.slice();
+        // resize() reallocates the canvas backing store, which clears it, and
+        // nothing repaints it until the next frame — with a paused recording
+        // there is no next frame, so the bench would stay blank until playback
+        // resumes. Repaint it from the bound view's last bytes immediately.
+        window.addEventListener('resize', () => {
+          this.bench.resize();
+          if (this.boundView && this.boundView.lastBytes) {
+            this.bench.paint(this.boundView.lastBytes, this.s.hw);
+          }
+        });
+      } else if (view.counts.length !== this.benchCounts.length ||
+                 view.counts.some((c, i) => c !== this.benchCounts[i])) {
+        // The live engine's counts come from Config.h, the recording manifest's
+        // from web/data/manifest.json — two different sources that only agree by
+        // convention. If they ever diverge, rebuild rather than let the bench go
+        // on rendering the previous mode's pixel counts.
+        this.bench = new BenchStrip(document.getElementById('bench'), view.counts);
+        this.benchCounts = view.counts.slice();
+      }
+
+      // The old view keeps its six pointer listeners on this canvas and its
+      // own stale activeStrip/width/height forever unless told otherwise —
+      // detach it before the new view takes over, and null its callbacks so
+      // nothing it still holds a reference to can fire into state it no
+      // longer owns.
+      if (this.boundView && this.boundView !== view) {
+        this.boundView.detach();
+        this.boundView.onFrame = null;
+        this.boundView.onHover = null;
+        this.boundView.onGeometryChange = null;
+      }
+
+      this.boundView = view;
+      this.syncView = bindView(view, this.bench, this.s.hw, this.s);
+      this.syncView();
+
+      // Plain DOM writes, not Vue bindings: these update every frame, and a
+      // reactive write per frame costs more than the readout is worth.
+      //
+      // bindView above reassigns view.onFrame on every call, so this wrap has to
+      // be applied here — after bindView, inside the branch that only runs once
+      // per newly bound view (the `view === this.boundView` guard above already
+      // returned early otherwise). Doing it anywhere else either loses the wrap
+      // on the next mode switch, since bindView would overwrite it again, or
+      // stacks a new wrapper on top of the previous one every time bindRenderer
+      // is polled by bindRendererWhenReady.
+      const cells = {
+        count: document.getElementById('t-count'),
+        pitch: document.getElementById('t-pitch'),
+        draw: document.getElementById('t-draw'),
+        frame: document.getElementById('t-frame'),
+        power: document.getElementById('t-power'),
+      };
+      let lastFrameAt = 0;
+      let frameMs = 16;
+      const paintBench = view.onFrame;
+
+      view.onFrame = (bytes) => {
+        paintBench(bytes);
+
+        const now = performance.now();
+        if (lastFrameAt) frameMs += ((now - lastFrameAt) - frameMs) * 0.08;
+        lastFrameAt = now;
+
+        const strip = this.s.hw.strips[this.s.hw.activeStrip];
+        const profile = profileById(strip ? strip.profile : '');
+
+        // 60 mA per pixel at full white is the number every WS2812 supply is
+        // sized against, so the readout is in the unit the decision gets made
+        // in rather than in normalised brightness.
+        let duty = 0;
+        for (let i = 0; i + 2 < bytes.length; i += 3) {
+          duty += (bytes[i] + bytes[i + 1] + bytes[i + 2]) / 765;
+        }
+        const amps = (duty * 60) / 1000;
+
+        cells.count.textContent = view.counts.join(' + ');
+        cells.pitch.textContent = profile.pitch.toFixed(1) + ' mm';
+        cells.draw.textContent = this.s.hw.drawMs.toFixed(1) + ' ms';
+        cells.frame.textContent = frameMs.toFixed(1) + ' ms';
+        cells.power.textContent =
+          'draw ≈ ' + amps.toFixed(2) + ' A @ 5 V · ' + (amps * 5).toFixed(1) + ' W';
+      };
+
+      return true;
+    },
+
+    // The new instance appears somewhere inside an async start() that gives no
+    // signal, so the arrival has to be polled for. Bounded, because a mode that
+    // never starts should not leave a timer running for the session.
+    bindRendererWhenReady(attempts = 40) {
+      if (this.bindRenderer() || attempts <= 0) return;
+      setTimeout(() => this.bindRendererWhenReady(attempts - 1), 100);
+    }
+  },
+  mounted() {
+    live.init();
+    const params = new URLSearchParams(window.location.search);
+    const initialMode = params.get('mode') === 'recording' ? 'recording' : 'live';
+    this.s.mode = null; // force change
+    this.selectMode(initialMode);
   }
+});
 
-  if (next === 'recording') await recording.start();
-  else await live.start();
-}
-
-for (const button of modeButtons) {
-  button.addEventListener('click', () => select(button.dataset.mode));
-}
-
-live.init();
-
-// Live is the default view. The page exists to show what the firmware does with
-// sound, and the recording is a fixed timeline that needs a click before it is
-// worth anything. ?mode=recording opens the recording instead, which is what a
-// screenshot of that view needs.
-const params = new URLSearchParams(window.location.search);
-select(params.get('mode') === 'recording' ? 'recording' : 'live');
+app.mount('#app');

@@ -5,128 +5,262 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GlitchGlimmer</title>
 <link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="style.css">
+<style>
+  [v-cloak] { display: none; }
+</style>
+<script type="importmap">
+  {
+    "imports": {
+      "vue": "./vendor/vue.esm-browser.js"
+    }
+  }
+</script>
 </head>
 <body>
 
-<header>
-  <h1>GlitchGlimmer</h1>
-  <p class="sub">
-    Sound-reactive LED firmware for ESP32. Two strips, driven through the real
-    scene director and layer compositor.
-  </p>
-</header>
+<div id="app" v-cloak class="bench-app">
 
-<main>
-  <div class="modes" role="group" aria-label="View">
-    <button class="mode-button" type="button" data-mode="recording" aria-pressed="true">Recording</button>
-    <button class="mode-button" type="button" data-mode="live" aria-pressed="false">Live microphone</button>
-  </div>
+  <header class="topbar">
+    <div class="brand">
+      <b>GlitchGlimmer</b>
+      <span>fastled &middot; wasm</span>
+    </div>
 
-  <div class="strip-panel">
-    <canvas id="view" aria-label="LED strip output"></canvas>
+    <div class="seg" role="group" aria-label="View">
+      <button type="button" :aria-pressed="s.mode === 'recording'"
+              @click="selectMode('recording')">Recording</button>
+      <button type="button" :aria-pressed="s.mode === 'live'"
+              @click="selectMode('live')">Live microphone</button>
+    </div>
+
+    <span class="topbar-spacer"></span>
+
+    <dl class="telemetry">
+      <div><dt>LEDs</dt><dd id="t-count">&mdash;</dd></div>
+      <div><dt>Pitch</dt><dd id="t-pitch">&mdash;</dd></div>
+      <div><dt>Draw</dt><dd id="t-draw">&mdash;</dd></div>
+      <div><dt>Frame</dt><dd id="t-frame">&mdash;</dd></div>
+    </dl>
+  </header>
+
+  <aside class="rail">
+    <section class="group">
+      <h2>Strip</h2>
+      <div class="field">
+        <label for="hw-strip">Which strip</label>
+        <select id="hw-strip" v-model.number="s.hw.activeStrip" @change="syncHw">
+          <option v-for="(strip, i) in s.hw.strips" :key="i" :value="i">Strip {{ i }}</option>
+        </select>
+      </div>
+      <div class="profiles" role="group" aria-label="LED profile"
+           v-if="s.hw.strips[s.hw.activeStrip]">
+        <button v-for="p in profiles" :key="p.id" type="button" class="profile"
+                :aria-pressed="s.hw.strips[s.hw.activeStrip].profile === p.id"
+                @click="selectProfile(p.id)">
+          <span class="swatch" :style="{ background: swatchFor(p) }"></span>
+          <span>{{ p.name }}</span>
+          <span class="pitch">{{ p.pitch.toFixed(1) }}mm</span>
+        </button>
+      </div>
+      <p class="note">{{ profileNote }}</p>
+    </section>
+
+    <section class="group">
+      <h2>Shape</h2>
+      <div class="chips" role="group" aria-label="Path shape">
+        <button v-for="name in shapes" :key="name" type="button" class="chip"
+                :aria-pressed="s.hw.strips[s.hw.activeStrip] &&
+                               s.hw.strips[s.hw.activeStrip].shape === name"
+                @click="applyShape(name)">{{ name }}</button>
+      </div>
+      <p class="note">Presets move the handles. Drag any handle on the stage to freehand it.</p>
+    </section>
+
+    <section class="group">
+      <h2>Scene</h2>
+      <div class="field">
+        <label for="hw-surface">Surface</label>
+        <select id="hw-surface" v-model="s.hw.surface" @change="syncHw">
+          <option v-for="su in surfaces" :key="su.id" :value="su.id">{{ su.name }}</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="hw-scale">Scale</label>
+        <select id="hw-scale" v-model="s.hw.scale" @change="syncHw">
+          <option value="fit">Fit to path</option>
+          <option value="true">True scale</option>
+        </select>
+      </div>
+      <div class="field" v-if="s.hw.scale === 'true'">
+        <label for="hw-stage-width">Stage width <b>{{ s.hw.stageWidthM.toFixed(1) }} m</b></label>
+        <input type="range" id="hw-stage-width" min="0.5" max="8" step="0.1"
+               v-model.number="s.hw.stageWidthM" @input="syncHw">
+      </div>
+      <p class="note">Surface changes what the glow lands on. True scale sets how much of the run the stage shows.</p>
+    </section>
+
+    <section class="group">
+      <h2>Camera</h2>
+      <div class="field">
+        <label for="hw-ev">Exposure <b>{{ s.hw.ev > 0 ? '+' : '' }}{{ s.hw.ev.toFixed(1) }} EV</b></label>
+        <input type="range" id="hw-ev" min="-2" max="3" step="0.1" v-model.number="s.hw.ev">
+      </div>
+      <div class="field">
+        <label for="hw-spill">Room spill <b>{{ (s.hw.spill * 100).toFixed(0) }}%</b></label>
+        <input type="range" id="hw-spill" min="0" max="2.2" step="0.05" v-model.number="s.hw.spill">
+      </div>
+      <div class="field">
+        <label for="hw-grain">Sensor grain <b>{{ (s.hw.grain * 100).toFixed(0) }}%</b></label>
+        <input type="range" id="hw-grain" min="0" max="0.6" step="0.01" v-model.number="s.hw.grain">
+      </div>
+      <p class="note">Push exposure until the peaks clip to white. That blowout is what reads as
+        light rather than paint.</p>
+    </section>
+
+    <section class="group">
+      <h2>Hardware</h2>
+      <div class="field">
+        <label for="hw-pixel-size">Pixel size <b>{{ s.hw.pixelSize.toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-pixel-size" min="0.2" max="2.0" step="0.1"
+               v-model.number="s.hw.pixelSize" @input="syncHw">
+      </div>
+      <div class="field">
+        <label for="hw-glow-size">Glow size <b>{{ s.hw.glowSize.toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-glow-size" min="0.1" max="5.0" step="0.1"
+               v-model.number="s.hw.glowSize" @input="syncHw">
+      </div>
+      <div class="field">
+        <label for="hw-intensity">Brightness <b>{{ s.hw.intensity.toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-intensity" min="0.1" max="3.0" step="0.1" v-model.number="s.hw.intensity">
+      </div>
+    </section>
+  </aside>
+
+  <main class="stage-column">
+    <div class="stage">
+      <canvas id="view" aria-label="LED strip output"></canvas>
+      <div class="stage-overlay">
+        <p class="stage-hint">Drag the handles &middot; hover a pixel</p>
+      </div>
+    </div>
+
     <div id="error" class="error" hidden></div>
-  </div>
 
-  <div id="pane-recording">
-    <div class="hud">
-      <div class="hud-cell">
-        <span class="hud-label">Scene</span>
-        <span class="hud-value" id="scene">&mdash;</span>
+    <section class="bench-footer">
+      <header class="bench-head">
+        <h2>Bench strip</h2>
+        <div class="legend">
+          <span><b>tick</b> every 10 px</span>
+          <span><b>bar</b> per-pixel luma</span>
+        </div>
+        <span class="topbar-spacer"></span>
+        <div class="legend"><span id="t-power">&mdash;</span></div>
+      </header>
+      <canvas id="bench" class="bench" aria-label="Pixel indices and values"></canvas>
+      <div class="inspector" v-if="s.hw.inspect">
+        <span>index <b>{{ s.hw.inspect.index }}</b></span>
+        <span>strip <b>{{ s.hw.inspect.strip }}</b></span>
+        <span>rgb <b>{{ s.hw.inspect.hex }}</b>
+          <i class="inspector-dot" :style="{ background: s.hw.inspect.hex }"></i></span>
+        <span>at <b>{{ s.hw.inspect.mm }} mm</b></span>
       </div>
-      <div class="hud-cell">
-        <span class="hud-label">Mood</span>
-        <span class="hud-value" id="mood">&mdash;</span>
+      <div class="fit-readout" v-if="s.hw.fit">
+        <span>strip <b>{{ s.hw.fit.stripM.toFixed(2) }} m</b></span>
+        <span v-if="s.hw.scale === 'fit'">
+          scale <b>1 px &asymp; {{ s.hw.fit.mmPerPx.toFixed(1) }} mm</b>
+        </span>
+        <template v-else>
+          <span>path <b>{{ s.hw.fit.pathM.toFixed(2) }} m</b></span>
+          <span :class="{ over: s.hw.fit.overM > 0.02 }">
+            {{ s.hw.fit.overM > 0 ? 'short by' : 'spare' }}
+            <b>{{ Math.abs(s.hw.fit.overM).toFixed(2) }} m</b>
+          </span>
+        </template>
       </div>
-      <div class="hud-cell">
-        <span class="hud-label">Time</span>
-        <span class="hud-value" id="time">0.0s</span>
+    </section>
+
+    <section class="transport" v-show="s.mode === 'recording'">
+      <div class="controls">
+        <button class="primary" type="button" @click="togglePlay">
+          {{ s.recording.playing ? 'Pause' : 'Play' }}
+        </button>
+        <input type="range" min="0" :max="s.recording.maxScrub" :value="s.recording.scrub" step="1"
+               @input="scrubTo" aria-label="Scrub through the recording">
+      </div>
+      <div class="scenarios">
+        <span class="hud-label">Recording</span>
+        <div class="button-row">
+          <button v-for="(btn, idx) in s.recording.buttons" :key="idx"
+                  :aria-pressed="btn.active" @click="playScenario(idx)">
+            {{ btn.name }}
+          </button>
+        </div>
+        <p class="note">{{ s.recording.note }}</p>
+      </div>
+    </section>
+  </main>
+
+  <aside class="diagnostics">
+    <div v-show="s.mode === 'recording'">
+      <h2>Recording</h2>
+      <div class="hud">
+        <div class="hud-cell">
+          <span class="hud-label">Scene</span>
+          <span class="hud-value">{{ s.recording.scene }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Mood</span>
+          <span class="hud-value">{{ s.recording.mood }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Time</span>
+          <span class="hud-value">{{ s.recording.time }}</span>
+        </div>
       </div>
     </div>
 
-    <div class="controls">
-      <button id="play" class="primary" type="button">Pause</button>
-      <input id="scrub" type="range" min="0" max="0" value="0" step="1"
-             aria-label="Scrub through the recording">
+    <div v-show="s.mode === 'live'">
+      <h2>Live</h2>
+      <div class="hud">
+        <div class="hud-cell">
+          <span class="hud-label">Scene</span>
+          <span class="hud-value">{{ s.live.scene }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Mood now</span>
+          <span class="hud-value">{{ s.live.mood }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Mood of window</span>
+          <span class="hud-value">{{ s.live.predicted }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">BPM</span>
+          <span class="hud-value">{{ s.live.bpm > 0 ? s.live.bpm.toFixed(0) : '—' }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Level</span>
+          <span class="meter"><span class="meter-fill" :style="{ width: Math.min(100, s.live.level * 2) + '%' }"></span></span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Beat</span>
+          <span class="lamp" :class="{ on: s.live.beat > 0 }"></span>
+        </div>
+      </div>
+      <canvas id="spectrum" class="spectrum"
+              aria-label="Frequency spectrum of the analysis window"></canvas>
+      <div class="controls">
+        <button class="primary" type="button" :aria-pressed="s.live.source === 'mic'" @click="useMic">Use microphone</button>
+        <button type="button" :aria-pressed="s.live.source === 'demo'" @click="useDemo">Demo signal</button>
+      </div>
+      <p class="note">{{ s.live.note }}</p>
+      <div id="live-state"></div>
     </div>
-
-    <div class="scenarios">
-      <span class="hud-label">Recording</span>
-      <div id="buttons" class="button-row"></div>
-      <p class="note" id="note"></p>
-    </div>
-  </div>
-
-  <div id="pane-live" hidden>
-    <div class="hud">
-      <div class="hud-cell">
-        <span class="hud-label">Scene</span>
-        <span class="hud-value" id="scene-live">&mdash;</span>
-      </div>
-      <div class="hud-cell">
-        <span class="hud-label">Mood now</span>
-        <span class="hud-value" id="mood-live">&mdash;</span>
-      </div>
-      <div class="hud-cell">
-        <span class="hud-label">Mood of window</span>
-        <span class="hud-value" id="predicted-live">&mdash;</span>
-      </div>
-      <div class="hud-cell">
-        <span class="hud-label">BPM</span>
-        <span class="hud-value" id="bpm-live">&mdash;</span>
-      </div>
-      <div class="hud-cell">
-        <span class="hud-label">Level</span>
-        <span class="meter"><span class="meter-fill" id="level-live"></span></span>
-      </div>
-      <div class="hud-cell">
-        <span class="hud-label">Beat</span>
-        <span class="lamp" id="beat-live"></span>
-      </div>
-    </div>
-
-    <canvas id="spectrum" class="spectrum"
-            aria-label="Frequency spectrum of the analysis window"></canvas>
-
-    <div class="controls">
-      <button id="mic" class="primary" type="button" aria-pressed="true">Use microphone</button>
-      <button id="demo" type="button" aria-pressed="false">Demo signal</button>
-    </div>
-    <p class="note" id="live-note"></p>
-
-    <p class="state-hint">
-      Every value below is read back out of the WebAssembly module after the frame
-      is stepped, so these are the firmware's own numbers, not a page-side
-      restatement of them. Bars carry a marker where the classifier in
-      <code>MoodHistory::classifyMood</code> puts its threshold.
-    </p>
-
-    <div id="live-state" class="state"></div>
-  </div>
-
-  <section class="about">
-    <h2>What you are looking at</h2>
-    <p>
-      Neither view is a JavaScript rewrite of the animations. The recording is the
-      output of the host harness in <code>src/sim_main.cpp</code>, which compiles
-      the same <code>LEDStripController</code>, <code>SceneDirector</code> and
-      layer code the firmware ships and drives it with a scripted audio timeline.
-    </p>
-    <p>
-      The live view is that same code compiled to WebAssembly by
-      <code>tools/build-wasm.sh</code> and stepped once per frame from the page.
-      Your microphone's samples go into <code>AudioProcessor</code> unchanged, so
-      the FFT, the feature extraction, the beat detector and the mood classifier
-      are the firmware's own, and the pixels are what the device would have
-      written for that sound.
-    </p>
-    <p>
-      The microphone needs a secure context: <code>https</code>, or
-      <code>localhost</code>. Opened over <code>file://</code> the browser exposes
-      no microphone API at all, and the view falls back to a synthetic signal.
-    </p>
-  </section>
-</main>
+  </aside>
+</div>
 
 <script defer src="live/glitchglimmer.js"></script>
 <script type="module" src="main.js"></script>

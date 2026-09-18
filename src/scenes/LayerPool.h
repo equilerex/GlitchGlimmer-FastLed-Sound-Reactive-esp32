@@ -5,7 +5,7 @@
 #include <memory>
 
 #include "../scenes/LayerTypes.h"
-#include "../animations/VisualLayer.h"
+#include "../animations/visual-layers/VisualLayer.h"
 
 // This defines a reusable pool of known layer templates
 // SceneDirector can instantiate layers by type or by name/tag/etc.
