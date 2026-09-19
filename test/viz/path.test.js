@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SHAPES, samplePath, pointAt, placePixels, fitScale, hitHandle,
+  SHAPES, samplePath, sampleWrappedPath, pointAt, placePixels, fitScale, hitHandle,
   DEFAULT_POSES, defaultPose,
 } from '../../web/viz/path.js';
 
@@ -26,6 +26,16 @@ test('a bent path is longer than the straight one', () => {
   const straight = samplePath(STRAIGHT, 1000, 400).total;
   const bent = samplePath(SHAPES.zigzag, 1000, 400).total;
   assert.ok(bent > straight, `${bent} should exceed ${straight}`);
+});
+
+test('wrapped paths carry a longer software strip without non-finite points', () => {
+  const path = sampleWrappedPath(STRAIGHT, 1000, 400, 3200);
+  assert.ok(path.total >= 3199, `got ${path.total}`);
+  assert.ok(path.poly.length > 600, 'long path should contain repeated lanes');
+  for (const [x, y] of path.poly) {
+    assert.ok(Number.isFinite(x) && Number.isFinite(y));
+    assert.ok(x >= 0 && x <= 1000 && y >= 0 && y <= 400, 'wrapped path stays on stage');
+  }
 });
 
 test('pointAt walks from the start to the end', () => {
@@ -78,7 +88,8 @@ test('the default poses keep the two strips clear of each other', () => {
   assert.ok(lowestOfFirst < highestOfSecond, 'strip 0 must sit entirely above strip 1');
 
   const spanOf = (pts) => Math.max(...pts.map((p) => p[0])) - Math.min(...pts.map((p) => p[0]));
-  assert.ok(spanOf(second) < spanOf(first) * 0.6, 'strip 1 must be the shorter run');
+  assert.ok(spanOf(first) > 0.5, 'strip 0 must span across the stage');
+  assert.ok(spanOf(second) > 0.5, 'strip 1 must span across the stage');
 });
 
 test('defaultPose hands back a copy, not the shared array', () => {

@@ -20,6 +20,7 @@ private:
 
     // State for smoothing, level detection, and beat timing
     float gainSmoothing   = GAIN_SMOOTHING;
+    float dynamicsRisePerBlock = DYN_EDGE_RISE;
     float volume          = 0.0f;
     float previousVolume  = 0.0f;
     float loudness        = 0.0f;
@@ -59,6 +60,7 @@ private:
     float dynHi            = 0.0f;
     float dynLo            = 0.0f;
     bool  dynamicsSeeded   = false;
+    float dynamicsDecayPerBlock = DYN_EDGE_FALL;
 
     // The bass band's raw magnitude on the block before this one, which a beat has
     // to rise above. See BEAT_BASS_RISE in Config.h for why the level rise alone
@@ -173,6 +175,26 @@ public:
     // this is how they get audio in. The samples must be NUM_SAMPLES long, which
     // is what the FFT is sized for; a shorter block leaves the tail silent.
     void submitSamples(const float* samples, size_t count);
+
+    // Tune how quickly a remembered dynamics span closes while the envelope is
+    // no longer moving. This is intentionally a per-analysis-block coefficient:
+    // it is the same unit as the original device-side tuning constant.
+    void setDynamicsDecayPerBlock(float rate) {
+        dynamicsDecayPerBlock = constrain(rate, 0.0f, 1.0f);
+    }
+    float getDynamicsDecayPerBlock() const { return dynamicsDecayPerBlock; }
+
+    // Tune the one-pole smoothing applied to the loudness estimate. Higher values
+    // hold the previous estimate longer; lower values follow the input faster.
+    void setGainSmoothing(float rate) {
+        gainSmoothing = constrain(rate, 0.0f, 1.0f);
+    }
+    float getGainSmoothing() const { return gainSmoothing; }
+
+    void setDynamicsGrowthPerBlock(float rate) {
+        dynamicsRisePerBlock = constrain(rate, 0.0f, 1.0f);
+    }
+    float getDynamicsGrowthPerBlock() const { return dynamicsRisePerBlock; }
 
     // Forget every rolling reference and return to the unseeded state, so the next
     // block is measured on its own terms.

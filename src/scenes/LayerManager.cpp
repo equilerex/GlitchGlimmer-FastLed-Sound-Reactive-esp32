@@ -32,6 +32,12 @@ void LayerManager::setLEDs(CRGB* buf, size_t count) {
     scratch.resize(count);
 }
 
+void LayerManager::setLength(size_t count) {
+    ledCnt = count;
+    scratch.resize(count);
+    layerBuf.resize(count);
+}
+
 // Remove all active layers; unique_ptr will auto-delete each VisualLayer
 void LayerManager::clearLayers() {
     layers.clear();
@@ -61,7 +67,7 @@ void LayerManager::updateLayers(const AudioFeatures& now,
 // Fade the strip for trails, then add each layer's light on top of it
 void LayerManager::renderLayers(uint8_t globalFade) {
     // Enhanced safety checks
-    if (!leds || ledCnt == 0 || ledCnt > 1000) {
+    if (!leds || ledCnt == 0 || ledCnt > 10000) {
         Serial.println("Invalid LED buffer in renderLayers");
         return; // nothing to draw if buffer not set or invalid
     }
@@ -151,6 +157,30 @@ int LayerManager::countLayersOfType(LayerType t) const {
             [t](const LayerInstance& inst) { return inst.type == t; }
         )
     );
+}
+
+LayerType LayerManager::getLayerType(int index) const {
+    if (index >= 0 && index < static_cast<int>(layers.size())) {
+        return layers[index].type;
+    }
+    return LayerType::BASE;
+}
+
+const char* LayerManager::getLayerName(int index) const {
+    if (index >= 0 && index < static_cast<int>(layers.size())) {
+        if (layers[index].layer) {
+            return layers[index].layer->getName();
+        }
+        return layerTypeToString(layers[index].type);
+    }
+    return "—";
+}
+
+unsigned long LayerManager::getLayerElapsedMs(int index) const {
+    if (index >= 0 && index < static_cast<int>(layers.size())) {
+        return millis() - layers[index].startMs;
+    }
+    return 0;
 }
 
 // Apply a scene's layer types by instantiating each via factory template

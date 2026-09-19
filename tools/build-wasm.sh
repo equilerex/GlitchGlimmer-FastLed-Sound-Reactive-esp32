@@ -48,8 +48,24 @@ for arg in "$@"; do
 done
 
 if ! command -v em++ >/dev/null 2>&1; then
-  echo "em++ is not on PATH. Source emsdk_env.sh first, for example:" >&2
-  echo "    source /d/emsdk/emsdk_env.sh" >&2
+  # npm cannot change the parent terminal's environment, but the build process
+  # can load Emscripten itself. Prefer the active EMSDK and then the standard
+  # Windows Git Bash location used by this repo's setup instructions.
+  emsdk_candidates=()
+  if [ -n "${EMSDK:-}" ]; then emsdk_candidates+=("$EMSDK"); fi
+  emsdk_candidates+=(/d/emsdk /c/emsdk "$HOME/emsdk")
+  for emsdk_dir in "${emsdk_candidates[@]}"; do
+    if [ -f "$emsdk_dir/emsdk_env.sh" ]; then
+      # shellcheck disable=SC1090
+      source "$emsdk_dir/emsdk_env.sh" >/dev/null
+      break
+    fi
+  done
+fi
+
+if ! command -v em++ >/dev/null 2>&1; then
+  echo "em++ is not available. Install Emscripten or set EMSDK to its directory." >&2
+  echo "Expected, for example: /d/emsdk/emsdk_env.sh" >&2
   exit 1
 fi
 

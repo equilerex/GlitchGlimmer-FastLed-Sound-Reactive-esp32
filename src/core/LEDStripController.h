@@ -46,10 +46,10 @@
 //   LED strip buffers – one array per physical string
 // -----------------------------------------------------------------------------
 #ifdef LED_0_PIN
-    extern CRGB ledStrip_0[LED_0_NUM];
+    extern CRGB ledStrip_0[LED_0_CAPACITY];
 #endif
 #ifdef LED_1_PIN
-    extern CRGB ledStrip_1[LED_1_NUM];
+    extern CRGB ledStrip_1[LED_1_CAPACITY];
 #endif
 #ifdef LED_2_PIN
     extern CRGB ledStrip_2[LED_2_NUM];
@@ -66,7 +66,8 @@
 // -----------------------------------------------------------------------------
 struct LEDStrip {
     int     index     = -1;
-    int     length    = 0;
+    int     length    = 0;  // active software length passed to animations
+    int     capacity  = 0;  // allocated buffer / physical output capacity
     CRGB*   leds      = nullptr;
 
     Animation*   currentAnim  = nullptr;
@@ -76,10 +77,25 @@ struct LEDStrip {
 
     ~LEDStrip() { delete currentAnim; layerMgr.clearLayers(); }
 
-    inline void init(int len, CRGB* buf) {
-        length = len;  leds = buf;
+    inline void init(int cap, CRGB* buf) {
+        capacity = cap;
+        length = cap;
+        leds = buf;
         layerMgr.setLEDs(leds, length);
     }
+
+    inline int setSoftwareLength(int len) {
+        const int next = (len < 1) ? 1 : (len > capacity ? capacity : len);
+        if (next < length) {
+            for (int i = next; i < length; ++i) leds[i] = CRGB::Black;
+        }
+        length = next;
+        layerMgr.setLength(static_cast<size_t>(length));
+        return length;
+    }
+
+    inline int getCapacity() const { return capacity; }
+    inline int getLength() const { return length; }
 
     // Rebuild the layer list only when the scene actually changes. Scene layers
     // have no duration, so building them every frame allocates without bound.
@@ -143,15 +159,17 @@ public:
         sceneDirector.begin();
 
         #ifdef LED_0_PIN
-                 FastLED.addLeds<WS2812B, LED_0_PIN, GRB>(ledStrip_0, LED_0_NUM);
+                FastLED.addLeds<WS2812B, LED_0_PIN, GRB>(ledStrip_0, LED_0_CAPACITY);
                 strips[stripCount].index = stripCount;
-                strips[stripCount].init(LED_0_NUM, ledStrip_0);
+                strips[stripCount].init(LED_0_CAPACITY, ledStrip_0);
+                softwareLengths[stripCount] = strips[stripCount].setSoftwareLength(LED_0_NUM);
                 ++stripCount;
         #endif
         #ifdef LED_1_PIN
-                FastLED.addLeds<WS2812B, LED_1_PIN, GRB>(ledStrip_1, LED_1_NUM);
+                FastLED.addLeds<WS2812B, LED_1_PIN, GRB>(ledStrip_1, LED_1_CAPACITY);
                 strips[stripCount].index = stripCount;
-                strips[stripCount].init(LED_1_NUM, ledStrip_1);
+                strips[stripCount].init(LED_1_CAPACITY, ledStrip_1);
+                softwareLengths[stripCount] = strips[stripCount].setSoftwareLength(LED_1_NUM);
                 ++stripCount;
         #endif
         #ifdef LED_2_PIN
@@ -208,14 +226,35 @@ public:
     inline void switchAllAnimations() { sceneDirector.forceNextScene(); }
     inline int  getStripCount() const { return stripCount; }
 
+    // This cache is the firmware-side source of truth for the active software
+    // geometry. Animations, layer buffers, WASM count exports and the browser
+    // byte copy all read the same value after a length change.
+    inline int setSoftwareLength(int strip, int length) {
+        if (strip < 0 || strip >= stripCount) return 0;
+        softwareLengths[strip] = strips[strip].setSoftwareLength(length);
+        return softwareLengths[strip];
+    }
+
+    inline int getSoftwareLength(int strip) const {
+        return (strip >= 0 && strip < stripCount) ? softwareLengths[strip] : 0;
+    }
+
+    inline int getStripCapacity(int strip) const {
+        return (strip >= 0 && strip < stripCount) ? strips[strip].getCapacity() : 0;
+    }
+
     // The live director is this one, not any other instance -- only this object
     // holds the SceneState that makes the director do anything.
     inline String getCurrentSceneName() const { return sceneDirector.getCurrentSceneName(); }
 
-    // Test seams. The layer list and the scene clock are the two things the host
-    // harness under sim/ has to observe, and both are otherwise private.
     inline int layerCount(int strip) const {
         return (strip >= 0 && strip < stripCount) ? strips[strip].layerMgr.activeCount() : -1;
+    }
+    inline const char* getLayerName(int strip, int index) const {
+        return (strip >= 0 && strip < stripCount) ? strips[strip].layerMgr.getLayerName(index) : "—";
+    }
+    inline unsigned long getLayerElapsedMs(int strip, int index) const {
+        return (strip >= 0 && strip < stripCount) ? strips[strip].layerMgr.getLayerElapsedMs(index) : 0;
     }
     inline int getSceneChangeCount() const { return sceneState.sceneChangeCount; }
 
@@ -240,6 +279,7 @@ private:
     SceneDirector        sceneDirector;
 
     LEDStrip strips[10];
+    int      softwareLengths[10] = {};
     int      stripCount = 0;
 
     // No heap monitor here. checkMemory() had no call sites and its low-water

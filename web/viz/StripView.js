@@ -14,11 +14,32 @@
 import { expose, grainAlpha, GRAIN_DOT_COUNT } from './camera.js';
 import { profileById, stripLengthMm, fuses } from './profiles.js';
 import {
-  samplePath, placePixels, fitScale, defaultPose, hitHandle,
+  sampleWrappedPath, placePixels, fitScale, defaultPose, hitHandle,
 } from './path.js';
 import { paintSurface, paintRod, occludes } from './surface.js';
 
 const MAX_DPR = 2;
+
+function zoomPath(path, zoom, width, height) {
+  if (zoom === 1) return path;
+  const cx = width * 0.5;
+  const cy = height * 0.5;
+  const poly = path.poly.map(([x, y]) => [
+    cx + (x - cx) * zoom,
+    cy + (y - cy) * zoom,
+  ]);
+  const cum = path.cum.map((distance) => distance * zoom);
+  return { poly, cum, total: path.total * zoom };
+}
+
+function panPath(path, panX, panY) {
+  if (!panX && !panY) return path;
+  return {
+    poly: path.poly.map(([x, y]) => [x + panX, y + panY]),
+    cum: path.cum,
+    total: path.total,
+  };
+}
 
 function defaultStrip(index) {
   // shape is null because these poses are not any SHAPES preset. A rail showing
@@ -43,6 +64,9 @@ export class StripView {
       surface: 'room',
       scale: 'fit',
       stageWidthM: 3,
+      zoom: 1,
+      panX: 0,
+      panY: 0,
       ev: 0,
       spill: 1,
       grain: 0.14,
@@ -58,6 +82,10 @@ export class StripView {
 
     this.activeStrip = 0;
     this.dragHandle = -1;
+    this.panPointerId = -1;
+    this.pointers = new Map();
+    this.pinch = null;
+    this.hoverHandle = -1;
     this.hover = { strip: -1, led: -1 };
     this.onHover = null;
     this.onGeometryChange = null;
@@ -98,19 +126,30 @@ export class StripView {
     const { width, height, config } = this;
     this.geometry = config.strips.map((strip, i) => {
       const profile = profileById(strip.profile);
-      const path = samplePath(strip.pts, width, height);
-      const pxPerMm = config.scale === 'true'
-        ? width / (config.stageWidthM * 1000)
-        : fitScale(path, this.counts[i], profile.pitch);
-      const pitchPx = profile.pitch * pxPerMm;
+      const pitchMm = Number.isFinite(strip.pitchMm) ? strip.pitchMm : profile.pitch;
+      const count = this.counts[i] || 1;
+      const zoom = Number.isFinite(config.zoom) ? Math.max(0.1, config.zoom) : 1;
+      const basePxPerMm = width / 3000;
+      const pxPerMm = basePxPerMm * zoom;
+      const lengthM = Number.isFinite(strip.lengthM)
+        ? Math.max(0.1, strip.lengthM)
+        : count * pitchMm / 1000;
+      const pitchPx = pitchMm * pxPerMm;
+      // Build the physical path at zoom 1, then scale the finished geometry as
+      // an interface transform. This keeps zoom from changing lane wrapping,
+      // software length, or LED count.
+      const path = panPath(zoomPath(
+        sampleWrappedPath(strip.pts, width, height, lengthM * 1000 * basePxPerMm),
+        zoom, width, height,
+      ), Number(config.panX) || 0, Number(config.panY) || 0);
       return {
         profile,
         path,
         pxPerMm,
         pitchPx,
-        sigmaPx: Math.max(profile.sigma * pxPerMm * config.glowSize, 1.1),
-        diePx: Math.max(profile.die * pxPerMm * 0.5 * config.pixelSize, 0.8),
-        leds: placePixels(path, this.counts[i], pitchPx),
+        sigmaPx: Math.max(profile.sigma * pxPerMm * (strip.glowSize ?? config.glowSize), 1.1),
+        diePx: Math.max(profile.die * pxPerMm * 0.5 * (strip.pixelSize ?? config.pixelSize), 0.8),
+        leds: placePixels(path, count, pitchPx),
       };
     });
   }
@@ -126,17 +165,32 @@ export class StripView {
     const canvas = this.canvas;
 
     this._onPointerDown = (event) => {
-      const [x, y] = this.localPoint(event);
+      const screen = this.localPoint(event);
+      this.pointers.set(event.pointerId, screen);
+      const [x, y] = this.toScenePoint(screen[0], screen[1]);
       const pts = this.config.strips[this.activeStrip].pts;
       const grabbed = hitHandle(pts, this.width, this.height, x, y);
       if (grabbed >= 0) {
         this.dragHandle = grabbed;
         canvas.setPointerCapture(event.pointerId);
+        return;
+      }
+      if (this.pointers.size === 1) {
+        this.panPointerId = event.pointerId;
+      } else if (this.pointers.size === 2) {
+        this.panPointerId = -1;
+        this.pinch = this.pinchState();
+        canvas.setPointerCapture(event.pointerId);
       }
     };
 
     this._onPointerMove = (event) => {
-      const [x, y] = this.localPoint(event);
+      const screen = this.localPoint(event);
+      const previous = this.pointers.get(event.pointerId);
+      this.pointers.set(event.pointerId, screen);
+      const [x, y] = this.toScenePoint(screen[0], screen[1]);
+      this.hoverHandle = hitHandle(this.config.strips[this.activeStrip].pts,
+                                   this.width, this.height, x, y, 24);
       if (this.dragHandle >= 0) {
         const pts = this.config.strips[this.activeStrip].pts;
         pts[this.dragHandle] = [
@@ -148,15 +202,80 @@ export class StripView {
         if (this.onGeometryChange) this.onGeometryChange();
         return;
       }
+      if (this.pointers.size >= 2 && this.pinch) {
+        const next = this.pinchState();
+        const dx = next.center[0] - this.pinch.center[0];
+        const dy = next.center[1] - this.pinch.center[1];
+        this.config.panX = (Number(this.config.panX) || 0) + dx;
+        this.config.panY = (Number(this.config.panY) || 0) + dy;
+        this.zoomAt(next.center[0], next.center[1], next.distance / this.pinch.distance);
+        this.pinch = next;
+        this.invalidate();
+        if (this.onGeometryChange) this.onGeometryChange();
+        return;
+      }
+      if (this.panPointerId === event.pointerId && previous) {
+        this.config.panX = (Number(this.config.panX) || 0) + screen[0] - previous[0];
+        this.config.panY = (Number(this.config.panY) || 0) + screen[1] - previous[1];
+        this.invalidate();
+        if (this.onGeometryChange) this.onGeometryChange();
+        return;
+      }
       this.updateHover(x, y);
     };
 
-    this._onPointerRelease = () => { this.dragHandle = -1; };
+    this._onPointerRelease = (event) => {
+      this.dragHandle = -1;
+      if (event) this.pointers.delete(event.pointerId);
+      if (this.pointers.size < 2) this.pinch = null;
+      if (this.panPointerId === (event && event.pointerId)) {
+        const remaining = this.pointers.keys().next();
+        this.panPointerId = remaining.done ? -1 : remaining.value;
+      }
+    };
 
     this._onPointerLeave = () => {
       this._onPointerRelease();
+      this.hoverHandle = -1;
       this.hover = { strip: -1, led: -1 };
       if (this.onHover) this.onHover(-1, -1, null);
+    };
+
+    this._onWheel = (event) => {
+      event.preventDefault();
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      this.zoomAt(...this.localPoint(event), factor);
+      this.invalidate();
+      if (this.onGeometryChange) this.onGeometryChange();
+    };
+
+    this._onDoubleClick = (event) => {
+      const [x, y] = this.localPoint(event);
+      const pts = this.config.strips[this.activeStrip].pts;
+      let insertAt = pts.length;
+      let best = Infinity;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const ax = pts[i][0] * this.width;
+        const ay = pts[i][1] * this.height;
+        const bx = pts[i + 1][0] * this.width;
+        const by = pts[i + 1][1] * this.height;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+        const distance = Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
+        if (distance < best) {
+          best = distance;
+          insertAt = i + 1;
+        }
+      }
+      if (best > 36) return;
+      pts.splice(insertAt, 0, [
+        Math.max(0.02, Math.min(0.98, x / this.width)),
+        Math.max(0.03, Math.min(0.97, y / this.height)),
+      ]);
+      this.config.strips[this.activeStrip].shape = null;
+      this.invalidate();
+      if (this.onGeometryChange) this.onGeometryChange();
     };
 
     canvas.addEventListener('pointerdown', this._onPointerDown);
@@ -169,6 +288,42 @@ export class StripView {
     // held down.
     canvas.addEventListener('lostpointercapture', this._onPointerRelease);
     canvas.addEventListener('pointerleave', this._onPointerLeave);
+    canvas.addEventListener('dblclick', this._onDoubleClick);
+    canvas.addEventListener('wheel', this._onWheel, { passive: false });
+  }
+
+  pinchState() {
+    const points = [...this.pointers.values()];
+    const dx = points[1][0] - points[0][0];
+    const dy = points[1][1] - points[0][1];
+    return {
+      center: [(points[0][0] + points[1][0]) * 0.5, (points[0][1] + points[1][1]) * 0.5],
+      distance: Math.max(1, Math.hypot(dx, dy)),
+    };
+  }
+
+  zoomAt(x, y, factor) {
+    const oldZoom = Number.isFinite(this.config.zoom) ? this.config.zoom : 1;
+    const nextZoom = Math.max(0.1, oldZoom * factor);
+    const cx = this.width * 0.5;
+    const cy = this.height * 0.5;
+    const panX = Number(this.config.panX) || 0;
+    const panY = Number(this.config.panY) || 0;
+    const baseX = (x - cx - panX) / oldZoom;
+    const baseY = (y - cy - panY) / oldZoom;
+    this.config.zoom = nextZoom;
+    this.config.panX = x - cx - baseX * nextZoom;
+    this.config.panY = y - cy - baseY * nextZoom;
+  }
+
+  toScenePoint(x, y) {
+    const zoom = Number.isFinite(this.config.zoom) ? this.config.zoom : 1;
+    const panX = Number(this.config.panX) || 0;
+    const panY = Number(this.config.panY) || 0;
+    return [
+      this.width * 0.5 + (x - this.width * 0.5 - panX) / zoom,
+      this.height * 0.5 + (y - this.height * 0.5 - panY) / zoom,
+    ];
   }
 
   // Two StripViews (app.js's and live.js's) can share this same canvas across
@@ -185,6 +340,8 @@ export class StripView {
     canvas.removeEventListener('pointercancel', this._onPointerRelease);
     canvas.removeEventListener('lostpointercapture', this._onPointerRelease);
     canvas.removeEventListener('pointerleave', this._onPointerLeave);
+    canvas.removeEventListener('dblclick', this._onDoubleClick);
+    canvas.removeEventListener('wheel', this._onWheel);
   }
 
   localPoint(event) {
@@ -228,10 +385,12 @@ export class StripView {
   drawHandles() {
     const ctx = this.ctx;
     const pts = this.config.strips[this.activeStrip].pts;
+    if (this.hoverHandle < 0 && this.dragHandle < 0) return;
     ctx.save();
     for (let i = 0; i < pts.length; i++) {
       const x = pts[i][0] * this.width;
       const y = pts[i][1] * this.height;
+      if (this.dragHandle < 0 && this.hoverHandle !== i) continue;
       const active = this.dragHandle === i;
       // Kept in step with --accent in style.css by hand. A handle is UI chrome
       // rather than depicted hardware, so it should follow the theme, but
@@ -251,7 +410,10 @@ export class StripView {
   fit(stripIndex) {
     if (!this.geometry) this.buildGeometry();
     const geom = this.geometry[stripIndex];
-    const stripMm = stripLengthMm(this.counts[stripIndex], geom.profile);
+    const strip = this.config.strips[stripIndex];
+    const stripMm = Number.isFinite(strip.lengthM)
+      ? strip.lengthM * 1000
+      : stripLengthMm(this.counts[stripIndex], geom.profile);
     const pathMm = geom.path.total / geom.pxPerMm;
     return {
       pathM: pathMm / 1000,
@@ -279,6 +441,7 @@ export class StripView {
     for (let i = 0; i < this.geometry.length; i++) {
       if (i === rodAt) paintRod(this.ctx, this.width, this.height);
       const geom = this.geometry[i];
+      this._paintStripIndex = i;
       this.paintStrip(geom, bytes, offset);
       offset += this.counts[i] * 3;
     }
@@ -291,7 +454,8 @@ export class StripView {
 
   colourOf(bytes, offset, index) {
     const at = offset + index * 3;
-    const k = this.config.intensity;
+    const strip = this.config.strips[this._paintStripIndex || 0];
+    const k = strip?.intensity ?? this.config.intensity;
     return expose(bytes[at] * k, bytes[at + 1] * k, bytes[at + 2] * k, this.config.ev);
   }
 

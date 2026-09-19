@@ -1,6 +1,6 @@
 # led strip visualizer
 
-Session: 2026-09-18. Status: built. Ten tasks, each reviewed; see `2026-09-18-led-strip-visualizer-build.md` for the task breakdown and `## Implementation deviations` below for what diverged. Not committed.
+Session: 2026-09-18. Status: built. Ten tasks, each reviewed; see `2026-09-18-led-strip-visualizer-build.md` for the task breakdown and `## Implementation deviations` below for what diverged. Committed as `db687a6`, with a follow-up pass on shape presets and the save debounce still in the working tree.
 
 ## Context
 
@@ -217,11 +217,18 @@ substrate is drawn.
 argument, so no single form of the test script spans Node 18 and Node 24. CI does not run
 `npm test`, so nothing there is affected.
 
-**Not verified on real audio.** The spectrum panel and the level meter were exercised only against
-a silent demo signal in a browser with the microphone blocked. `Spectrum.paint` is confirmed to
-run. Both still need one pass on a real microphone.
+**Audio path confirmed by the owner.** The spectrum panel, the level meter and the microphone
+connection all work. They were unverifiable from the test browser, which blocks the microphone and
+produced silence from the demo signal, so the confirmation is the owner's rather than measured
+here.
 
-**Known gap: a pose can be lost within 250 ms of the tab closing.** Persisting on every
-`pointermove` meant a synchronous `localStorage` write about a hundred times a second on the
-render path, so the write is debounced. Nothing flushes it on unload. A `pagehide` handler closes
-it.
+**The pose is saved only once it settles, and that is the intended behaviour.** Persisting on
+every `pointermove` meant a synchronous `localStorage` write about a hundred times a second on the
+render path. The write is debounced by 1.2 s and nothing flushes it on unload, so a pose abandoned
+mid-gesture is lost. The owner's call, and the right one: the intermediate positions of a drag have
+no reader, and a flush handler would be machinery guarding something nobody minds losing.
+
+**Ten shape presets, not five.** `SHAPES` gained `bowl`, `wave`, `corner`, `column` and `diag`
+alongside the original five. Each is still four handles, because four is what a catmull-rom spline
+needs to express one bend or one reversal — a preset wanting five handles is a shape worth
+dragging by hand.

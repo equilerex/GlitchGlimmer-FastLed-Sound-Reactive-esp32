@@ -28,21 +28,26 @@ what a COB phosphor does. `fuses(profile)` is that rule and is the only thing th
 ask about a profile's identity.
 
 A consequence worth knowing before you change a number: silicone sleeve at `sigma 11.0` against
-`pitch 16.7` does **not** fuse. That is correct — a sleeved 60/m strip is far softer than a bare
+`pitch 1000/60` does **not** fuse. That is correct — a sleeved 60/m strip is far softer than a bare
 one and still shows its pitch.
 
-## Count is firmware-owned
+## Device capacity and software geometry are separate
 
-Pixel count comes from the firmware — `_gg_leds0_count()` live, `manifest.leds0` for a recording.
-It is not a user control, so:
+Device capacity comes from the firmware — `_gg_leds0_count()` for the physical/default live
+configuration and `manifest.leds0` for a recording. The browser's live WASM path now has a
+software-controlled active length and count inside the shared animation library. The board's
+physical capacity remains fixed; the WASM simulation has a larger capacity and reports its active
+software count after the browser sets it.
 
 ```
 strip length = count x pitch
 ```
 
-120 pixels of 60/m is 2.00 m and cannot be anything else. The page reports the fit between the
-drawn path and that length rather than silently rescaling. `placePixels` stops early when the path
-is too short to hold the count; that is the honest answer, not an edge case to pad.
+The browser derives active count by rounding `lengthM * 1000 / pitchMm` to a whole pixel. Built-in
+profiles use exact density-derived pitches (`1000/60`, `1000/144`, and so on), so 2 m at 60/m is
+120 pixels and 2 m at 144/m is 288 pixels. A profile's pitch is the default, but the user may
+override it. The path extends as a serpentine and the camera clips what is outside the viewport;
+zoom changes the view scale, not the software length.
 
 ## Why the camera matters more than the glow
 

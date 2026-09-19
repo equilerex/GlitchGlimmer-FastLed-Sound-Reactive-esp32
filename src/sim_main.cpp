@@ -2266,6 +2266,30 @@ void checkAudioProcessor() {
            std::to_string(spanDyn.dynamics) + " after a step down to a tenth of it, " +
            "the classifier's cut being 0.5");
 
+    // The raw dynamics window has its own decay, before MoodHistory applies its
+    // classifier window. With decay disabled, a remembered span must remain
+    // available instead of collapsing merely because more blocks arrive.
+    AudioProcessor procDynTuning;
+    for (int warm = 0; warm < 80; ++warm) {
+        procDynTuning.submitSamples(samples.data(), samples.size());
+        procDynTuning.analyzeAudio();
+    }
+    procDynTuning.setDynamicsDecayPerBlock(0.0f);
+    AudioFeatures tunedDyn;
+    for (int held = 0; held < 120; ++held) {
+        procDynTuning.submitSamples(quietTone.data(), quietTone.size());
+        tunedDyn = procDynTuning.analyzeAudio();
+    }
+    record("raw dynamics decay can be disabled for a held span",
+           tunedDyn.dynamics > 0.5f,
+           "tuned dynamics " + std::to_string(tunedDyn.dynamics) +
+           " collapsed despite a zero decay setting");
+
+    AudioProcessor procGainTuning;
+    procGainTuning.setGainSmoothing(0.25f);
+    record("input gain smoothing is tunable",
+           std::fabs(procGainTuning.getGainSmoothing() - 0.25f) < 1e-6f,
+           "gain smoothing remained " + std::to_string(procGainTuning.getGainSmoothing()));
     // The block alternates on every frame, so an undamped classifier changes on all
     // 99 transitions while a damped one settles and holds. The two blocks differ in
     // amplitude by a factor of four, which is the same alternation the level checks

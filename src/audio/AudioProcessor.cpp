@@ -87,7 +87,7 @@ void AudioProcessor::submitSamples(const float* samples, size_t count) {
     for (size_t i = 0; i < n; ++i) {
         // Constrained rather than cast bare: removing the mean can push a sample
         // just past 1.0, and the cast would wrap instead of clipping.
-        const float s = samples[i] - mean;
+        const float s = constrain(samples[i] - mean, -1.0f, 1.0f);
         vReal[i]  = s;
         vImag[i]  = 0.0f;
         buffer[i] = static_cast<int16_t>(constrain(s * 32767.0f, -32768.0f, 32767.0f));
@@ -414,8 +414,8 @@ AudioFeatures AudioProcessor::analyzeAudio() {
         dynLo          = levelEnv;
         dynamicsSeeded = true;
     } else {
-        dynHi += (levelEnv - dynHi) * (levelEnv > dynHi ? DYN_EDGE_RISE : DYN_EDGE_FALL);
-        dynLo += (levelEnv - dynLo) * (levelEnv < dynLo ? DYN_EDGE_RISE : DYN_EDGE_FALL);
+        dynHi += (levelEnv - dynHi) * (levelEnv > dynHi ? dynamicsRisePerBlock : dynamicsDecayPerBlock);
+        dynLo += (levelEnv - dynLo) * (levelEnv < dynLo ? dynamicsRisePerBlock : dynamicsDecayPerBlock);
     }
     features.dynamics = (dynHi > 1e-6f)
         ? constrain((dynHi - dynLo) / dynHi, 0.0f, 1.0f)

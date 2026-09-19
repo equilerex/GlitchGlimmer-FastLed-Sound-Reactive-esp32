@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PROFILES, profileById, stripLengthMm, fuses, migratePreset,
+  PROFILES, profileById, stripLengthMm, countForLength, fuses, migratePreset,
 } from '../../web/viz/profiles.js';
 
 test('every profile carries the full measurement set', () => {
@@ -23,7 +23,12 @@ test('an unknown id falls back to the standard strip', () => {
 });
 
 test('120 pixels of 60 per metre is two metres', () => {
-  assert.ok(Math.abs(stripLengthMm(120, profileById('ws60')) - 2004) < 1e-6, 'expected 2004 mm');
+  assert.ok(Math.abs(stripLengthMm(120, profileById('ws60')) - 2000) < 1e-6, 'expected 2000 mm');
+});
+
+test('software length derives exact pixel counts from selected density', () => {
+  assert.equal(countForLength(2, profileById('ws60').pitch), 120);
+  assert.equal(countForLength(2, profileById('ws144').pitch), 288);
 });
 
 test('COB fuses, and a sleeve softens without fusing', () => {

@@ -2,11 +2,11 @@ import { createApp } from 'vue';
 import { state } from './state.js';
 import * as recording from './app.js';
 import * as live from './live.js';
-import { PROFILES, profileById } from './viz/profiles.js';
+import { PROFILES, profileById, countForLength } from './viz/profiles.js';
 import { SURFACES } from './viz/surface.js';
 import { SHAPES } from './viz/path.js';
 import { BenchStrip } from './viz/BenchStrip.js';
-import { loadHw, bindView } from './viz/hwStore.js';
+import { loadHw, resetHw, bindView } from './viz/hwStore.js';
 
 const app = createApp({
   data() {
@@ -64,14 +64,42 @@ const app = createApp({
       live.updateTuning(index, parseFloat(value));
     },
 
+    toggleHwDrawer() {
+      this.s.hwDrawerOpen = !this.s.hwDrawerOpen;
+    },
+    resetHwSettings() {
+      if (this.boundView) {
+        const fresh = resetHw(this.boundView.counts);
+        Object.assign(this.s.hw, fresh);
+        this.syncHw();
+      }
+    },
     // Hardware rail actions
     syncHw() {
+      const strip = this.s.hw.strips[this.s.hw.activeStrip];
+      if (strip) {
+        const capacity = live.softwareStripCapacity(this.s.hw.activeStrip) || Infinity;
+        const count = countForLength(strip.lengthM, strip.pitchMm, capacity || Infinity);
+        live.setSoftwareStripLength(this.s.hw.activeStrip, count);
+        if (this.bench && this.boundView) this.bench.setCounts(this.boundView.counts);
+      }
       if (this.syncView) this.syncView();
     },
     selectProfile(id) {
       const strip = this.s.hw.strips[this.s.hw.activeStrip];
       if (!strip) return;
       strip.profile = id;
+      const profile = profileById(id);
+      if (!strip.pitchManual) strip.pitchMm = profile.pitch;
+      strip.pixelSize = profile.visual.pixelSize;
+      strip.glowSize = profile.visual.glowSize;
+      strip.intensity = profile.visual.intensity;
+      this.syncHw();
+    },
+    editPitch() {
+      const strip = this.s.hw.strips[this.s.hw.activeStrip];
+      if (!strip) return;
+      strip.pitchManual = true;
       this.syncHw();
     },
     applyShape(name) {

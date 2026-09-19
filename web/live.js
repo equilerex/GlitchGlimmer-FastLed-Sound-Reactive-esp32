@@ -116,8 +116,13 @@ async function loadWasm() {
   module._gg_init();
 
   const counts = [module._gg_leds0_count(), module._gg_leds1_count()];
+  const wasmCapacity = 12000;
   engine = {
     counts,
+    capacities: [
+      module._gg_strip_capacity ? module._gg_strip_capacity(0) : wasmCapacity,
+      module._gg_strip_capacity ? module._gg_strip_capacity(1) : wasmCapacity,
+    ],
     sampleCount: module._gg_sample_count(),
     samplesPtr: module._gg_sample_buffer(),
     leds0Ptr: module._gg_leds0(),
@@ -128,6 +133,22 @@ async function loadWasm() {
   };
   wasm = module;
   applyTuning();
+}
+
+export function setSoftwareStripLength(strip, length) {
+  if (!wasm || !engine) return 0;
+  const setter = wasm._gg_set_software_length || wasm._gg_set_strip_length;
+  if (!setter) return 0;
+  const actual = setter(strip, Math.round(length));
+  if (actual > 0) {
+    engine.counts[strip] = actual;
+    engine.scratch = new Uint8Array((engine.counts[0] + engine.counts[1]) * 3);
+  }
+  return actual;
+}
+
+export function softwareStripCapacity(strip) {
+  return engine ? engine.capacities[strip] : 0;
 }
 
 async function openMic() {
@@ -210,6 +231,15 @@ function readFeatures() {
   // Read once per frame and share, rather than calling across the boundary again
   // for the trace. Each gg_feature call is a wasm invocation, and at 60 fps the
   // boundary crossing is not free.
+  const layerCnt = wasm._gg_layer_count ? wasm._gg_layer_count(0) : 0;
+  const layers = [];
+  for (let i = 0; i < layerCnt; i++) {
+    const namePtr = wasm._gg_layer_name ? wasm._gg_layer_name(0, i) : 0;
+    const name = namePtr ? wasm.UTF8ToString(namePtr) : 'Layer ' + i;
+    const elapsed = wasm._gg_layer_elapsed_ms ? wasm._gg_layer_elapsed_ms(0, i) : 0;
+    layers.push({ name, elapsedMs: Math.round(elapsed) });
+  }
+
   return {
     volume:   wasm._gg_feature(0),
     loudness: wasm._gg_feature(1),
@@ -231,7 +261,8 @@ function readFeatures() {
     centroid: wasm._gg_spectrum_centroid(),
     band:     wasm._gg_dominant_band(),
     history:  wasm._gg_history_size(),
-    layers:   wasm._gg_layer_count(0),
+    layers:   layerCnt,
+    layerDetails: layers,
     layers1:  wasm._gg_layer_count(1),
     sceneChanges: wasm._gg_scene_changes(),
     moodChanges: wasm._gg_mood_changes(),
@@ -256,8 +287,31 @@ function updateHud(f) {
   state.live.mood = f.mood;
   state.live.predicted = f.predicted;
   state.live.bpm = f.bpm;
-  state.live.level = f.loudness; // loudness is volume * 100
-  state.live.beat = f.beat;
+  state.live.beat = f.beat > 0;
+  state.live.level = f.level;
+  state.live.loudness = f.loudness;
+  state.live.volume = f.volume;
+  state.live.peak = f.peak;
+  state.live.energy = f.energy;
+  state.live.dynamics = f.dynamics;
+  state.live.noiseFloor = f.noiseFloor;
+  state.live.presence = f.presence > 0;
+  state.live.bass = f.bass;
+  state.live.mid = f.mid;
+  state.live.treble = f.treble;
+  state.live.bassLevel = f.bassLevel;
+  state.live.midLevel = f.midLevel;
+  state.live.trebleLevel = f.trebleLevel;
+  state.live.centroid = f.centroid;
+  state.live.dominantBand = f.band;
+  state.live.sceneElapsed = (f.elapsed / 1000).toFixed(1) + 's';
+  state.live.sceneMin = (f.minMs / 1000).toFixed(1) + 's';
+  state.live.sceneIdeal = (f.idealMs / 1000).toFixed(1) + 's';
+  state.live.layers = f.layerDetails;
+  state.live.lit = f.lit;
+  state.live.litSum = f.litSum;
+  state.live.sceneChanges = f.sceneChanges;
+  state.live.moodChanges = f.moodChanges;
 
   paintState(f);
 }
@@ -640,6 +694,12 @@ const TUNING = [
     format: asRate },
   { index: 7, name: 'dynamics window closes', min: 0.05, max: 6, step: 0.05, value: 0.3,
     format: asRate },
+  { index: 8, name: 'dynamics signal decay', min: 0, max: 0.02, step: 0.00001, value: 0.0005,
+    format: (v) => v.toFixed(5) + '/block' },
+  { index: 9, name: 'input gain smoothing', min: 0, max: 0.99, step: 0.01, value: 0.85,
+    format: (v) => v.toFixed(2) },
+  { index: 10, name: 'dynamics signal growth', min: 0, max: 1, step: 0.01, value: 0.5,
+    format: (v) => v.toFixed(2) + '/block' },
 ];
 
 // Captured before loadTuning() may overwrite `value`, so Reset has something to
@@ -814,7 +874,11 @@ function buildState() {
     'into its running average, so a larger number is twitchier. The two dynamics ' +
     'window dials set how fast the classifier tracks the range it measures ' +
     'dynamics against, slow for a room that should not shift, fast for a set that ' +
-    'changes a lot.';
+    'changes a lot. Signal decay controls how quickly the raw dynamics span closes ' +
+    'when the loudness stays level; lower values let it float longer. Input gain ' +
+    'smoothing controls how quickly the loudness estimate follows the microphone; ' +
+    'lower values respond faster. The two signal controls set how quickly the raw ' +
+    'dynamics span grows and closes.';
   tuningBox.append(tuningNote);
   host.append(tuningBox);
 

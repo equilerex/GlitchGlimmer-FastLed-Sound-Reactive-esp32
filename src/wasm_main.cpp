@@ -35,8 +35,8 @@
 // -----------------------------------------------------------------------------
 //  Globals the firmware expects to find at link time
 // -----------------------------------------------------------------------------
-CRGB ledStrip_0[LED_0_NUM];
-CRGB ledStrip_1[LED_1_NUM];
+CRGB ledStrip_0[LED_0_CAPACITY];
+CRGB ledStrip_1[LED_1_CAPACITY];
 
 // -----------------------------------------------------------------------------
 //  Heap counters
@@ -145,10 +145,27 @@ EMSCRIPTEN_KEEPALIVE
 uint8_t* gg_leds1(void) { return reinterpret_cast<uint8_t*>(ledStrip_1); }
 
 EMSCRIPTEN_KEEPALIVE
-int gg_leds0_count(void) { return LED_0_NUM; }
+int gg_leds0_count(void) { return g_ctrl.getSoftwareLength(0); }
 
 EMSCRIPTEN_KEEPALIVE
-int gg_leds1_count(void) { return LED_1_NUM; }
+int gg_leds1_count(void) { return g_ctrl.getSoftwareLength(1); }
+
+EMSCRIPTEN_KEEPALIVE
+int gg_strip_capacity(int strip) { return g_ctrl.getStripCapacity(strip); }
+
+EMSCRIPTEN_KEEPALIVE
+int gg_strip_length(int strip) { return g_ctrl.getSoftwareLength(strip); }
+
+EMSCRIPTEN_KEEPALIVE
+int gg_set_software_length(int strip, int length) {
+    return g_ctrl.setSoftwareLength(strip, length);
+}
+
+// Compatibility name for pages built against the first software-length API.
+EMSCRIPTEN_KEEPALIVE
+int gg_set_strip_length(int strip, int length) {
+    return gg_set_software_length(strip, length);
+}
 
 EMSCRIPTEN_KEEPALIVE
 const char* gg_scene_name(void) { return g_sceneName.c_str(); }
@@ -201,6 +218,16 @@ int gg_beat_count(void) { return g_audio.bassHits; }
 // accumulating layers until the cap, the second shows the scene churning.
 EMSCRIPTEN_KEEPALIVE
 int gg_layer_count(int strip) { return g_ctrl.layerCount(strip); }
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_layer_name(int strip, int index) {
+    return g_ctrl.getLayerName(strip, index);
+}
+
+EMSCRIPTEN_KEEPALIVE
+double gg_layer_elapsed_ms(int strip, int index) {
+    return double(g_ctrl.getLayerElapsedMs(strip, index));
+}
 
 EMSCRIPTEN_KEEPALIVE
 int gg_scene_changes(void) { return g_ctrl.getSceneChangeCount(); }
@@ -287,7 +314,10 @@ constexpr int kTuneMoodConfirm    = 4;
 constexpr int kTuneMoodSmoothing  = 5;
 constexpr int kTuneDynUp          = 6;
 constexpr int kTuneDynDown        = 7;
-constexpr int kTuneCount          = 8;
+constexpr int kTuneAudioDynDecay  = 8;
+constexpr int kTuneGainSmoothing  = 9;
+constexpr int kTuneDynGrowth      = 10;
+constexpr int kTuneCount           = 11;
 }  // namespace
 
 EMSCRIPTEN_KEEPALIVE
@@ -301,6 +331,9 @@ float gg_tuning(int which) {
         case kTuneMoodSmoothing:  return g_mood.getSmoothingRate();
         case kTuneDynUp:          return g_mood.getDynUpPerSec();
         case kTuneDynDown:        return g_mood.getDynDownPerSec();
+        case kTuneAudioDynDecay:  return g_proc.getDynamicsDecayPerBlock();
+        case kTuneGainSmoothing:  return g_proc.getGainSmoothing();
+        case kTuneDynGrowth:      return g_proc.getDynamicsGrowthPerBlock();
         default:                  return 0.0f;
     }
 }
@@ -316,6 +349,9 @@ void gg_set_tuning(int which, float value) {
         case kTuneMoodSmoothing:  g_mood.setSmoothingRate(value);   break;
         case kTuneDynUp:          g_mood.setDynUpPerSec(value);     break;
         case kTuneDynDown:        g_mood.setDynDownPerSec(value);   break;
+        case kTuneAudioDynDecay:  g_proc.setDynamicsDecayPerBlock(value); break;
+        case kTuneGainSmoothing:  g_proc.setGainSmoothing(value); break;
+        case kTuneDynGrowth:      g_proc.setDynamicsGrowthPerBlock(value); break;
         default: break;
     }
 }
@@ -333,7 +369,7 @@ float gg_average(void) { return g_last.average; }
 EMSCRIPTEN_KEEPALIVE
 int gg_lit_count(int strip) {
     const CRGB* buf = (strip == 0) ? ledStrip_0 : ledStrip_1;
-    const int n = (strip == 0) ? LED_0_NUM : LED_1_NUM;
+    const int n = g_ctrl.getSoftwareLength(strip);
     int lit = 0;
     for (int i = 0; i < n; ++i) {
         if (buf[i].r || buf[i].g || buf[i].b) ++lit;
@@ -344,7 +380,7 @@ int gg_lit_count(int strip) {
 EMSCRIPTEN_KEEPALIVE
 double gg_lit_sum(int strip) {
     const CRGB* buf = (strip == 0) ? ledStrip_0 : ledStrip_1;
-    const int n = (strip == 0) ? LED_0_NUM : LED_1_NUM;
+    const int n = g_ctrl.getSoftwareLength(strip);
     double sum = 0.0;
     for (int i = 0; i < n; ++i) {
         sum += buf[i].r + buf[i].g + buf[i].b;
@@ -353,6 +389,6 @@ double gg_lit_sum(int strip) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-int gg_lit_capacity(int strip) { return (strip == 0) ? LED_0_NUM : LED_1_NUM; }
+int gg_lit_capacity(int strip) { return g_ctrl.getStripCapacity(strip); }
 
 } // extern "C"

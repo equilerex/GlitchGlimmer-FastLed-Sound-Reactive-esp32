@@ -39,6 +39,11 @@ export class BenchStrip {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
   }
 
+  setCounts(counts) {
+    this.counts = counts;
+    this.resize();
+  }
+
   setHover(stripIndex, ledIndex) {
     this.hover = { strip: stripIndex, led: ledIndex };
   }
@@ -61,7 +66,7 @@ export class BenchStrip {
     const span = this.width - PAD * 2;
     const cell = span / count;
     const profile = profileById(config.strips[stripIndex].profile);
-    const k = config.intensity;
+    const k = config.strips[stripIndex].intensity ?? config.intensity;
 
     for (let i = 0; i < count; i++) {
       const at = offset + i * 3;

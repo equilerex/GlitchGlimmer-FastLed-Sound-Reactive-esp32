@@ -27,6 +27,7 @@ public:
 
     LayerManager();                                    // ctor initializes internal state
     void setLEDs(CRGB* buf, size_t count);             // assign LED buffer and size
+    void setLength(size_t count);                      // change active software length
     void clearLayers();                                // remove all layers
 
     void updateLayers(const AudioFeatures& now,
@@ -41,6 +42,9 @@ public:
     int activeCount() const;                           // currently live layers
     bool hasActiveLayerOfType(LayerType t) const;      // check for type
     int countLayersOfType(LayerType t) const;          // count by type
+    LayerType getLayerType(int index) const;
+    const char* getLayerName(int index) const;
+    unsigned long getLayerElapsedMs(int index) const;
 
     template<typename... Args>
     void addLayerByType(LayerType t, Args&&... args);  // instantiates layer by enum

@@ -10,15 +10,22 @@ import { migratePreset, PROFILES, profileById } from './profiles.js';
 import { defaultPose } from './path.js';
 
 const STORAGE_KEY = 'gg.hw.v1';
-const SAVE_DEBOUNCE_MS = 250;
+// A second or two after the pose stops moving. Deliberately unhurried: the
+// intermediate positions of a drag have no reader, and a pose lost because the
+// tab closed mid-gesture is not worth a flush handler to rescue.
+const SAVE_DEBOUNCE_MS = 1200;
 let saveTimer = null;
 
 export function defaultHw(counts) {
   return {
     activeStrip: 0,
     surface: 'room',
-    scale: 'fit',
+    // Physical scale is the only mode: stageWidthM controls the apparent size.
+    scale: 'true',
     stageWidthM: 3,
+    zoom: 1,
+    panX: 0,
+    panY: 0,
     ev: 0,
     spill: 1,
     grain: 0.14,
@@ -28,7 +35,17 @@ export function defaultHw(counts) {
     // defaultPose, not SHAPES. A SHAPES entry spans the whole stage; these two
     // poses have to leave room for each other. Task 4 fixed exactly this bug
     // once already, which is why the poses live in path.js.
-    strips: counts.map((_, i) => ({ profile: PROFILES[0].id, shape: null, pts: defaultPose(i) })),
+    strips: counts.map((count, i) => ({
+      profile: PROFILES[0].id,
+      lengthM: Math.max(0.1, count * PROFILES[0].pitch / 1000),
+      pitchMm: PROFILES[0].pitch,
+      pitchManual: false,
+      pixelSize: PROFILES[0].visual.pixelSize,
+      glowSize: PROFILES[0].visual.glowSize,
+      intensity: PROFILES[0].visual.intensity,
+      shape: null,
+      pts: defaultPose(i),
+    })),
     fit: null,
     inspect: null,
     drawMs: 0,
@@ -50,7 +67,7 @@ export function loadHw(counts) {
   // page. This function runs before anything else can render, so it must not
   // be the thing that stops the page loading.
   try {
-    for (const key of ['surface', 'scale', 'stageWidthM', 'ev', 'spill', 'grain',
+    for (const key of ['surface', 'stageWidthM', 'zoom', 'panX', 'panY', 'ev', 'spill', 'grain',
                        'pixelSize', 'glowSize', 'intensity']) {
       if (typeof stored[key] === typeof base[key]) base[key] = stored[key];
     }
@@ -62,6 +79,12 @@ export function loadHw(counts) {
         const s = stored.strips[i];
         if (!s) continue;
         if (typeof s.profile === 'string') base.strips[i].profile = s.profile;
+        if (Number.isFinite(s.lengthM)) base.strips[i].lengthM = Math.max(0.1, Math.min(20, s.lengthM));
+        if (Number.isFinite(s.pitchMm)) base.strips[i].pitchMm = Math.max(0.5, Math.min(100, s.pitchMm));
+        if (typeof s.pitchManual === 'boolean') base.strips[i].pitchManual = s.pitchManual;
+        for (const key of ['pixelSize', 'glowSize', 'intensity']) {
+          if (Number.isFinite(s[key])) base.strips[i][key] = Math.max(0.1, Math.min(3, s[key]));
+        }
         // Coercing with Number() is not enough — it turns junk into NaN, which
         // reaches the spline and corrupts the render without an error anywhere.
         // Validate instead, and reject the whole pose (shape included) rather
@@ -86,16 +109,32 @@ export function loadHw(counts) {
     return defaultHw(counts);
   }
 
+  base.zoom = Number.isFinite(base.zoom) ? Math.max(0.1, base.zoom) : 1;
+  base.panX = Number.isFinite(base.panX) ? base.panX : 0;
+  base.panY = Number.isFinite(base.panY) ? base.panY : 0;
+
   return base;
+}
+
+export function resetHw(counts) {
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch (err) {}
+  return defaultHw(counts);
 }
 
 function writeHw(hw) {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      surface: hw.surface, scale: hw.scale, stageWidthM: hw.stageWidthM,
+      surface: hw.surface, scale: hw.scale, stageWidthM: hw.stageWidthM, zoom: hw.zoom,
+      panX: hw.panX, panY: hw.panY,
       ev: hw.ev, spill: hw.spill, grain: hw.grain,
       pixelSize: hw.pixelSize, glowSize: hw.glowSize, intensity: hw.intensity,
-      strips: hw.strips.map((s) => ({ profile: s.profile, shape: s.shape, pts: s.pts })),
+      strips: hw.strips.map((s) => ({
+        profile: s.profile, lengthM: s.lengthM, pitchMm: s.pitchMm,
+        pitchManual: s.pitchManual, pixelSize: s.pixelSize, glowSize: s.glowSize,
+        intensity: s.intensity, shape: s.shape, pts: s.pts,
+      })),
     }));
   } catch (err) {
     // Private windows and blocked site data both throw here. A posed path that
@@ -150,6 +189,7 @@ export function bindView(view, bench, hw, state) {
   };
 
   return function sync() {
+    view.config = hw;
     view.activeStrip = hw.activeStrip;
     view.invalidate();
     hw.fit = view.fit(hw.activeStrip);

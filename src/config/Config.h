@@ -99,7 +99,7 @@
 // beyond them, slow when it retreats, so the window is the last few seconds rather
 // than the last block.
 #define DYN_EDGE_RISE       0.5f
-#define DYN_EDGE_FALL       0.002f
+#define DYN_EDGE_FALL       0.0005f
 
 // ==== FFT Configuration ====
 #define FFT_BANDS           16       // Number of bands for visualization/spectrum
@@ -370,6 +370,7 @@
 // #define LED_9_PIN            25
 
 
+
 #define LED_0_NUM 100
 #define LED_1_NUM 10
 #define LED_2_NUM 0
@@ -380,6 +381,25 @@
 #define LED_7_NUM 0
 #define LED_8_NUM 0
 #define LED_9_NUM 0
+
+// The device's buffer capacity is its physical count. The WASM build overrides
+// these capacities so the shared animation library can exercise a longer
+// software-defined strip without changing the board configuration above.
+#ifndef LED_0_CAPACITY
+  #ifdef __EMSCRIPTEN__
+    // 20 m at the densest built-in profile (480 LEDs/m), with headroom.
+    #define LED_0_CAPACITY 12000
+  #else
+    #define LED_0_CAPACITY LED_0_NUM
+  #endif
+#endif
+#ifndef LED_1_CAPACITY
+  #ifdef __EMSCRIPTEN__
+    #define LED_1_CAPACITY 12000
+  #else
+    #define LED_1_CAPACITY LED_1_NUM
+  #endif
+#endif
 
 
 
