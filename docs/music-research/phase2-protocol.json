@@ -1,0 +1,51 @@
+{
+  "scope": "Durable research method, not one iteration's plan. Describes how to find out whether a representation of music is any good, on any hardware. An iteration decides how much of this it can afford; the reduced version the ESP32-S3 wearable pays for is in its dated plan under _architecture/plans/. Narrative version in MODEL.md under 'Research method'.",
+  "purpose": "Test the provisional reliability claims in concepts.json against real room-microphone audio.",
+  "three_sources": {
+    "human_annotation": "what was perceived",
+    "offline_mir": "what acoustic and musical evidence existed. Reference measurement, not ground truth.",
+    "device_pipeline": "which evidence stays observable through the microphone in real time"
+  },
+  "recording": "Capture each track twice at the same time: a clean digital copy and the room-microphone capture. Run the same offline analysis on both to separate what the microphone path destroys from what the concept makes hard.",
+  "track_selection": "Chosen to make hypotheses fail. Several minutes each.",
+  "tracks_wanted": [
+    "steady four-on-the-floor dance track",
+    "ambient track",
+    "aggressive or noisy track",
+    "several build-and-drop cycles",
+    "fake or withheld drop",
+    "breakdown not followed by a drop",
+    "acoustic or irregular timing",
+    "fade-out",
+    "abrupt cut between very different passages",
+    "a track where activity and density separate",
+    "a continuous stretch spanning several pieces, with the real gaps and talking between them"
+  ],
+  "annotation": {
+    "main_annotator": "owner",
+    "second_listener": "a smaller subset, prioritising groove, tension, emotional character and perceived build-up",
+    "rules": [
+      "Annotate the concept, not a detector. Mark what was heard as a build and how strongly, not where loudness rose.",
+      "Continuous ratings for states (tension, groove, intensity). Time marks with strength for events.",
+      "Keep and report annotator disagreement.",
+      "Allow coarse and fine boundaries."
+    ]
+  },
+  "analysis": "For each concept compare several candidate detectors against annotations and against each other, and record disagreements. A valid result is that no reliable detector was found.",
+  "decisions": {
+    "second_listener_available": true,
+    "offline_mir_as_reference_ok": true
+  },
+  "open_constraints": [
+    "ESP32 RAM and CPU headroom",
+    "sampling rate and FFT size",
+    "whether heavier analysis may run off the device"
+  ],
+  "order_is_fixed": "Listen and mark first, compare against signals after. Marking after seeing a trace tests nothing.",
+  "valid_outcomes": [
+    "proxy is good enough",
+    "proxy is not good enough but the concept deserves another proxy",
+    "concept does not survive at the timescale this iteration has",
+    "no reliable detector found — record what was tried, it is what stops the next iteration repeating it"
+  ]
+}

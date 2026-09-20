@@ -1,0 +1,187 @@
+[
+  {
+    "id": "barchet2024",
+    "cite": "Barchet et al. 2024, TenseMusic: an automatic prediction model for musical tension, PLOS ONE",
+    "url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0296385",
+    "code": "https://github.com/vivienbarchet/TenseMusic",
+    "grade": "A",
+    "read": "full methods, results, limitations via page fetch",
+    "corpus": "38 Western classical pieces, 60-90 s, 24 analysed listeners",
+    "findings": [
+      {
+        "id": "barchet2024.windows",
+        "claim": "Each tension feature needed its own attentional and memory window. Different aspects of the same property have different memory lengths.",
+        "data": {
+          "unit": "seconds",
+          "attentional_memory": {
+            "loudness": [3, 3],
+            "roughness": [3, 4],
+            "pitch_height": [5, 12],
+            "tonal_tension": [7, 12],
+            "tempo": [3, 20],
+            "onset_frequency": [3, 20]
+          },
+          "single_global_window": [3, 3],
+          "listener_lag_s": 4.5
+        },
+        "limit": "Classical music only. Not evidence for dance music or room-microphone audio."
+      },
+      {
+        "id": "barchet2024.performance",
+        "claim": "Predicted tension correlated with listener ratings at about r = .6 on held-out pieces.",
+        "data": {"mean_r_weighted": 0.59, "mean_r_timescale": 0.61, "sd": 0.31, "pieces_r_over_0.5": "27 of 38 weighted, 26 of 38 timescale", "listener_icc": 0.80},
+        "limit": "Very uneven across pieces. 8 pieces low or non-significant. Percussion-heavy pieces degraded feature extraction. Authors say applies mainly to Western tonal and atonal classical."
+      },
+      {
+        "id": "barchet2024.features",
+        "claim": "Six audio features: loudness (Zwicker), onset frequency (spectral-flux onsets), tempo (cyclic tempogram), pitch height (polyphonic pitch net), tonal tension (spiral array from transcribed MIDI), roughness (Daniel and Weber). Z-scored, smoothed, 10 Hz.",
+        "limit": "Loudness, roughness and tonal tension use heavy offline algorithms. Cost on a microcontroller not assessed."
+      }
+    ]
+  },
+  {
+    "id": "yadati2014",
+    "cite": "Yadati, Larson, Liem, Hanjalic 2014, Detecting drops in electronic dance music, ISMIR",
+    "url": "https://archives.ismir.net/ismir2014/paper/000297.pdf",
+    "grade": "A",
+    "read": "full text extracted",
+    "corpus": "SoundCloud EDM tracks with expert and timed-comment drop labels",
+    "findings": [
+      {
+        "id": "yadati2014.definition",
+        "claim": "Community definition: a drop is a moment of emotional release that follows a build and re-introduces the full bassline. No precise recipe. Tracks may contain several. Variability of realisations makes detection hard."
+      },
+      {
+        "id": "yadati2014.method",
+        "claim": "Two stages, offline. Stage 1 segments the track on chroma novelty (12 pitch classes, 209 ms window, 139 ms hop). Stage 2 classifies segment boundaries with a linear SVM on spectrogram statistics, 13 MFCCs and rhythm-pattern features from a fixed window around each boundary.",
+        "data": {"mean_boundary_to_drop_distance_s": 2.5, "drops_missed_by_segmentation_pct": "under 8", "mean_segment_length_s": 16.5},
+        "limit": "Whole-track offline, looks ahead. Single platform. Not causal."
+      },
+      {
+        "id": "yadati2014.rhythm_switch",
+        "claim": "A change of rhythm at the drop moment was treated as an informative cue, and the build is visible in the spectrogram before the drop."
+      }
+    ]
+  },
+  {
+    "id": "solberg2014",
+    "cite": "Solberg 2014, Waiting for the Bass to Drop, Dancecult",
+    "url": "https://dj.dancecult.net/index.php/dancecult/article/view/451",
+    "grade": "A",
+    "read": "abstract plus analysis sections of the PDF",
+    "corpus": "descriptive analysis of two EDM tracks, spectrograms, expectancy theory. No listener data.",
+    "findings": [
+      {
+        "id": "solberg2014.techniques",
+        "claim": "Build-up and drop tension is produced by five documented techniques, and several are not loudness rises.",
+        "data": {
+          "techniques": [
+            "uplifters (rising sweeps, white noise)",
+            "drum roll effect (progressively shorter note values)",
+            "large frequency changes (pitched-up synths)",
+            "removal and reintroduction of bass and bass drum",
+            "contrasting ambient breakdown before the build"
+          ]
+        },
+        "limit": "Two tracks and theory. Descriptive, not tested on listeners."
+      },
+      {
+        "id": "solberg2014.structure",
+        "claim": "EDM builds layer by layer, elements introduced or removed on 2, 4, 8, 16 or 32 bar boundaries. Groove grows in textural density rather than length."
+      }
+    ]
+  },
+  {
+    "id": "juslin2003",
+    "cite": "Juslin and Laukka 2003, Communication of emotions in vocal expression and music performance, Psychological Bulletin",
+    "url": "https://www.brainmusic.org/EducationalActivities/Juslin_emotion2003.pdf",
+    "grade": "A",
+    "read": "cue table only (of a 45-page review of 104 vocal and 41 music-performance studies)",
+    "corpus": "review, mostly performer-intended emotion, Western, controlled recordings",
+    "findings": [
+      {
+        "id": "juslin2003.cues",
+        "claim": "Discrete emotions have characteristic cue patterns shared between voice and music performance.",
+        "data": {
+          "music_performance": {
+            "anger": "fast tempo, high sound level, high sound-level variability, high high-frequency energy",
+            "happiness": "fast tempo, medium to high sound level",
+            "sadness": "slow tempo, low sound level, low high-frequency energy",
+            "tenderness": "slow tempo, low sound level, low level variability",
+            "fear": "mixed: mostly low sound level, high level variability"
+          },
+          "note": "Compiled from the count-coded table, only the tempo, sound level, level variability and high-frequency energy rows were read. Articulation, mode and pitch rows were not."
+        },
+        "limit": "Partial account. Cue patterns overlap between emotions. Does not say harmony or tonality contribute independently."
+      }
+    ]
+  },
+  {
+    "id": "witek2014",
+    "cite": "Witek et al. 2014, Syncopation, body-movement and pleasure in groove music, PLOS ONE",
+    "url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0094446",
+    "grade": "A",
+    "read": "design and findings as summarised on the article page",
+    "corpus": "66 participants rating 50 synthesized drum breaks",
+    "findings": [
+      {
+        "id": "witek2014.inverted_u",
+        "claim": "Desire to move and pleasure are an inverted U of syncopation degree. Medium syncopation is highest.",
+        "limit": "Isolated synthetic drum breaks, ratings only, not polyphonic music, not motor synchronisation."
+      },
+      {
+        "id": "witek2014.experience",
+        "claim": "Dancing experience affected ratings. Formal training and groove familiarity mostly did not."
+      }
+    ]
+  },
+  {
+    "id": "nieto2020",
+    "cite": "Nieto et al. 2020, Audio-based music structure analysis: current trends, open challenges, and applications, TISMIR",
+    "url": "https://transactions.ismir.net/articles/10.5334/tismir.54",
+    "grade": "B",
+    "read": "page summary only",
+    "findings": [
+      {
+        "id": "nieto2020.ambiguity",
+        "claim": "Listeners disagree about structure even in Western popular music. An annotation is ambiguous because it mixes several similarity dimensions. Structure is hierarchical, with few methods exploiting the depth."
+      },
+      {
+        "id": "nieto2020.accuracy",
+        "claim": "Boundary detection reaches roughly 60-70% F1 at 3 s tolerance against a human ceiling estimated near 90%. Multiple annotations per track are recommended."
+      },
+      {
+        "id": "nieto2020.causal",
+        "claim": "It remains to be seen how segments could be labelled in real-time causal use.",
+        "limit": "Stated as an open gap. No causal method was found in what was read."
+      }
+    ]
+  },
+  {
+    "id": "muller_fmp_c4",
+    "cite": "Muller, Fundamentals of Music Processing, chapter 4 (music structure analysis), online notebook",
+    "url": "https://www.audiolabs-erlangen.de/resources/MIR/FMP/C4/C4.html",
+    "grade": "B",
+    "read": "page summary only",
+    "findings": [
+      {
+        "id": "muller_fmp_c4.principles",
+        "claim": "Structure analysis rests on homogeneity (a stretch stays alike), repetition (sections recur) and novelty (character changes), built on self-similarity matrices and novelty curves. Harmonic, timbral and rhythmic features give different segmentations. Raw matrices need smoothing and tuning."
+      }
+    ]
+  },
+  {
+    "id": "essentia_extractor",
+    "cite": "Essentia streaming music extractor documentation",
+    "url": "https://essentia.upf.edu/streaming_extractor_music.html",
+    "grade": "B",
+    "read": "descriptor family list only",
+    "findings": [
+      {
+        "id": "essentia_extractor.families",
+        "claim": "A standard toolkit groups descriptors as low-level (spectral, loudness, MFCC, bark bands), rhythm (beats, bpm, onset rate, danceability), tonal (key, HPCP chroma, chords) and classifier-derived high-level. Useful as a checklist of evidence sources.",
+        "limit": "A checklist, not a model."
+      }
+    ]
+  }
+]

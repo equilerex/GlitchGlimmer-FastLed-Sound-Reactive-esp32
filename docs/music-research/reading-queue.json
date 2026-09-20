@@ -1,0 +1,58 @@
+[
+  {
+    "id": "groove_review",
+    "title": "Review of psychological and neuroscientific research on musical groove",
+    "url": "https://www.sciencedirect.com/science/article/pii/S0149763423004918",
+    "needed_for": ["groove", "pulse", "syncopation"],
+    "status": "unread",
+    "blocker": "HTTP 403 on fetch, needs a manual download or an open-access copy"
+  },
+  {
+    "id": "spiech2022_polyphonic_syncopation",
+    "title": "Syncopation and groove in polyphonic music, Music Perception 39(5)",
+    "url": "https://online.ucpress.edu/mp/article/39/5/503/182325/Syncopation-and-Groove-in-Polyphonic-MusicPatterns",
+    "needed_for": ["groove", "syncopation"],
+    "status": "unread",
+    "blocker": "HTTP 403 on fetch"
+  },
+  {
+    "id": "stupacher_groove_features",
+    "title": "Audio features underlying perceived groove and sensorimotor synchronization in music",
+    "url": "https://www.researchgate.net/publication/291351443_Audio_Features_Underlying_Perceived_Groove_and_Sensorimotor_Synchronization_in_Music",
+    "needed_for": ["groove", "pulse"],
+    "status": "unread",
+    "note": "Search summary claimed pulse clarity correlated with attack, RMS variability and low-band sub-band flux. Unverified, not used as a finding.",
+    "blocker": "ResearchGate, likely blocked"
+  },
+  {
+    "id": "arousal_valence_features",
+    "title": "Audio features dedicated to the detection and tracking of arousal and valence in musical compositions",
+    "url": "https://www.tandfonline.com/doi/full/10.1080/24751839.2018.1463749",
+    "needed_for": ["emotional_character"],
+    "status": "unread",
+    "note": "Needed to test the hypothesis that valence depends on mode and harmony while arousal depends on tempo, loudness and timbre. That hypothesis so far comes only from search summaries.",
+    "blocker": "HTTP 403 on fetch"
+  },
+  {
+    "id": "solberg_dibben_2019",
+    "title": "Peak experiences with electronic dance music (Solberg and Dibben 2019)",
+    "url": "https://eprints.whiterose.ac.uk/id/eprint/145911/1/Solberg%26Dibben2019.pdf",
+    "needed_for": ["build_up", "drop", "tension_release"],
+    "status": "unread",
+    "note": "Open-access PDF. Listener data on EDM build-up and drop, which Solberg 2014 lacks."
+  },
+  {
+    "id": "unread_topics",
+    "title": "Topics with no source identified yet",
+    "needed_for": [],
+    "status": "gap",
+    "topics": [
+      "causal or real-time novelty and boundary detection",
+      "beat tracking on electronic dance music, Hockman et al. is cited by Yadati 2014",
+      "a pulse clarity measure",
+      "expectation and prediction theory of musical tension, Huron, Lerdahl and Krumhansl",
+      "loudness contour and climax perception",
+      "fake drop or withheld release, no study found yet"
+    ]
+  }
+]

@@ -1,0 +1,362 @@
+[
+  {
+    "id": "arousal",
+    "kind": [
+      "state"
+    ],
+    "definition": "How energetic or activated the music feels over a stretch of time.",
+    "not": "Loudness alone. Activity, register, timbral sharpness and rhythmic drive also read as intensity.",
+    "cues": [
+      "loudness against baseline",
+      "onset rate",
+      "brightness",
+      "tempo",
+      "sound-level variability"
+    ],
+    "competing": [
+      "one scalar",
+      "several kept apart (loudness-driven, activity-driven, brightness-driven) because they can disagree"
+    ],
+    "reliability": "loudness and onset rate high, composite medium",
+    "sources": [
+      "juslin2003.cues"
+    ]
+  },
+  {
+    "id": "activity_density",
+    "kind": [
+      "state"
+    ],
+    "definition": "Two separable things called busy: temporal activity (events per second) and textural density (simultaneous layers or occupied spectral regions).",
+    "cues": [
+      "onset rate overall and per band",
+      "spectral flux",
+      "band occupancy",
+      "spectral flatness",
+      "count of concurrent periodicities"
+    ],
+    "competing": [
+      "one property in practice for the target music",
+      "two separable properties, phase 2 should find tracks that separate them (dense pad wall with few onsets)"
+    ],
+    "reliability": "temporal activity high, textural density medium to low",
+    "sources": [
+      "solberg2014.structure"
+    ]
+  },
+  {
+    "id": "pulse_groove",
+    "kind": [
+      "state"
+    ],
+    "definition": "Pulse strength (how clearly a beat is present), tempo and phase, regularity and stability, syncopation (accents displaced from the metric grid), and groove (the pull to move, listener-dependent).",
+    "cues": [
+      "periodicity strength in the onset envelope",
+      "low-band flux",
+      "inter-onset interval spread",
+      "off-grid onset energy"
+    ],
+    "competing": [
+      "groove as a composite of pulse clarity, low-frequency flux, event density and moderate syncopation (unverified)",
+      "two dimensions: pulse present, and pulse interestingly displaced",
+      "not reliably derivable from audio, annotation only"
+    ],
+    "known": "Groove has an inverted-U relationship with syncopation in drum breaks. Unknown for polyphonic music. Half and double tempo errors are a known beat-tracking failure (general knowledge, unverified here).",
+    "reliability": "pulse strength medium to high on electronic music, low on acoustic or irregular. syncopation and groove low to medium",
+    "sources": [
+      "witek2014.inverted_u",
+      "witek2014.experience"
+    ]
+  },
+  {
+    "id": "tension_release",
+    "kind": [
+      "state",
+      "trend"
+    ],
+    "definition": "Felt anticipation, instability and resolution, tied to expectation. Ratings lag the audio by seconds.",
+    "cues": [
+      "loudness",
+      "onset frequency",
+      "tempo",
+      "pitch height",
+      "tonal tension",
+      "roughness",
+      "EDM production techniques"
+    ],
+    "competing": [
+      "weighted feature slopes over separate windows, as in TenseMusic",
+      "expectation violation and fulfilment, needing a model of what was expected, possibly required for drops",
+      "genre-specific cue sets"
+    ],
+    "reliability": "loudness and onset parts high, harmonic tension from room audio low (unverified), composite unknown",
+    "sources": [
+      "barchet2024.windows",
+      "barchet2024.performance",
+      "solberg2014.techniques"
+    ]
+  },
+  {
+    "id": "momentum",
+    "kind": [
+      "trend"
+    ],
+    "definition": "The music moving toward or away from something, at any timescale.",
+    "cues": [
+      "slope of any measurable state over its own window"
+    ],
+    "competing": [
+      "a trend attached to each state coordinate",
+      "a few composite directions such as preparing and releasing"
+    ],
+    "reliability": "medium",
+    "sources": []
+  },
+  {
+    "id": "structural_boundary",
+    "kind": [
+      "event"
+    ],
+    "definition": "The point where listeners hear a new part begin. A judgement that some aspect changed character, not an instant in the audio. Graded and hierarchical.",
+    "cues": [
+      "novelty in timbre, harmony, rhythm or texture, alone or together",
+      "repetition boundary (a returning section)",
+      "silence or break",
+      "fade"
+    ],
+    "competing": [
+      "change point in a feature space",
+      "change in role, only visible relative to what preceded it",
+      "inherently listener-dependent, output a graded something-changed per dimension instead of a boundary time"
+    ],
+    "reliability": "low to medium. per-dimension change strength probably more reliable than one boundary",
+    "sources": [
+      "nieto2020.ambiguity",
+      "nieto2020.accuracy",
+      "nieto2020.causal",
+      "muller_fmp_c4.principles",
+      "yadati2014.method"
+    ]
+  },
+  {
+    "id": "repetition_novelty",
+    "kind": [
+      "state"
+    ],
+    "definition": "The passage sounds like something already heard, or sounds new. Distinct from a boundary detector.",
+    "cues": [
+      "self-similarity of a chosen feature against the past at several memory lengths"
+    ],
+    "competing": [
+      "one feature space",
+      "per dimension (rhythmic, harmonic, timbral repetition can differ)",
+      "compressed summaries of the past"
+    ],
+    "reliability": "unknown, memory-limited on a device",
+    "sources": [
+      "muller_fmp_c4.principles"
+    ]
+  },
+  {
+    "id": "build_up",
+    "kind": [
+      "structural_state"
+    ],
+    "definition": "A stretch that makes the listener anticipate an arrival. Defined by its role, not by any single acoustic property. Confirmable while in progress, not knowable at its start.",
+    "mechanisms_documented": [
+      "rising sweeps",
+      "progressively shorter note values",
+      "large frequency changes",
+      "removal of bass and bass drum",
+      "ambient breakdown before it"
+    ],
+    "mechanisms_plausible": [
+      "harmonic pedal or dominant preparation",
+      "accelerando",
+      "rising melodic line",
+      "growing dynamics",
+      "thinning texture",
+      "increasing rhythmic subdivision"
+    ],
+    "not": "Rising loudness, onset rate and brightness with falling bass. That is one mechanism, a riser with a bass cut. A build can hold constant loudness and be made of pitch, subdivision or texture change.",
+    "competing": [
+      "co-moving trends, with the set varying by mechanism",
+      "a probability of imminent arrival rising with preparation cues",
+      "a listener judgement learned from annotation with no fixed cue definition"
+    ],
+    "reliability": "low to medium, confidence grows as the passage continues",
+    "sources": [
+      "solberg2014.techniques",
+      "yadati2014.definition",
+      "yadati2014.rhythm_switch"
+    ]
+  },
+  {
+    "id": "drop_arrival",
+    "kind": [
+      "event"
+    ],
+    "definition": "An arrival that releases prior preparation. Defined by its relation to what came before, not its own acoustic profile.",
+    "distinguish": [
+      "arrival after preparation (drop)",
+      "impact with no preparation (hit or stab)",
+      "return after a breakdown that was not built up to"
+    ],
+    "cues": [
+      "abrupt change in low-frequency energy, rhythm pattern or density coinciding with the end of preparation"
+    ],
+    "competing": [
+      "change point then judged by what preceded it (Yadati approach)",
+      "fulfilment of a raised expectation, defined by how much preparation existed",
+      "annotation-defined"
+    ],
+    "latency": "A causal system recognises it after it happens. What it can supply beforehand is an expectation from preparation, if a build can be recognised.",
+    "reliability": "medium that something abrupt happened, low for correctly calling it a drop",
+    "sources": [
+      "yadati2014.definition",
+      "yadati2014.method"
+    ]
+  },
+  {
+    "id": "breakdown",
+    "kind": [
+      "structural_state"
+    ],
+    "definition": "Deliberate thinning or removal of layers, usually rhythm and bass, often as contrast.",
+    "cues": [
+      "held fall in density and low-frequency content",
+      "change in sustained versus percussive balance"
+    ],
+    "distinguish": [
+      "gradual fade",
+      "quiet verse",
+      "silence"
+    ],
+    "reliability": "medium",
+    "sources": [
+      "solberg2014.techniques"
+    ]
+  },
+  {
+    "id": "tease_withheld",
+    "kind": [
+      "event"
+    ],
+    "definition": "An expected arrival that is delayed, partial or refused. Recognised in retrospect and depends on an expectation existing, so may not be separate from a partial drop.",
+    "reliability": "low, possibly annotation-only",
+    "sources": []
+  },
+  {
+    "id": "climax",
+    "kind": [
+      "structural_state"
+    ],
+    "definition": "A peak in the musical journey, structural and contextual. Not the loudest moment and not being near a running maximum. A track can have several or none, and it is often known only in hindsight.",
+    "cues": [
+      "sustained high arousal, density and register after preparation, which resembles a drop's aftermath"
+    ],
+    "competing": [
+      "track-level contour needing minutes of look-back",
+      "local peak flagged causally with low confidence"
+    ],
+    "reliability": "low",
+    "sources": []
+  },
+  {
+    "id": "beginning_ending",
+    "kind": [
+      "trend",
+      "state",
+      "event"
+    ],
+    "definition": "Entering and leaving a piece and its large-scale closure. Fade-in and fade-out are trends, silence a state, cadential ending an event.",
+    "cues": [
+      "long monotone decay toward the noise floor (fade)",
+      "harmonic and rhythmic closure (cadence)"
+    ],
+    "reliability": "fades high (unverified), cadential endings low, intros unknown",
+    "sources": []
+  },
+  {
+    "id": "abrupt_jump",
+    "kind": [
+      "event"
+    ],
+    "definition": "The music jumps to a passage that differs on many dimensions at once.",
+    "cues": [
+      "several independent change measures firing together"
+    ],
+    "note": "Assumes a joint change is what listeners hear as a jump. Check in phase 2.",
+    "reliability": "medium",
+    "sources": []
+  },
+  {
+    "id": "timbre_spectral",
+    "kind": [
+      "state"
+    ],
+    "definition": "The sound's colour: dark and warm to bright and sharp, smooth to rough, thin to full.",
+    "cues": [
+      "spectral centroid and trend",
+      "spread and flatness",
+      "band balance",
+      "roughness",
+      "high-frequency energy"
+    ],
+    "caveat": "Room microphone response, distance and noise change absolute values, so use only relatively.",
+    "reliability": "brightness high, roughness low to medium",
+    "sources": [
+      "barchet2024.features",
+      "juslin2003.cues"
+    ]
+  },
+  {
+    "id": "emotional_character",
+    "kind": [
+      "state"
+    ],
+    "definition": "What the music feels like above intensity: dreamy, ominous, euphoric, playful, tender. Whether it is one dimension, several or categories is unsettled and not decided here.",
+    "supported": "Tempo, sound level, level variability and high-frequency energy carry information about intended emotion, as a partial account.",
+    "unsettled": "Whether harmony, mode, tonality, melodic contour, timbre, instrumentation and roughness contribute independently. The claim that valence relates to mode and harmony while arousal relates to tempo, loudness and timbre is from search summaries only.",
+    "competing": [
+      "largely recoverable from arousal-type coordinates plus timbre",
+      "a separable harmonic and tonal component matters and needs its own evidence",
+      "partly instrumentation and genre convention, not recoverable by simple features, so annotation and offline analysis only"
+    ],
+    "reliability": "unknown. Do not assume derivable from other coordinates.",
+    "sources": [
+      "juslin2003.cues"
+    ]
+  },
+  {
+    "id": "track_change",
+    "kind": [
+      "event"
+    ],
+    "definition": "One piece ends and another begins. The moment every accumulated baseline, running range, memory and hysteresis state is known to be invalid.",
+    "cues": [
+      "joint change across most coordinates confirmed over a longer window",
+      "a gap or near-silence",
+      "abrupt loudness and spectral discontinuity",
+      "tempo stops matching"
+    ],
+    "note": "Lower priority than first recorded: worth representing, not worth a dedicated detector. A large BPM shift or a joint jump across coordinates is a candidate proxy, to be tested in phase 2 like any other hypothesis.",
+    "reliability": "unknown",
+    "sources": []
+  },
+  {
+    "id": "no_music",
+    "kind": [
+      "state"
+    ],
+    "definition": "Nothing musical is playing: silence, talking, room noise, a gap between tracks.",
+    "cues": [
+      "gate state",
+      "absence of periodicity in the onset envelope",
+      "speech-like spectral behaviour"
+    ],
+    "note": "Without it the strip animates the noise floor and room chatter. At a live event this state occurs constantly, and every other concept assumes music is present.",
+    "reliability": "unknown, provisionally high",
+    "sources": []
+  }
+]
