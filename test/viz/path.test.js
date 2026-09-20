@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SHAPES, samplePath, sampleWrappedPath, pointAt, placePixels, fitScale, hitHandle,
+  SHAPES, samplePath, sampleWrappedPath, pointAt, pointAtSmooth, angleAt, placePixels, fitScale, hitHandle,
   DEFAULT_POSES, defaultPose,
 } from '../../web/viz/path.js';
 
@@ -20,6 +20,16 @@ test('every shape preset has four control points in range', () => {
 test('a straight path across 1000 px measures 1000 px', () => {
   const path = samplePath(STRAIGHT, 1000, 400);
   assert.ok(Math.abs(path.total - 1000) < 1, `got ${path.total}`);
+});
+
+test('an empty or one-point path remains renderable during a drag', () => {
+  for (const pts of [[], [[0.25, 0.5]]]) {
+    const path = samplePath(pts, 1000, 400);
+    assert.equal(path.poly.length, 601);
+    for (const [x, y] of path.poly) {
+      assert.ok(Number.isFinite(x) && Number.isFinite(y));
+    }
+  }
 });
 
 test('a bent path is longer than the straight one', () => {
@@ -96,4 +106,28 @@ test('defaultPose hands back a copy, not the shared array', () => {
   const pose = defaultPose(0);
   pose[0][1] = 0.99;
   assert.notEqual(DEFAULT_POSES[0][0][1], 0.99);
+});
+
+test('pointAtSmooth interpolates between vertices and angleAt follows the tangent', () => {
+  const path = { poly: [[0, 0], [10, 0], [10, 10]], cum: [0, 10, 20], total: 20 };
+  const mid = pointAtSmooth(path, 5);
+  assert.deepEqual(mid, [5, 0]);
+  assert.ok(Math.abs(angleAt(path, 5, 2)) < 1e-9);
+  assert.ok(Math.abs(angleAt(path, 15, 2) - Math.PI / 2) < 1e-9);
+});
+
+test('placePixels reports each pixel\'s distance along the path and its heading', () => {
+  const path = { poly: [[0, 0], [100, 0]], cum: [0, 100], total: 100 };
+  const leds = placePixels(path, 5, 10);
+  assert.equal(leds[2].at, 25);
+  assert.ok(Math.abs(leds[2].angle) < 1e-9);
+});
+
+test('placePixels keeps a constant chord spacing along a coarsely sampled curve', () => {
+  const path = samplePath([[0.1, 0.8], [0.4, 0.2], [0.7, 0.8], [0.9, 0.3]], 1000, 500, 40);
+  const leds = placePixels(path, 40, 14);
+  for (let i = 1; i < leds.length; i++) {
+    const d = Math.hypot(leds[i].x - leds[i - 1].x, leds[i].y - leds[i - 1].y);
+    assert.ok(d > 12.5 && d <= 14.001, `gap ${i} was ${d}`);
+  }
 });

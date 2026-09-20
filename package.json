@@ -7,7 +7,8 @@
     "start": "node tools/serve-web.js",
     "frames": "node tools/dump-frames.js",
     "wasm": "bash tools/build-wasm.sh",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "upload": "pio run -e esp32s3 -t upload --upload-port COM9"
   },
   "engines": {
     "node": ">=22"

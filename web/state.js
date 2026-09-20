@@ -3,12 +3,15 @@ import { reactive } from 'vue';
 export const state = reactive({
   mode: 'live', // 'recording' | 'live'
 
-  hwDrawerOpen: false,
+  // Open by default where it docks beside the telemetry; on narrower screens it
+  // is a slide-over that would cover the stage.
+  hwDrawerOpen: window.innerWidth >= 1101,
 
   hw: {
     activeStrip: 0,
     surface: 'room',
-    scale: 'fit',
+    look: 'realistic',
+    scale: 'physical',
     stageWidthM: 3,
     zoom: 1,
     panX: 0,

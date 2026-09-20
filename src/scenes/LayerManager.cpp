@@ -82,7 +82,7 @@ void LayerManager::renderLayers(uint8_t globalFade) {
     fadeToBlackBy(leds, ledCnt, globalFade);
 
     // Copy current LED state to scratch as base for blending
-    memcpy(scratch.data(), leds, sizeof(CRGB) * ledCnt);
+    ::memcpy(scratch.data(), leds, sizeof(CRGB) * ledCnt);
 
     // Make sure layerBuf exists and is the right size
     if (layerBuf.size() != ledCnt) {
@@ -115,7 +115,7 @@ void LayerManager::renderLayers(uint8_t globalFade) {
     }
 
     // Commit blended result back to LEDs
-    memcpy(leds, scratch.data(), sizeof(CRGB) * ledCnt);
+    ::memcpy(leds, scratch.data(), sizeof(CRGB) * ledCnt);
 }
 
 // Instantiate a new layer and add to the active list

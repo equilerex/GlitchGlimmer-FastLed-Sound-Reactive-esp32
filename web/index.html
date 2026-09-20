@@ -75,7 +75,7 @@
                 @click="selectProfile(p.id)">
           <span class="swatch" :style="{ background: swatchFor(p) }"></span>
           <span>{{ p.name }}</span>
-          <span class="pitch">{{ p.pitch.toFixed(1) }}mm</span>
+          <span class="pitch">{{ (1000 / p.pitch).toFixed(0) }}/m</span>
         </button>
       </div>
       <p class="note">{{ profileNote }}</p>
@@ -89,11 +89,18 @@
                                s.hw.strips[s.hw.activeStrip].shape === name"
                 @click="applyShape(name)">{{ name }}</button>
       </div>
-      <p class="note">Presets move the handles. Drag any handle on the stage to freehand it.</p>
+      <p class="note">Drag across the stage to replace this strip with a new path.</p>
     </section>
 
     <section class="group">
       <h2>Scene</h2>
+      <div class="chips" role="group" aria-label="Strip look">
+        <button type="button" class="chip" :aria-pressed="s.hw.look === 'realistic'"
+                @click="s.hw.look = 'realistic'; syncHw()">realistic</button>
+        <button type="button" class="chip" :aria-pressed="s.hw.look === 'stylized'"
+                @click="s.hw.look = 'stylized'; syncHw()">stylized</button>
+      </div>
+      <p class="note">Realistic draws each strip's physical package to scale; stylized is the glowing-dot look.</p>
       <div class="field">
         <label for="hw-surface">Surface</label>
         <select id="hw-surface" v-model="s.hw.surface" @change="syncHw">
@@ -106,15 +113,15 @@
                v-model.number="s.hw.strips[s.hw.activeStrip].lengthM" @input="syncHw">
       </div>
       <div class="field" v-if="s.hw.strips[s.hw.activeStrip]">
-        <label for="hw-pitch">LED pitch <b>{{ (s.hw.strips[s.hw.activeStrip]?.pitchMm || 0).toFixed(1) }} mm</b></label>
-        <input type="range" id="hw-pitch" min="0.5" max="100" step="0.1"
-               v-model.number="s.hw.strips[s.hw.activeStrip].pitchMm" @input="editPitch">
+        <label for="hw-density">Density <b>{{ density.toFixed(0) }} LEDs/m &middot; {{ (1000 / density).toFixed(1) }} mm</b></label>
+        <input type="range" id="hw-density" min="3" max="500" step="1"
+               :value="density" @input="setDensity">
       </div>
-      <p class="note">Length changes the software strip and its animation geometry. Pitch starts from the selected profile and can be overridden.</p>
+      <p class="note">Drag the stage to set strip length. The selected LED type sets the spacing; pitch can still be overridden.</p>
       <div class="field">
-        <label for="hw-zoom">Stage zoom <b>{{ s.hw.zoom.toFixed(1) }}&times;</b></label>
-        <input type="number" id="hw-zoom" min="0.1" step="0.1"
-               v-model.number="s.hw.zoom" @input="syncHw">
+        <label for="hw-zoom">Stage zoom <b>{{ zoomPercent }}%</b></label>
+        <input type="range" id="hw-zoom" min="-90" max="900" step="1"
+               :value="zoomPercent" @input="setZoomPercent">
       </div>
     </section>
 
@@ -198,7 +205,7 @@
     <div class="stage">
       <canvas id="view" aria-label="LED strip output"></canvas>
       <div class="stage-overlay">
-        <p class="stage-hint">Drag handles to pose &middot; hover pixel to inspect</p>
+        <p class="stage-hint">Drag to redraw strip &middot; hover pixel to inspect</p>
       </div>
     </div>
 

@@ -34,10 +34,10 @@ Three known gaps are worth stating up front rather than discovering later:
 
 | Part | Wiring |
 |---|---|
-| ESP32 board | TTGO T1 (TTGO T-Display) |
+| ESP32 board | ESP32-S3 DevKitC-1 |
 | TFT | ST7789V 240x135, SPI on MOSI 19, SCLK 18, CS 5, DC 16, RST 23, backlight 4 |
 | I2S microphone | INMP441, WS 26, SCK 27, SD 32 |
-| LED strip 0 | WS2812B on GPIO 25, 100 pixels |
+| LED strip 0 | WS2812B on GPIO 4, 100 pixels |
 | LED strip 1 | WS2812B on GPIO 33, 10 pixels |
 | Encoder | A 39, B 38, button 17 |
 | Buttons | 0 and 35 |
@@ -52,8 +52,8 @@ since no environment sets `upload_port` and only `-t upload` opens a port.
 
 ```
 pio run                      # the firmware, via default_envs
-pio run -e ttgo-t1           # the same thing, spelled out
-pio run -e ttgo-t1 -t upload # needs the board connected
+pio run -e esp32s3           # the same thing, spelled out
+pio run -e esp32s3 -t upload # needs the board connected
 ```
 
 The device environment compiles at `-std=gnu++11`, which is what catches any

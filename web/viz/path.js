@@ -1,16 +1,13 @@
-// The posed shape of a strip, as a catmull-rom spline through four handles.
+// The posed shape of a strip, as a Catmull-Rom spline through sampled points.
 //
-// Catmull-rom rather than bezier because the handles are the curve: a person
-// dragging a strip around expects the thing under the cursor to be on the
-// strip, and bezier control points are not.
+// Catmull-Rom keeps a freehand path close to the points the pointer visited.
 //
 // Everything here is arc-length based. A spline parameter is not distance, and
 // pixels on a real strip are evenly spaced in distance, so spacing pixels by
 // the parameter bunches them up in the corners.
 
-// Each preset is four handles, because four is what a catmull-rom spline needs
-// to express a single bend or a single reversal and no more. A preset that
-// wanted five would be a shape the user should drag for themselves.
+// Presets still use four points; drawn paths can contain as many sampled points
+// as the gesture needs.
 export const SHAPES = {
   line:   [[0.08, 0.50], [0.36, 0.50], [0.64, 0.50], [0.92, 0.50]],
   arc:    [[0.08, 0.70], [0.34, 0.30], [0.66, 0.30], [0.92, 0.70]],
@@ -24,20 +21,13 @@ export const SHAPES = {
   wrap:   [[0.20, 0.14], [0.50, 0.38], [0.50, 0.62], [0.80, 0.86]],
 };
 
-// The opening pose of each strip, reproducing the layout the page had before
-// this renderer: strip 0 straight across the upper third, strip 1 a shorter and
-// shallower arc below it, clear of strip 0.
-//
-// Deliberately not SHAPES entries. A SHAPES entry is a pose the user picks for
-// whichever strip is selected, so it spans the full stage; these are per-strip
-// and have to leave room for each other.
+// The opening pose is deliberately boring: a straight, readable calibration
+// line. Drawing replaces this path, so the first frame should make LED spacing
+// and the drawing gesture obvious rather than presenting a decorative pose.
 export const DEFAULT_POSES = [
-  // Strip 0: upper arch rising toward center, curving left to right
-  [[0.06, 0.52], [0.32, 0.22], [0.68, 0.22], [0.94, 0.52]],
-  // Strip 1: mirrored lower arch dipping toward center, curving left to right
-  [[0.06, 0.62], [0.32, 0.86], [0.68, 0.86], [0.94, 0.62]],
-  // Strip 2 (if present): straight horizontal close-up in the middle
-  [[0.14, 0.54], [0.38, 0.54], [0.62, 0.54], [0.86, 0.54]],
+  [[0.06, 0.45], [0.32, 0.45], [0.68, 0.45], [0.94, 0.45]],
+  [[0.06, 0.62], [0.32, 0.62], [0.68, 0.62], [0.94, 0.62]],
+  [[0.06, 0.78], [0.32, 0.78], [0.68, 0.78], [0.94, 0.78]],
 ];
 
 export function defaultPose(stripIndex) {
@@ -47,8 +37,25 @@ export function defaultPose(stripIndex) {
 
 const DEFAULT_SAMPLES = 600;
 
+function smoothPoints(pts) {
+  // Presets are intentional control polygons. Smoothing is for freehand
+  // gestures, where a long run of sampled points can contain hand jitter.
+  if (pts.length < 8) return pts;
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    out.push([
+      pts[i - 1][0] * 0.2 + pts[i][0] * 0.6 + pts[i + 1][0] * 0.2,
+      pts[i - 1][1] * 0.2 + pts[i][1] * 0.6 + pts[i + 1][1] * 0.2,
+    ]);
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
 function interpolate(pts, t) {
   const n = pts.length;
+  if (n === 0) return [0, 0];
+  if (n === 1) return pts[0];
   const seg = Math.min(Math.floor(t * (n - 1)), n - 2);
   const u = t * (n - 1) - seg;
   const p0 = pts[Math.max(seg - 1, 0)];
@@ -67,7 +74,12 @@ function interpolate(pts, t) {
 }
 
 export function samplePath(pts, width, height, samples = DEFAULT_SAMPLES) {
-  const abs = pts.map(([x, y]) => [x * width, y * height]);
+  const valid = Array.isArray(pts) ? pts.filter((p) => (
+    Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])
+  )) : [];
+  if (valid.length === 0) valid.push([0.5, 0.5]);
+  if (valid.length === 1) valid.push(valid[0].slice());
+  const abs = smoothPoints(valid).map(([x, y]) => [x * width, y * height]);
   const poly = [];
   const cum = [];
   let total = 0;
@@ -170,15 +182,47 @@ export function pointAt(path, lengthPx) {
   return poly[lo];
 }
 
-// Place pixels across the path.
-// When count > 0, we distribute all count pixels along the entire arc length of
-// the path so the visual curve is always complete and filled from end to end.
+// Linear interpolation between the two bracketing vertices. pointAt snaps to a
+// vertex, which is fine for placing a dot but leaves a long stretch drawn from
+// it visibly stair-stepped on a slow curve.
+export function pointAtSmooth(path, lengthPx) {
+  const { poly, cum } = path;
+  if (lengthPx <= 0) return poly[0];
+  if (lengthPx >= cum[cum.length - 1]) return poly[poly.length - 1];
+  let lo = 0;
+  let hi = cum.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] < lengthPx) lo = mid + 1;
+    else hi = mid;
+  }
+  const a = poly[lo - 1];
+  const b = poly[lo];
+  const span = cum[lo] - cum[lo - 1];
+  const t = span > 0 ? (lengthPx - cum[lo - 1]) / span : 0;
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+// Direction of travel at a distance along the path, in radians. Measured over
+// a window rather than one segment so freehand jitter does not spin a package.
+export function angleAt(path, lengthPx, window) {
+  const w = Math.max(1, window);
+  const p = pointAtSmooth(path, lengthPx - w);
+  const q = pointAtSmooth(path, lengthPx + w);
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  return dx === 0 && dy === 0 ? 0 : Math.atan2(dy, dx);
+}
+
+// Place pixels at a fixed physical pitch along the path. The caller supplies
+// count from the active stream and pitchPx from the selected LED profile; input
+// sample density and pointer speed must never affect the cadence.
 export function placePixels(path, count, pitchPx) {
   const out = [];
   if (count <= 0 || path.total <= 0) return out;
   if (count === 1) {
-    const [x, y] = pointAt(path, path.total * 0.5);
-    out.push({ x, y, index: 0 });
+    const [x, y] = pointAtSmooth(path, path.total * 0.5);
+    out.push({ x, y, index: 0, at: path.total * 0.5, angle: angleAt(path, path.total * 0.5, 3) });
     return out;
   }
   // If a fixed pitch is forced (true scale), place at steps; otherwise distribute across full path
@@ -186,8 +230,12 @@ export function placePixels(path, count, pitchPx) {
   for (let i = 0; i < count; i++) {
     const at = (i + 0.5) * step;
     if (at > path.total) break;
-    const [x, y] = pointAt(path, at);
-    out.push({ x, y, index: i });
+    // Interpolated, not vertex-snapped. The polyline's vertices are evenly
+    // spaced in spline parameter, not in distance, and zoom stretches them, so
+    // snapping to the nearest one moves a pixel by up to a vertex spacing and
+    // clumps neighbours together.
+    const [x, y] = pointAtSmooth(path, at);
+    out.push({ x, y, index: i, at, angle: angleAt(path, at, Math.max(3, step * 0.4)) });
   }
   return out;
 }

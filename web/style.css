@@ -477,6 +477,25 @@ input[type="range"]:focus-visible { outline: 2px solid var(--hot); outline-offse
   height: 8px;
 }
 
+/* Wide screens dock the settings as a third column right of the telemetry;
+   narrower ones keep the slide-over drawer above. */
+@media (min-width: 1101px) {
+  .bench-app.hw-open { grid-template-columns: minmax(0, 1.4fr) minmax(360px, 1fr) 320px; }
+  .rail.drawer-panel {
+    position: static;
+    grid-column: 3;
+    grid-row: 2;
+    width: auto;
+    max-width: none;
+    transform: none;
+    box-shadow: none;
+    display: none;
+    z-index: auto;
+    min-height: 0;
+  }
+  .rail.drawer-panel.open { display: block; }
+}
+
 /* ------------------------------------------------------------- stage --- */
 
 .stage-column {
@@ -497,6 +516,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--hot); outline-offse
   width: 100%;
   height: 100%;
   cursor: crosshair;
+  touch-action: none;
 }
 
 .stage-overlay { position: absolute; inset: 0; pointer-events: none; }

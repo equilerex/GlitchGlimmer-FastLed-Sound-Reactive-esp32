@@ -17,6 +17,7 @@ AudioProcessor::~AudioProcessor() {
 // Initialize I2S peripheral for microphone input
 #ifndef GG_HOST_BUILD
 void AudioProcessor::begin() {
+    #if GG_HAS_MICROPHONE
     i2s_config_t i2s_config = {
         .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_RX),
         .sample_rate = SAMPLE_RATE,
@@ -39,10 +40,18 @@ void AudioProcessor::begin() {
     i2s_driver_install(I2S_PORT, &i2s_config, 0, nullptr);
     i2s_set_pin(I2S_PORT, &pin_config);
     i2s_zero_dma_buffer(I2S_PORT);
+    #else
+    Serial.println("Microphone disabled; skipping I2S initialization");
+    // Keep analysis deterministic when no capture source is present. The
+    // analyzer still runs so the LED scene pipeline remains alive, but it must
+    // see silence rather than uninitialized sample storage.
+    submitSamples(nullptr, 0);
+    #endif
 }
 
 // Capture raw audio samples into internal buffers
 void AudioProcessor::captureAudio() {
+    #if GG_HAS_MICROPHONE
     static int32_t i2sBuffer[NUM_SAMPLES];
     static float   normalised[NUM_SAMPLES];
     size_t bytesRead = 0;
@@ -68,6 +77,7 @@ void AudioProcessor::captureAudio() {
         normalised[i] = s / 8388608.0f;
     }
     submitSamples(normalised, NUM_SAMPLES);
+    #endif
 }
 #endif  // GG_HOST_BUILD
 

@@ -1,7 +1,7 @@
 #pragma once
 #include "Animation.h"
 #include <FastLED.h>
-#include "fx/1d/noisewave.h"
+#include "fl/fx/1d/noisewave.h"
 
 // Include this header from one translation unit only (AnimationCatalog.cpp).
 // Same rule as PacificaAnimation.h, even though NoiseWave's methods are inline
@@ -29,7 +29,7 @@ public:
             fxLen = n;
         }
 
-        fx->draw(fl::Fx::DrawContext(millis(), leds));
+        fx->draw(fl::Fx::DrawContext(millis(), fl::span<CRGB>(leds, n)));
 
         const uint8_t bright = uint8_t(255.0f * f.pixelLevel());
         for (int i = 0; i < n; ++i) {

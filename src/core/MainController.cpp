@@ -47,9 +47,9 @@ MainController::MainController(CommunicationService& comm)
     buttonInput     = nullptr;
     displayManager  = nullptr;
 
-    // Initialize the display object immediately if needed by its constructor
-    tft.init();
-    // Other components will be initialized in begin()
+    // Hardware initialization belongs in begin(), after Arduino setup() starts.
+    // In particular, TFT_eSPI touches SPI state and cannot be initialized from
+    // this global controller's constructor.
 }
 
 MainController::~MainController() {
@@ -86,9 +86,8 @@ void MainController::begin() {
         allComponentsInitialized = false;
     }
 
-    // Attempt to create DisplayManager with more robust error handling
+    #if GG_HAS_DISPLAY
     Serial.println("Creating DisplayManager..."); Serial.flush();
-    // No try block, just attempt allocation and check result
     displayManager = new DisplayManager(tft);
     if (!displayManager) {
         Serial.println("DisplayManager allocation returned nullptr"); Serial.flush();
@@ -96,6 +95,9 @@ void MainController::begin() {
     } else {
         Serial.println("DisplayManager object created."); Serial.flush();
     }
+    #else
+    Serial.println("Display disabled; skipping DisplayManager"); Serial.flush();
+    #endif
 
     // Create essential processors
     Serial.println("Creating AudioProcessor..."); Serial.flush();
@@ -331,6 +333,18 @@ void MainController::update() {
     if (audioProcessor) {
         if (ESP.getFreeHeap() > 20 * 1024) { // Only process audio if we have enough memory
             audioFeatures = audioProcessor->analyzeAudio();
+
+            #if !GG_HAS_MICROPHONE
+            // Keep an LED-only board visibly alive without pretending that a
+            // microphone supplied audio. The analyzer remains silent; this
+            // fallback only gives the renderer a gentle idle level.
+            audioFeatures.level = GG_IDLE_VISUAL_LEVEL;
+            audioFeatures.bassLevel = GG_IDLE_VISUAL_LEVEL;
+            audioFeatures.midLevel = GG_IDLE_VISUAL_LEVEL;
+            audioFeatures.trebleLevel = GG_IDLE_VISUAL_LEVEL;
+            audioFeatures.gateGain = 1.0f;
+            audioFeatures.signalPresence = true;
+            #endif
 
             if (audioHistory) {
                 audioHistory->addSnapshot(audioFeatures);

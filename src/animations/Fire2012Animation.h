@@ -1,7 +1,7 @@
 #pragma once
 #include "Animation.h"
 #include <FastLED.h>
-#include "fx/1d/fire2012.h"
+#include "fl/fx/1d/fire2012.h"
 
 // Include this header from one translation unit only (AnimationCatalog.cpp).
 //
@@ -35,7 +35,7 @@ public:
             fxLen = n;
         }
 
-        fx->draw(fl::Fx::DrawContext(millis(), leds));
+        fx->draw(fl::Fx::DrawContext(millis(), fl::span<CRGB>(leds, n)));
 
         const uint8_t bright = uint8_t(255.0f * f.pixelLevel());
         for (int i = 0; i < n; ++i) leds[i].nscale8_video(bright);

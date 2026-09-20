@@ -8,8 +8,9 @@
 // and the settings below are the whole story. It also sets USER_SETUP_LOADED,
 // which stops User_Setup_Select.h from loading a competing setup.
 //
-// The values are TFT_eSPI's own Setup25_TTGO_T_Display.h, which is the panel
-// the ttgo-t1 board carries: a 240x135 ST7789V on the ESP32's SPI bus.
+// These values describe the project's 240x135 ST7789V panel on the ESP32-S3
+// carrier board and are kept in-repo so the build does not depend on a local
+// TFT_eSPI User_Setup_Select.h.
 
 #define ST7789_DRIVER
 #define TFT_SDA_READ        // this panel has a bidirectional SDA pin

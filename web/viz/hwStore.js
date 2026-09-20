@@ -6,10 +6,12 @@
 // the view means a slider move shows on the next frame with no watcher, and
 // there is no second copy to fall out of date.
 
-import { migratePreset, PROFILES, profileById } from './profiles.js';
+import { migratePreset, profileById, DEFAULT_PROFILE_ID } from './profiles.js';
 import { defaultPose } from './path.js';
 
-const STORAGE_KEY = 'gg.hw.v1';
+// v2 resets the old handle-based poses so the new editor opens on a clear
+// horizontal calibration line instead of restoring an obsolete arch layout.
+const STORAGE_KEY = 'gg.hw.v2';
 // A second or two after the pose stops moving. Deliberately unhurried: the
 // intermediate positions of a drag have no reader, and a pose lost because the
 // tab closed mid-gesture is not worth a flush handler to rescue.
@@ -17,11 +19,12 @@ const SAVE_DEBOUNCE_MS = 1200;
 let saveTimer = null;
 
 export function defaultHw(counts) {
+  const DEFAULT = profileById(DEFAULT_PROFILE_ID);
   return {
     activeStrip: 0,
     surface: 'room',
-    // Physical scale is the only mode: stageWidthM controls the apparent size.
-    scale: 'true',
+    look: 'realistic',
+    scale: 'physical',
     stageWidthM: 3,
     zoom: 1,
     panX: 0,
@@ -36,13 +39,13 @@ export function defaultHw(counts) {
     // poses have to leave room for each other. Task 4 fixed exactly this bug
     // once already, which is why the poses live in path.js.
     strips: counts.map((count, i) => ({
-      profile: PROFILES[0].id,
-      lengthM: Math.max(0.1, count * PROFILES[0].pitch / 1000),
-      pitchMm: PROFILES[0].pitch,
+      profile: DEFAULT.id,
+      lengthM: Math.max(0.1, count * DEFAULT.pitch / 1000),
+      pitchMm: DEFAULT.pitch,
       pitchManual: false,
-      pixelSize: PROFILES[0].visual.pixelSize,
-      glowSize: PROFILES[0].visual.glowSize,
-      intensity: PROFILES[0].visual.intensity,
+      pixelSize: DEFAULT.visual.pixelSize,
+      glowSize: DEFAULT.visual.glowSize,
+      intensity: DEFAULT.visual.intensity,
       shape: null,
       pts: defaultPose(i),
     })),
@@ -67,10 +70,12 @@ export function loadHw(counts) {
   // page. This function runs before anything else can render, so it must not
   // be the thing that stops the page loading.
   try {
+    if (stored.surface === 'rod') stored.surface = 'room';
     for (const key of ['surface', 'stageWidthM', 'zoom', 'panX', 'panY', 'ev', 'spill', 'grain',
                        'pixelSize', 'glowSize', 'intensity']) {
       if (typeof stored[key] === typeof base[key]) base[key] = stored[key];
     }
+    if (stored.look === 'stylized' || stored.look === 'realistic') base.look = stored.look;
 
     // A strip list saved against a different pixel count is still usable: what was
     // stored is the pose, and the count comes from the firmware either way.
@@ -80,7 +85,7 @@ export function loadHw(counts) {
         if (!s) continue;
         if (typeof s.profile === 'string') base.strips[i].profile = s.profile;
         if (Number.isFinite(s.lengthM)) base.strips[i].lengthM = Math.max(0.1, Math.min(20, s.lengthM));
-        if (Number.isFinite(s.pitchMm)) base.strips[i].pitchMm = Math.max(0.5, Math.min(100, s.pitchMm));
+        if (Number.isFinite(s.pitchMm)) base.strips[i].pitchMm = Math.max(0.5, Math.min(400, s.pitchMm));
         if (typeof s.pitchManual === 'boolean') base.strips[i].pitchManual = s.pitchManual;
         for (const key of ['pixelSize', 'glowSize', 'intensity']) {
           if (Number.isFinite(s[key])) base.strips[i][key] = Math.max(0.1, Math.min(3, s[key]));
@@ -89,7 +94,10 @@ export function loadHw(counts) {
         // reaches the spline and corrupts the render without an error anywhere.
         // Validate instead, and reject the whole pose (shape included) rather
         // than accept a partially-numeric one.
-        if (Array.isArray(s.pts) && s.pts.length === 4) {
+        // Presets have four points, but freehand paths contain however many
+        // samples the gesture needed. Keep the bound finite so corrupted or
+        // accidentally enormous localStorage values cannot stall the renderer.
+        if (Array.isArray(s.pts) && s.pts.length >= 2 && s.pts.length <= 2000) {
           const pts = s.pts.map((p) => (
             Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])
               ? [p[0], p[1]]
@@ -126,7 +134,7 @@ export function resetHw(counts) {
 function writeHw(hw) {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      surface: hw.surface, scale: hw.scale, stageWidthM: hw.stageWidthM, zoom: hw.zoom,
+      surface: hw.surface, look: hw.look, scale: hw.scale, stageWidthM: hw.stageWidthM, zoom: hw.zoom,
       panX: hw.panX, panY: hw.panY,
       ev: hw.ev, spill: hw.spill, grain: hw.grain,
       pixelSize: hw.pixelSize, glowSize: hw.glowSize, intensity: hw.intensity,
@@ -143,7 +151,7 @@ function writeHw(hw) {
   }
 }
 
-// A dragged handle calls this through onGeometryChange on every pointermove —
+// A drawn path calls this through onGeometryChange on every pointermove —
 // close to a hundred times a second — but the pose is only worth persisting
 // once the drag settles. JSON.stringify plus a synchronous setItem on every
 // move is time spent on the audio-rate render path for no reader who cares
@@ -164,6 +172,16 @@ export function bindView(view, bench, hw, state) {
 
   view.onGeometryChange = () => {
     hw.fit = view.fit(view.activeStrip);
+    saveHw(hw);
+  };
+
+  view.onPathCommit = () => {
+    const strip = hw.strips[view.activeStrip];
+    const fit = view.fit(view.activeStrip);
+    if (strip && Number.isFinite(fit.pathM)) {
+      strip.lengthM = Math.max(0.1, Math.min(20, fit.pathM));
+    }
+    hw.fit = fit;
     saveHw(hw);
   };
 

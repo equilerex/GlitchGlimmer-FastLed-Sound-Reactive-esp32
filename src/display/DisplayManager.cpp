@@ -70,6 +70,7 @@ void DisplayManager::showStartupScreen() {
 
 void DisplayManager::begin() {
     // Initialize hardware
+    _tft.init();
     pinMode(DISPLAY_PIN, OUTPUT);
     digitalWrite(DISPLAY_PIN, HIGH);
     delay(1000); // Give display time to stabilize

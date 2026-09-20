@@ -36,6 +36,9 @@ This document describes how the browser visualizer and the debugger/editor UI co
 (Stage, Curved Strips)                       (Topbar, Cockpit, HUD)
 ```
 
+> Renderer internals (profiles, looks, glow, surfaces, paint order) live in `web/viz/CONTEXT.md`;
+> page layout, state and the drawer live in `web/CONTEXT.md`. They are not repeated here.
+
 ## Directory & File Responsibilities
 
 | File | Purpose | Key Exports & Data Structures |
@@ -45,10 +48,10 @@ This document describes how the browser visualizer and the debugger/editor UI co
 | `web/state.js` | Single reactive source of truth for UI | `state.hw` (strip configurations, presets), `state.live` (scene, mood, audio levels, layers), `state.recording` |
 | `web/live.js` | Web Audio loop & WebAssembly bridge | Manages `AudioContext`, submits mic/demo audio buffers into WASM, reads back telemetry every frame into `state.live`, manages capture recording |
 | `web/render.js` | Top-level render abstraction | Dispatches to `StripView` (stage visualizer) and `Spectrum` canvas |
-| `web/viz/StripView.js` | Photometric LED simulator | Canvas 2D multi-pass renderer: Substrate -> Glow/Halo -> Spill -> Core LEDs -> Film grain. Manages handle dragging on canvas |
-| `web/viz/path.js` | Catmull-Rom spline calculations | Samples curve arcs, places discrete LEDs along path arc length, provides default curved poses and handle intersection checks |
+| `web/viz/StripView.js` | Photometric LED simulator | Canvas 2D multi-pass renderer: Substrate -> Glow/Halo -> Spill -> Core LEDs -> Film grain. Manages drag-to-redraw paths and visible LED guides on canvas |
+| `web/viz/path.js` | Catmull-Rom spline calculations | Samples preset and freehand paths, places discrete LEDs along path arc length, and provides default calibration poses |
 | `web/viz/profiles.js` | LED hardware definitions | WS2812B (30/60/144 per meter), COB 480/m, fairy lights, bullet nodes. Pitch, die size, sigma diffusion parameters |
-| `web/viz/hwStore.js` | Hardware settings persistence | Loads and stores visualizer configuration into `localStorage` (`gg.hw.v1`), binds StripView and BenchStrip to reactive state |
+| `web/viz/hwStore.js` | Hardware settings persistence | Loads and stores visualizer configuration into `localStorage` (`gg.hw.v2`), binds StripView and BenchStrip to reactive state |
 | `web/viz/BenchStrip.js` | Flat linear debugger strip | Straightened horizontal pixel-by-pixel view showing individual pixel index, color swatch, luma graph, and hover inspection |
 
 ## Core Principles & Invariants
@@ -60,12 +63,12 @@ This document describes how the browser visualizer and the debugger/editor UI co
 2. **Arc-Length Density Scaling (Fit to Length)**:
    - When a strip has a physical count $N$ and the curve has total path length $L$:
    - In "fit to path" mode, the step between consecutive LEDs is $L / N$.
-   - Changing the physical length or profile pitch changes the visual spacing and count density, but the strip always fills the entire curve from start to finish without leaving trailing gaps.
+   - The drawn path is the physical strip length. The selected profile pitch controls LED cadence; drawing faster or slower cannot change spacing. Zoom is a display transform only.
 
 3. **Multi-Strip Layout on Stage**:
-   - Strip 0 and Strip 1 default to an arching mirrored arrangement across the stage.
-   - Strip 2 (if present) serves as a centered linear close-up strip.
-   - Handles on any strip can be interactively dragged to reshape the curves.
+   - Strips default to separated horizontal calibration lines across the stage.
+   - The active strip can be redrawn directly by dragging across the stage. A new drag replaces its previous path.
+   - A drag replaces the active path. On release, its measured length becomes the software strip length and the count is recalculated from the selected pitch. The renderer uses fixed pitch placement while the path is being drawn.
 
 4. **Telemetry & Feature Streaming**:
    - Audio features are read via indexed accessor `gg_feature(index)`:

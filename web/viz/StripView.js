@@ -14,11 +14,24 @@
 import { expose, grainAlpha, GRAIN_DOT_COUNT } from './camera.js';
 import { profileById, stripLengthMm, fuses } from './profiles.js';
 import {
-  sampleWrappedPath, placePixels, fitScale, defaultPose, hitHandle,
+  samplePath, placePixels, defaultPose,
 } from './path.js';
-import { paintSurface, paintRod, occludes } from './surface.js';
+import { paintSurface } from './surface.js';
+import {
+  paintPcb, paintBodies, paintSleeve, glowSpots,
+} from './realistic.js';
 
 const MAX_DPR = 2;
+const MIN_PX_PER_MM = 0.35;
+const MIN_PX_PER_MM_PHONE = 0.8;
+
+// [downscale factor, alpha]. Each is the glow buffer shrunk, softened and
+// stretched back, so its light reaches far past the strip. Cheap because the
+// blur runs on a tiny canvas.
+const ENV_LAYERS = [[10, 0.3], [32, 0.4]];
+
+// [radius as a multiple of the halo, peak alpha], widest first.
+const GLOW_LAYERS = [[3.2, 0.06], [1.6, 0.14], [0.8, 0.32], [0.4, 0.6], [0.18, 0.9]];
 
 function zoomPath(path, zoom, width, height) {
   if (zoom === 1) return path;
@@ -62,7 +75,8 @@ export class StripView {
 
     this.config = {
       surface: 'room',
-      scale: 'fit',
+      look: 'realistic',
+      scale: 'physical',
       stageWidthM: 3,
       zoom: 1,
       panX: 0,
@@ -81,14 +95,15 @@ export class StripView {
     this.lastDrawMs = 0;
 
     this.activeStrip = 0;
-    this.dragHandle = -1;
-    this.panPointerId = -1;
+    this.drawPointerId = -1;
+    this.drawPending = false;
+    this.drawStart = null;
     this.pointers = new Map();
     this.pinch = null;
-    this.hoverHandle = -1;
     this.hover = { strip: -1, led: -1 };
     this.onHover = null;
     this.onGeometryChange = null;
+    this.onPathCommit = null;
     this.onFrame = null;
     this.attachPointer();
 
@@ -97,8 +112,8 @@ export class StripView {
     canvas.__view = this;
   }
 
-  // Geometry is rebuilt on resize, on a handle drag, on a profile change and on
-  // a scale-mode change, never per frame. Rebuilding a 600-sample spline sixty
+  // Geometry is rebuilt on resize, on a drawn path, on a profile change and on
+  // a zoom/pan change, never per frame. Rebuilding a 600-sample spline sixty
   // times a second for a shape that did not move is most of a frame budget
   // spent on nothing.
   invalidate() {
@@ -129,34 +144,41 @@ export class StripView {
       const pitchMm = Number.isFinite(strip.pitchMm) ? strip.pitchMm : profile.pitch;
       const count = this.counts[i] || 1;
       const zoom = Number.isFinite(config.zoom) ? Math.max(0.1, config.zoom) : 1;
-      const basePxPerMm = width / 3000;
+      const stageWidthM = Number.isFinite(config.stageWidthM)
+        ? Math.max(0.1, config.stageWidthM) : 3;
+      // Floor: on a phone a 3 m stage puts LEDs 2 px apart and every light is
+      // sub-pixel. Below the floor the stage shows less of the strip instead.
+      const basePxPerMm = Math.max(width / (stageWidthM * 1000), width < 700 ? MIN_PX_PER_MM_PHONE : MIN_PX_PER_MM);
       const pxPerMm = basePxPerMm * zoom;
-      const lengthM = Number.isFinite(strip.lengthM)
-        ? Math.max(0.1, strip.lengthM)
-        : count * pitchMm / 1000;
       const pitchPx = pitchMm * pxPerMm;
       // Build the physical path at zoom 1, then scale the finished geometry as
       // an interface transform. This keeps zoom from changing lane wrapping,
       // software length, or LED count.
       const path = panPath(zoomPath(
-        sampleWrappedPath(strip.pts, width, height, lengthM * 1000 * basePxPerMm),
-        zoom, width, height,
+        samplePath(strip.pts, width, height), zoom, width, height,
       ), Number(config.panX) || 0, Number(config.panY) || 0);
+      const sizeK = strip.pixelSize ?? config.pixelSize;
+      const body = profile.body;
       return {
         profile,
+        body,
+        sizeK,
+        // A pixel that is a stretch of continuous phosphor rather than a point.
+        stretchPx: body.fill === 'phosphor'
+          ? pitchPx * Math.min(1, body.len / profile.pitch) : 0,
         path,
         pxPerMm,
         pitchPx,
         sigmaPx: Math.max(profile.sigma * pxPerMm * (strip.glowSize ?? config.glowSize), 1.1),
         diePx: Math.max(profile.die * pxPerMm * 0.5 * (strip.pixelSize ?? config.pixelSize), 0.8),
+        // The path is the strip's physical length. The profile pitch is the
+        // cadence, so input speed and pointer sample density cannot change LED
+        // spacing. A count change is committed when drawing ends.
         leds: placePixels(path, count, pitchPx),
       };
     });
   }
 
-  // A grabbed handle short-circuits hover so a drag never triggers the
-  // inspector on whatever pixel happens to be under the cursor mid-move.
-  //
   // Handlers are stored on `this` (not inline arrows) so `detach()` can pass
   // the exact same function references to removeEventListener — an inline
   // arrow rebinds a fresh function on every read and removeEventListener
@@ -167,18 +189,14 @@ export class StripView {
     this._onPointerDown = (event) => {
       const screen = this.localPoint(event);
       this.pointers.set(event.pointerId, screen);
-      const [x, y] = this.toScenePoint(screen[0], screen[1]);
-      const pts = this.config.strips[this.activeStrip].pts;
-      const grabbed = hitHandle(pts, this.width, this.height, x, y);
-      if (grabbed >= 0) {
-        this.dragHandle = grabbed;
-        canvas.setPointerCapture(event.pointerId);
-        return;
-      }
       if (this.pointers.size === 1) {
-        this.panPointerId = event.pointerId;
+        this.drawPointerId = event.pointerId;
+        this.drawPending = true;
+        this.drawStart = screen;
+        canvas.setPointerCapture(event.pointerId);
       } else if (this.pointers.size === 2) {
-        this.panPointerId = -1;
+        this.drawPointerId = -1;
+        this.drawPending = false;
         this.pinch = this.pinchState();
         canvas.setPointerCapture(event.pointerId);
       }
@@ -188,16 +206,29 @@ export class StripView {
       const screen = this.localPoint(event);
       const previous = this.pointers.get(event.pointerId);
       this.pointers.set(event.pointerId, screen);
-      const [x, y] = this.toScenePoint(screen[0], screen[1]);
-      this.hoverHandle = hitHandle(this.config.strips[this.activeStrip].pts,
-                                   this.width, this.height, x, y, 24);
-      if (this.dragHandle >= 0) {
-        const pts = this.config.strips[this.activeStrip].pts;
-        pts[this.dragHandle] = [
+      if (this.drawPointerId === event.pointerId && this.pointers.size === 1 && previous) {
+        const distance = Math.hypot(screen[0] - this.drawStart[0], screen[1] - this.drawStart[1]);
+        if (this.drawPending && distance < 3) return;
+        const [x, y] = this.toScenePoint(screen[0], screen[1]);
+        const strip = this.config.strips[this.activeStrip];
+        if (this.drawPending) {
+          const [startX, startY] = this.toScenePoint(this.drawStart[0], this.drawStart[1]);
+          strip.pts = [[
+            Math.max(0.02, Math.min(0.98, startX / this.width)),
+            Math.max(0.03, Math.min(0.97, startY / this.height)),
+          ]];
+          strip.shape = null;
+          this.drawPending = false;
+        }
+        const next = [
           Math.max(0.02, Math.min(0.98, x / this.width)),
           Math.max(0.03, Math.min(0.97, y / this.height)),
         ];
-        this.config.strips[this.activeStrip].shape = null;
+        const last = strip.pts[strip.pts.length - 1];
+        if (!last || Math.hypot((next[0] - last[0]) * this.width,
+                                (next[1] - last[1]) * this.height) >= 3) {
+          strip.pts.push(next);
+        }
         this.invalidate();
         if (this.onGeometryChange) this.onGeometryChange();
         return;
@@ -214,29 +245,24 @@ export class StripView {
         if (this.onGeometryChange) this.onGeometryChange();
         return;
       }
-      if (this.panPointerId === event.pointerId && previous) {
-        this.config.panX = (Number(this.config.panX) || 0) + screen[0] - previous[0];
-        this.config.panY = (Number(this.config.panY) || 0) + screen[1] - previous[1];
-        this.invalidate();
-        if (this.onGeometryChange) this.onGeometryChange();
-        return;
-      }
-      this.updateHover(x, y);
+      this.updateHover(...this.toScenePoint(screen[0], screen[1]));
     };
 
     this._onPointerRelease = (event) => {
-      this.dragHandle = -1;
+      const wasDrawing = this.drawPointerId >= 0 && !this.drawPending;
       if (event) this.pointers.delete(event.pointerId);
-      if (this.pointers.size < 2) this.pinch = null;
-      if (this.panPointerId === (event && event.pointerId)) {
-        const remaining = this.pointers.keys().next();
-        this.panPointerId = remaining.done ? -1 : remaining.value;
+      if (!event || this.drawPointerId === event.pointerId) {
+        this.drawPointerId = -1;
+        this.drawPending = false;
+        this.drawStart = null;
       }
+      if (!event) this.pointers.clear();
+      if (this.pointers.size < 2) this.pinch = null;
+      if (wasDrawing && this.onPathCommit) this.onPathCommit();
     };
 
     this._onPointerLeave = () => {
       this._onPointerRelease();
-      this.hoverHandle = -1;
       this.hover = { strip: -1, led: -1 };
       if (this.onHover) this.onHover(-1, -1, null);
     };
@@ -249,46 +275,13 @@ export class StripView {
       if (this.onGeometryChange) this.onGeometryChange();
     };
 
-    this._onDoubleClick = (event) => {
-      const [x, y] = this.localPoint(event);
-      const pts = this.config.strips[this.activeStrip].pts;
-      let insertAt = pts.length;
-      let best = Infinity;
-      for (let i = 0; i < pts.length - 1; i++) {
-        const ax = pts[i][0] * this.width;
-        const ay = pts[i][1] * this.height;
-        const bx = pts[i + 1][0] * this.width;
-        const by = pts[i + 1][1] * this.height;
-        const dx = bx - ax;
-        const dy = by - ay;
-        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
-        const distance = Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
-        if (distance < best) {
-          best = distance;
-          insertAt = i + 1;
-        }
-      }
-      if (best > 36) return;
-      pts.splice(insertAt, 0, [
-        Math.max(0.02, Math.min(0.98, x / this.width)),
-        Math.max(0.03, Math.min(0.97, y / this.height)),
-      ]);
-      this.config.strips[this.activeStrip].shape = null;
-      this.invalidate();
-      if (this.onGeometryChange) this.onGeometryChange();
-    };
-
     canvas.addEventListener('pointerdown', this._onPointerDown);
     canvas.addEventListener('pointermove', this._onPointerMove);
     canvas.addEventListener('pointerup', this._onPointerRelease);
     canvas.addEventListener('pointercancel', this._onPointerRelease);
-    // Capture can be lost without either of the release events firing — the
-    // window losing focus mid-drag, or an OS gesture taking over a pen or
-    // touch. Without this the handle keeps following the cursor with no button
-    // held down.
+    // Capture can be lost without either of the release events firing.
     canvas.addEventListener('lostpointercapture', this._onPointerRelease);
     canvas.addEventListener('pointerleave', this._onPointerLeave);
-    canvas.addEventListener('dblclick', this._onDoubleClick);
     canvas.addEventListener('wheel', this._onWheel, { passive: false });
   }
 
@@ -340,7 +333,6 @@ export class StripView {
     canvas.removeEventListener('pointercancel', this._onPointerRelease);
     canvas.removeEventListener('lostpointercapture', this._onPointerRelease);
     canvas.removeEventListener('pointerleave', this._onPointerLeave);
-    canvas.removeEventListener('dblclick', this._onDoubleClick);
     canvas.removeEventListener('wheel', this._onWheel);
   }
 
@@ -378,31 +370,37 @@ export class StripView {
     ]);
   }
 
-  // Drawn above the grain so a handle stays a handle, not a mote the grain
-  // pass buries. Only the active strip's handles show, because a person
-  // reshaping one strip does not need the other strip's handles competing
-  // for the same drag.
-  drawHandles() {
+  // Drawn above the grain so the path and LED spacing remain readable even
+  // when the simulated light is dim or clipped.
+  drawGuides() {
     const ctx = this.ctx;
-    const pts = this.config.strips[this.activeStrip].pts;
-    if (this.hoverHandle < 0 && this.dragHandle < 0) return;
+    const geom = this.geometry[this.activeStrip];
+    if (!geom || !geom.path.poly.length) return;
     ctx.save();
-    for (let i = 0; i < pts.length; i++) {
-      const x = pts[i][0] * this.width;
-      const y = pts[i][1] * this.height;
-      if (this.dragHandle < 0 && this.hoverHandle !== i) continue;
-      const active = this.dragHandle === i;
-      // Kept in step with --accent in style.css by hand. A handle is UI chrome
-      // rather than depicted hardware, so it should follow the theme, but
-      // drawHandles runs every frame and reading a custom property through
-      // getComputedStyle that often costs more than the coupling does.
-      ctx.strokeStyle = active ? '#38bdf8' : 'rgba(244, 244, 245, 0.5)';
-      ctx.fillStyle = 'rgba(9, 9, 11, 0.72)';
-      ctx.lineWidth = active ? 2 : 1.25;
-      ctx.beginPath();
-      ctx.arc(x, y, active ? 9 : 7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.42)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    const poly = geom.path.poly;
+    ctx.moveTo(poly[0][0], poly[0][1]);
+    for (let i = 4; i < poly.length; i += 4) ctx.lineTo(poly[i][0], poly[i][1]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // LED markers only for the hovered pixel, ringed in the colour it is
+    // showing. Permanent dark dots with white rings read as fake hardware.
+    if (this.hover.strip === this.activeStrip && this.hover.led >= 0 && this.lastBytes) {
+      const led = geom.leds.find((l) => l.index === this.hover.led);
+      if (led) {
+        let offset = 0;
+        for (let i = 0; i < this.activeStrip; i++) offset += this.counts[i] * 3;
+        this._paintStripIndex = this.activeStrip;
+        const [r, g, b] = this.colourOf(this.lastBytes, offset, led.index);
+        ctx.strokeStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(led.x, led.y, 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -425,7 +423,8 @@ export class StripView {
 
   clear() {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    paintSurface(this.ctx, this.config.surface, this.width, this.height);
+    const scale = this.geometry && this.geometry[0] ? this.geometry[0].pxPerMm : undefined;
+    paintSurface(this.ctx, this.config.surface, this.width, this.height, scale);
   }
 
   paint(bytes) {
@@ -437,9 +436,7 @@ export class StripView {
     this.clear();
 
     let offset = 0;
-    const rodAt = occludes(this.config.surface) ? 1 : -1;
     for (let i = 0; i < this.geometry.length; i++) {
-      if (i === rodAt) paintRod(this.ctx, this.width, this.height);
       const geom = this.geometry[i];
       this._paintStripIndex = i;
       this.paintStrip(geom, bytes, offset);
@@ -447,7 +444,7 @@ export class StripView {
     }
 
     this.paintGrain();
-    this.drawHandles();
+    this.drawGuides();
     this.lastDrawMs = performance.now() - started;
     if (this.onFrame) this.onFrame(bytes);
   }
@@ -460,11 +457,19 @@ export class StripView {
   }
 
   paintStrip(geom, bytes, offset) {
-    this.drawSubstrate(geom);
-    this.fillGlowBuffer(geom, bytes, offset);
+    const real = this.config.look === 'realistic';
+    if (real) paintPcb(this.ctx, geom);
+    else this.drawSubstrate(geom);
+    this.fillGlowBuffer(geom, bytes, offset, real);
+    this.compositeEnvironment();
     this.compositeSpill(geom);
     this.compositeHalo();
-    this.drawCores(geom, bytes, offset);
+    if (real) {
+      paintBodies(this, geom, bytes, offset);
+      paintSleeve(this.ctx, geom);
+    } else {
+      this.drawCores(geom, bytes, offset);
+    }
   }
 
   // The unlit strip. Without it a dark run is nothing at all, and a strip that
@@ -493,26 +498,70 @@ export class StripView {
     ctx.restore();
   }
 
-  fillGlowBuffer(geom, bytes, offset) {
+  // Linear light for one pixel before the clip-to-white in expose().
+  _glowAt(bytes, offset, index) {
+    const at = offset + index * 3;
+    const strip = this.config.strips[this._paintStripIndex || 0];
+    const k = (strip?.intensity ?? this.config.intensity) * Math.pow(2, this.config.ev);
+    const lin = (x) => Math.pow(x / 255, 2.2) * k;
+    return [lin(bytes[at]), lin(bytes[at + 1]), lin(bytes[at + 2])];
+  }
+
+  fillGlowBuffer(geom, bytes, offset, real = false) {
     const ctx = this.glowCtx;
     ctx.save();
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.width, this.height);
     ctx.globalCompositeOperation = 'lighter';
 
-    const halo = Math.max(geom.sigmaPx * 2.6, 3);
+    const halo = Math.max(geom.sigmaPx * (real ? 6 : 2.6), 3);
     for (const led of geom.leds) {
       const [r, g, b, peak] = this.colourOf(bytes, offset, led.index);
       if (peak < 0.004) continue;
-      const rgb = `${r | 0},${g | 0},${b | 0}`;
-      const grad = ctx.createRadialGradient(led.x, led.y, 0, led.x, led.y, halo);
-      grad.addColorStop(0, `rgba(${rgb},0.95)`);
-      grad.addColorStop(0.28, `rgba(${rgb},0.42)`);
-      grad.addColorStop(1, `rgba(${rgb},0)`);
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(led.x, led.y, halo, 0, Math.PI * 2);
-      ctx.fill();
+      let rgb = `${r | 0},${g | 0},${b | 0}`;
+      let strength = 1;
+      if (real) {
+        // Light keeps its hue as it spreads; only the source itself clips to
+        // white. Normalising to the brightest channel is what keeps a red LED's
+        // bloom red instead of a grey disc.
+        const at = this._glowAt(bytes, offset, led.index);
+        const m = Math.max(at[0], at[1], at[2], 1);
+        rgb = `${(at[0] / m * 255) | 0},${(at[1] / m * 255) | 0},${(at[2] / m * 255) | 0}`;
+        strength = Math.min(1.4, Math.pow(peak, 0.55) * 1.15);
+      }
+      for (const [sx, sy] of (real ? glowSpots(geom, led) : [[led.x, led.y]])) {
+        if (real) {
+          // Stacked layers rather than one curve: a faint veil that reaches far
+          // across the room, then progressively tighter and hotter bloom
+          // toward the die. One gradient cannot be both wide and hot.
+          for (const [reach, weight] of GLOW_LAYERS) {
+            const R = halo * reach;
+            // Neighbours' light adds. Without this a dense strip's wide layers
+            // stack until the whole stage is flooded; normalise by how many
+            // pixels a layer overlaps.
+            const overlap = Math.min(1, 2.5 / Math.max(1, (2 * R) / geom.pitchPx));
+            const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, R);
+            for (let i = 0; i <= 8; i++) {
+              const t = i / 8;
+              const a = Math.min(1, strength * weight * overlap * Math.pow(1 - t, 2.4));
+              grad.addColorStop(t, `rgba(${rgb},${a.toFixed(3)})`);
+            }
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(sx, sy, R, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        } else {
+          const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, halo);
+          grad.addColorStop(0, `rgba(${rgb},0.95)`);
+          grad.addColorStop(0.28, `rgba(${rgb},0.42)`);
+          grad.addColorStop(1, `rgba(${rgb},0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(sx, sy, halo, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
 
       if (geom.profile.burst > 0 && peak > 0.12) {
         const arm = halo * (1.8 + geom.profile.burst * 2.6) * Math.min(1, peak * 1.4);
@@ -529,13 +578,45 @@ export class StripView {
     ctx.restore();
   }
 
+  // Room light: painted first, underneath the existing spill and halo.
+  compositeEnvironment() {
+    const spill = this.config.spill;
+    if (spill <= 0.01) return;
+    if (!this._env) this._env = new Map();
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const [div, alpha] of ENV_LAYERS) {
+      const w = Math.max(4, Math.ceil(this.width / div));
+      const h = Math.max(4, Math.ceil(this.height / div));
+      let e = this._env.get(div);
+      if (!e) {
+        e = document.createElement('canvas');
+        this._env.set(div, e);
+      }
+      if (e.width !== w || e.height !== h) {
+        e.width = w;
+        e.height = h;
+      }
+      const ectx = e.getContext('2d');
+      ectx.clearRect(0, 0, w, h);
+      ectx.imageSmoothingQuality = 'high';
+      ectx.filter = 'blur(1.2px)';
+      ectx.drawImage(this.glow, 0, 0, w, h);
+      ctx.imageSmoothingQuality = 'high';
+      ctx.globalAlpha = Math.min(1, spill * alpha);
+      ctx.drawImage(e, 0, 0, this.width, this.height);
+    }
+    ctx.restore();
+  }
+
   compositeSpill(geom) {
     const spill = this.config.spill;
     if (spill <= 0.01) return;
     const ctx = this.ctx;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = Math.min(1, spill * 0.55);
+    ctx.globalAlpha = Math.min(1, spill * (this.config.look === 'realistic' ? 0.7 : 0.55));
     ctx.filter = `blur(${Math.round(Math.max(geom.sigmaPx * 6, 16))}px)`;
     ctx.drawImage(this.glow, 0, 0, this.width, this.height);
     ctx.restore();

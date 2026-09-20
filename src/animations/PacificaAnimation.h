@@ -1,7 +1,7 @@
 #pragma once
 #include "Animation.h"
 #include <FastLED.h>
-#include "fx/1d/pacifica.h"
+#include "fl/fx/1d/pacifica.h"
 
 // Include this header from one translation unit only (AnimationCatalog.cpp).
 // FastLED's pacifica.h defines Pacifica's members out of line with no inline,
@@ -54,7 +54,7 @@ public:
             fxLen = n;
         }
 
-        fx->draw(fl::Fx::DrawContext(clock, leds));
+        fx->draw(fl::Fx::DrawContext(clock, fl::span<CRGB>(leds, n)));
 
         const uint8_t bright = uint8_t(255.0f * f.pixelLevel());
         for (int i = 0; i < n; ++i) {

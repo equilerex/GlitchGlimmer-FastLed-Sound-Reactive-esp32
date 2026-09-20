@@ -25,6 +25,14 @@ const app = createApp({
     profileNote() {
       const strip = this.s.hw.strips[this.s.hw.activeStrip];
       return strip ? profileById(strip.profile).note : '';
+    },
+    density() {
+      const strip = this.s.hw.strips[this.s.hw.activeStrip];
+      return strip && strip.pitchMm > 0 ? 1000 / strip.pitchMm : 60;
+    },
+    zoomPercent() {
+      const zoom = Number.isFinite(this.s.hw.zoom) ? this.s.hw.zoom : 1;
+      return Math.round((zoom - 1) * 100);
     }
   },
   methods: {
@@ -66,6 +74,11 @@ const app = createApp({
 
     toggleHwDrawer() {
       this.s.hwDrawerOpen = !this.s.hwDrawerOpen;
+      // #app is the mount element, so a :class binding on it never compiles.
+      document.getElementById('app').classList.toggle('hw-open', this.s.hwDrawerOpen);
+      // Docking changes the stage width without a window resize; the canvases
+      // only re-measure on that event.
+      this.$nextTick(() => window.dispatchEvent(new Event('resize')));
     },
     resetHwSettings() {
       if (this.boundView) {
@@ -96,10 +109,23 @@ const app = createApp({
       strip.intensity = profile.visual.intensity;
       this.syncHw();
     },
+    setDensity(event) {
+      const strip = this.s.hw.strips[this.s.hw.activeStrip];
+      if (!strip) return;
+      const density = Math.max(3, Number(event.target.value) || 60);
+      strip.pitchMm = 1000 / density;
+      strip.pitchManual = true;
+      this.syncHw();
+    },
     editPitch() {
       const strip = this.s.hw.strips[this.s.hw.activeStrip];
       if (!strip) return;
       strip.pitchManual = true;
+      this.syncHw();
+    },
+    setZoomPercent(event) {
+      const percent = Math.max(-90, Math.min(900, Number(event.target.value) || 0));
+      this.s.hw.zoom = 1 + percent / 100;
       this.syncHw();
     },
     applyShape(name) {
@@ -165,10 +191,16 @@ const app = createApp({
         this.boundView.onFrame = null;
         this.boundView.onHover = null;
         this.boundView.onGeometryChange = null;
+        this.boundView.onPathCommit = null;
       }
 
       this.boundView = view;
       this.syncView = bindView(view, this.bench, this.s.hw, this.s);
+      const commitPath = view.onPathCommit;
+      view.onPathCommit = () => {
+        if (commitPath) commitPath();
+        this.syncHw();
+      };
       this.syncView();
 
       // Plain DOM writes, not Vue bindings: these update every frame, and a
@@ -231,6 +263,7 @@ const app = createApp({
     }
   },
   mounted() {
+    document.getElementById('app').classList.toggle('hw-open', this.s.hwDrawerOpen);
     live.init();
     const params = new URLSearchParams(window.location.search);
     const initialMode = params.get('mode') === 'recording' ? 'recording' : 'live';

@@ -1,5 +1,19 @@
 #define THEME        "CYBERPUNK"       // Sampling rate in Hz
 
+// Optional peripherals. Keep these disabled for an LED-only board; enable them
+// when the corresponding hardware is actually fitted. These are compile-time
+// switches because the TFT and I2S drivers should not be initialized at all when
+// their hardware is absent.
+#ifndef GG_HAS_DISPLAY
+  #define GG_HAS_DISPLAY      0
+#endif
+#ifndef GG_HAS_MICROPHONE
+  #define GG_HAS_MICROPHONE   0
+#endif
+#ifndef GG_IDLE_VISUAL_LEVEL
+  #define GG_IDLE_VISUAL_LEVEL 0.35f
+#endif
+
 
 // ==== I2S Audio Configuration ====
 #define I2S_PORT        I2S_NUM_0
@@ -358,7 +372,10 @@
 
 
 // ==== LED ====
-#define LED_0_PIN            25
+#ifndef CONFIG_LED_DATA_PIN
+  #define CONFIG_LED_DATA_PIN 4
+#endif
+#define LED_0_PIN            CONFIG_LED_DATA_PIN
 #define LED_1_PIN            33
 // #define LED_2_PIN            25
 // #define LED_3_PIN            25
@@ -418,7 +435,10 @@
 #define ENCODER_BTN_PIN    17
 
 // ==== BUTTON ====
-#define BUTTON_PIN_1         0
+#ifndef CONFIG_BTN1
+  #define CONFIG_BTN1 0
+#endif
+#define BUTTON_PIN_1         CONFIG_BTN1
 #define BUTTON_PIN_2         35
 
 // ==== OTHER ====
