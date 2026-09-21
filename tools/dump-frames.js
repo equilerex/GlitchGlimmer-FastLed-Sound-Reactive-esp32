@@ -17,6 +17,42 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.join(__dirname, '..');
+
+function existingDir(candidate) {
+  try {
+    return fs.statSync(candidate).isDirectory() ? candidate : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function compilerBin() {
+  const configured = process.env.CXX;
+  if (configured) {
+    const configuredPath = path.dirname(configured.replace(/^"|"$/g, ''));
+    const bin = existingDir(configuredPath);
+    if (bin) return bin;
+  }
+
+  if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return null;
+  const packages = path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Packages');
+  try {
+    return fs.readdirSync(packages)
+      .filter((name) => name.startsWith('BrechtSanders.WinLibs.'))
+      .map((name) => path.join(packages, name, 'mingw64', 'bin'))
+      .map(existingDir)
+      .find(Boolean) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+const env = { ...process.env };
+const bin = compilerBin();
+if (bin) {
+  env.PATH = `${bin}${path.delimiter}${env.PATH || ''}`;
+  console.log(`Native runtime: ${bin}`);
+}
 const exe = path.join(root, '.pio', 'build', 'native',
   process.platform === 'win32' ? 'program.exe' : 'program');
 
@@ -40,7 +76,7 @@ if (!fs.existsSync(exe)) {
 
 // Run from the repo root and pass the directory relative, which is the form the
 // recordings were verified byte-identical under on a different machine.
-const result = spawnSync(exe, ['--dump-frames', dir], { cwd: root, stdio: 'inherit' });
+const result = spawnSync(exe, ['--dump-frames', dir], { cwd: root, env, stdio: 'inherit' });
 
 if (result.error) {
   // A mingw-built host binary needs the same DLLs to run that it needed to link,
