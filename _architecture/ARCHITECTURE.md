@@ -40,6 +40,20 @@ A beat takes three conditions rather than one, because a level rise alone fires 
 
 Every reference here is a statistic of the input, which is what makes the features gain-independent and also what makes a change of input invisible to them. The analysis goes on measuring the new signal against the old one's peak, for about thirteen seconds. `AudioProcessor::resetTracking` drops all of it, exported as `gg_reset_analysis`, and every path in the page that changes the source calls it through one `selectSource`.
 
+## Musical events and musical states
+
+Read `docs/music-research/MODEL.md` before touching the structural detectors, the layers that answer them, or the animations that follow them. It holds the concepts, and this section holds the rules that follow from them for this code.
+
+- **A concept is what a listener hears, and a detector is one hypothesis about it.** "Bass left and came back" is a candidate drop detector, not the definition of a drop. Do not rewrite a concept to match whatever the code currently measures.
+- **A buildup is a state that unfolds.** It can be confirmed only while it runs, so its start is stamped when the hold began and reported at confirmation.
+- **"The drop" is two things.** The onset is a point event, the arrival that releases a buildup. Preparation raises the confidence that it is a drop, and is not required: the buildup may have been missed or the drop may be abrupt. The onset opens a drop window, the payoff section that follows, which lasts as long as the music stays in it and ends when the music stops behaving like a payoff or another section takes over. An arrival not followed by a sustained payoff is an impact. A timeout may exist as a safety backstop but it is never the definition of the window.
+- **A detector is a hypothesis, including the ones that open and end a window.** The first implementation may use a cheap stand-in such as loudness against a plateau, and it stays behind a replaceable function. A payoff section is not defined by loudness and survives short dips. Its continuation is meant to be judged from intensity, bass weight, activity, pulse, spectral character and structural change.
+- **Three lifetimes stay separate.** The onset (one instant), the drop window (the music's), and a layer's own attack, hold and decay (the visual design's). Do not derive one from another, and never add analyser state only to give a visual layer something to live for.
+- **Layers follow episodes, or run one-shot envelopes.** A layer for a section or overlay (buildup, descent, drop window, tease, anomaly) is bound to the analyser's episode, appears when it opens and fades when it ends. A layer for an onset is a one-shot with its own envelope.
+- **A tease is a buildup whose expected arrival is withheld.** An actual drop resolves it. It is recognised in retrospect and its reliability is low.
+- **A breakdown is a sustained stripping-back**, distinct from a drop and from a buildup. `descent` is the closest detector the code has, not the concept.
+- **Section events, and the decision that they have ended, live in the firmware.** The page displays them and sends tuning values, and never decides when an episode starts or ends. The plan is `plans/2026-09-21-structural-event-lifecycle.md`.
+
 ## Scenes and layers
 
 `SceneDirector::attachState` has to have been called or the whole scene path early-returns and nothing is drawn. It builds the per-strip scene state, which carries the scene clock and the mood history.

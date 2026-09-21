@@ -40,6 +40,7 @@ void LayerManager::setLength(size_t count) {
 
 // Remove all active layers; unique_ptr will auto-delete each VisualLayer
 void LayerManager::clearLayers() {
+    if (manualLock) return;   // a scene change must not remove the picked layer
     layers.clear();
 }
 
@@ -48,6 +49,9 @@ void LayerManager::clearLayers() {
 void LayerManager::updateLayers(const AudioFeatures& now,
                                 const AudioHistory& hist) {
     unsigned long ts = millis();
+    // Before anything is drawn, so a layer whose episode has ended starts fading on
+    // the same frame the firmware ended it.
+    syncOwned(now);
     // Call update() on each active VisualLayer
     for (auto& inst : layers) {
         if (inst.active) {
@@ -58,7 +62,10 @@ void LayerManager::updateLayers(const AudioFeatures& now,
     layers.erase(
         std::remove_if(
             layers.begin(), layers.end(),
-            [ts](const LayerInstance& inst) { return inst.expired(ts); }
+            [ts](const LayerInstance& inst) {
+                return inst.expired(ts) ||
+                       (inst.releasing && ts - inst.releaseStartMs >= kReleaseMs);
+            }
         ),
         layers.end()
     );
@@ -101,7 +108,13 @@ void LayerManager::renderLayers(uint8_t globalFade) {
 
         // Opacity is this layer's share of the light. Zero means it contributes
         // nothing, so skip the render entirely rather than blending black.
-        uint8_t alpha = uint8_t(inst.layer->opacity * 255.0f);
+        float share = inst.layer->opacity * inst.gain;
+        if (inst.releasing) {
+            const unsigned long gone = millis() - inst.releaseStartMs;
+            share *= gone >= kReleaseMs ? 0.0f : 1.0f - float(gone) / float(kReleaseMs);
+        }
+        if (share > 1.0f) share = 1.0f;
+        uint8_t alpha = uint8_t(share * 255.0f);
         if (alpha == 0) continue;
 
         std::fill(layerBuf.begin(), layerBuf.end(), CRGB::Black);
@@ -119,12 +132,35 @@ void LayerManager::renderLayers(uint8_t globalFade) {
 }
 
 // Instantiate a new layer and add to the active list
-void LayerManager::addLayer(VisualLayer* raw, LayerType type, unsigned long duration) {
+bool LayerManager::addLayer(VisualLayer* raw, LayerType type, unsigned long duration,
+                            LayerClass cls) {
+    if (cls == LayerClass::AUTO) {
+        cls = duration == 0 ? LayerClass::SCENE : LayerClass::ACCENT;
+    }
+
+    if (raw == nullptr) return false;
+    if (manualLock) { delete raw; return false; }
+
     // Cap here rather than at render time. A layer past the cap still gets an
-    // update() every frame, so refusing it at insertion is the honest limit.
-    if (raw == nullptr || layers.size() >= kMaxLayers) {
-        delete raw;
-        return;
+    // update() every frame, so refusing it at insertion is the honest limit. A full
+    // manager makes room for a layer that outranks something in it, and only then.
+    if (layers.size() >= kMaxLayers) {
+        int victim = -1;
+        for (size_t i = 0; i < layers.size(); ++i) {
+            if (layers[i].releasing) { victim = int(i); break; }   // leaving anyway
+        }
+        if (victim < 0) {
+            for (size_t i = 0; i < layers.size(); ++i) {
+                // Strictly lower, and the first found is the oldest of its class.
+                if (victim < 0 || layers[i].cls < layers[size_t(victim)].cls) victim = int(i);
+            }
+        }
+        if (victim < 0 ||
+            (!layers[size_t(victim)].releasing && layers[size_t(victim)].cls >= cls)) {
+            delete raw;
+            return false;
+        }
+        layers.erase(layers.begin() + victim);
     }
 
     LayerInstance inst;
@@ -133,7 +169,9 @@ void LayerManager::addLayer(VisualLayer* raw, LayerType type, unsigned long dura
     inst.durMs = duration;
     inst.type = type;
     inst.active = true;
+    inst.cls = cls;
     layers.emplace_back(std::move(inst));
+    return true;
 }
 
 // Return count of currently active layers
@@ -193,8 +231,22 @@ void LayerManager::applySceneLayers(const SceneDefinition& sd) {
     }
 }
 
+bool LayerManager::triggerManual(LayerType t) {
+    if (t < LayerType::BASE || t >= LayerType::COUNT) return false;
+    manualLock = false;
+    layers.clear();
+    const bool ok = addLayerByType(t, 0, LayerClass::SECTION);
+    manualLock = ok;
+    return ok;
+}
+
+void LayerManager::releaseManual() {
+    manualLock = false;
+    layers.clear();
+}
+
 // Implementation for addLayerByType with optional duration
-void LayerManager::addLayerByType(LayerType t, unsigned long duration) {
+bool LayerManager::addLayerByType(LayerType t, unsigned long duration, LayerClass cls) {
     VisualLayer* layer = nullptr;
     
     // Factory function to create the appropriate layer based on type
@@ -262,12 +314,76 @@ void LayerManager::addLayerByType(LayerType t, unsigned long duration) {
         case LayerType::CENTROID_COLOR_FLOW:
             layer = new CentroidColorFlowLayer();
             break;
+        case LayerType::BUILDUP_SWELL:
+            layer = new BuildupSwellLayer();
+            break;
+        case LayerType::DESCENT_COOL:
+            layer = new DescentCoolLayer();
+            break;
         default:
             layer = new SpectralRibbonLayer(); // Fallback
             break;
     }
     
-    if (layer) {
-        addLayer(layer, t, duration);
+    return layer ? addLayer(layer, t, duration, cls) : false;
+}
+
+bool LayerManager::addOwnedLayerByType(LayerType t, LayerClass cls, int signal,
+                                       uint32_t episodeId, float gain,
+                                       unsigned long duration) {
+    if (!addLayerByType(t, duration, cls)) return false;
+    // addLayer() appends, and an eviction only ever shortens the list first, so the
+    // new instance is the last one whichever way the count moved.
+    LayerInstance& inst = layers.back();
+    inst.ownerSignal = signal;
+    inst.ownerId = episodeId;
+    inst.gain = gain < 0.0f ? 0.0f : (gain > 1.0f ? 1.0f : gain);
+    return true;
+}
+
+bool LayerManager::hasOwned(int signal, uint32_t episodeId) const {
+    for (const LayerInstance& inst : layers) {
+        if (inst.ownerSignal == signal && inst.ownerId == episodeId && !inst.releasing) return true;
     }
+    return false;
+}
+
+void LayerManager::releaseOwned(int signal) {
+    const unsigned long ts = millis();
+    for (LayerInstance& inst : layers) {
+        if (inst.ownerSignal == signal && !inst.releasing) {
+            inst.releasing = true;
+            inst.releaseStartMs = ts;
+        }
+    }
+}
+
+// A layer belongs to the episode it was made for. Once the firmware's episode for
+// that signal is idle, or is a different one, the layer starts fading, even if a
+// layer of its own kind would have had time left.
+void LayerManager::syncOwned(const AudioFeatures& f) {
+    const unsigned long ts = millis();
+    for (LayerInstance& inst : layers) {
+        if (inst.ownerSignal < 0 || inst.releasing) continue;
+        const EpisodeStatus& e = f.episode[inst.ownerSignal];
+        if (e.state == EP_IDLE || e.episodeId != inst.ownerId) {
+            inst.releasing = true;
+            inst.releaseStartMs = ts;
+        }
+    }
+}
+
+LayerClass LayerManager::getLayerClass(int index) const {
+    return index >= 0 && index < static_cast<int>(layers.size())
+        ? layers[size_t(index)].cls : LayerClass::ACCENT;
+}
+
+int LayerManager::getLayerOwnerSignal(int index) const {
+    return index >= 0 && index < static_cast<int>(layers.size())
+        ? layers[size_t(index)].ownerSignal : -1;
+}
+
+bool LayerManager::isLayerReleasing(int index) const {
+    return index >= 0 && index < static_cast<int>(layers.size()) &&
+           layers[size_t(index)].releasing;
 }

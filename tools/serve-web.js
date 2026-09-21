@@ -20,10 +20,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const repoRoot = path.join(__dirname, '..');
-const ROOT = fs.existsSync(path.join(repoRoot, 'dist', 'index.html'))
+// web/ is the source and dist/ is a bundle the pre-commit hook refreshes at commit
+// time, so preferring dist/ served a stale page for as long as work was uncommitted.
+// dist/ is used only when web/ is absent (a checkout that ships the bundle alone)
+// or when asked for with --dist.
+const wantDist = process.argv.includes('--dist');
+const ROOT = (wantDist || !fs.existsSync(path.join(repoRoot, 'web', 'index.html')))
+  && fs.existsSync(path.join(repoRoot, 'dist', 'index.html'))
   ? path.join(repoRoot, 'dist')
   : path.join(repoRoot, 'web');
-const port = Number(process.argv[2] || process.env.PORT || 8000);
+const port = Number(process.argv.slice(2).find((a) => /^[0-9]+$/.test(a)) || process.env.PORT || 8000);
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',

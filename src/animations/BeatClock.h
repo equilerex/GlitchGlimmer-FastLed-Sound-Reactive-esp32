@@ -82,19 +82,34 @@ inline float beatPulseAt(float phase, float offset, float sharp = 2.0f) {
     return powf(1.0f - p, sharp);
 }
 
-// How far into a build the music is, 0..1. Rises while the analyser reports a
-// buildup and falls back quickly when it stops, so a riser animation follows the
-// actual tension instead of running its own timer. Idle it reads 0, which is
-// honest: a riser drawn when nothing is building should not pretend otherwise.
+// How far into a build the music is, 0..1. It follows the firmware's buildup
+// episode: it develops over the episode's own length, so a twenty second buildup
+// takes twenty seconds to reach full where a raw displacement would have pinned it in
+// two. While the episode waits out its window it holds, and once the episode is over
+// it falls back quickly. Idle it reads 0, which is honest: a riser drawn when nothing
+// is building should not pretend otherwise.
+//
+// A block built by hand with no episode but a positive f.buildup is still read the
+// old way, since the harness builds features that way and a producer that does not
+// know about episodes has to get normal behaviour.
 class TensionRamp {
 public:
-    static constexpr float kRisePerSec = 0.20f;   // about 5 s from nothing to full
+    static constexpr float kRisePerSec = 0.20f;   // never faster than about 5 s from nothing to full
     static constexpr float kFallPerSec = 0.80f;
+    static constexpr float kFullMs     = 12000.0f; // the episode length that reads as full tension
 
     float value = 0.0f;
 
     float update(const AudioFeatures& f, float dt) {
-        if (f.buildup > 0.0f) {
+        const EpisodeStatus& e = f.episode[SIG_BUILDUP];
+        if (e.state == EP_ACTIVE || e.state == EP_FADING) {
+            const float grown = float(e.elapsedMs) >= kFullMs ? 1.0f : float(e.elapsedMs) / kFullMs;
+            if (value < grown) {
+                value += kRisePerSec * dt;
+                if (value > grown) value = grown;
+            }
+            // FADING holds: the condition has lapsed but the section has not ended.
+        } else if (f.buildup > 0.0f) {
             const float joined = f.buildup > 1.0f ? 1.0f : f.buildup;
             value += kRisePerSec * dt;
             if (value < joined) value = joined;   // joining a build already under way

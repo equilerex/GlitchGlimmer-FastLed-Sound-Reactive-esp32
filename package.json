@@ -14,9 +14,11 @@
     "setup:native": "node tools/setup-native.js",
     "setup:wasm": "node tools/setup-emscripten.js",
     "test": "node --test \"test/**/*.test.js\"",
-    "upload": "pio run -e esp32s3 -t upload --upload-port COM9"
+    "upload": "pio run -e esp32s3 -t upload --upload-port COM9",
+    "graph:update": "graphify update .",
+    "graph:extract": "graphify extract ."
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   }
 }

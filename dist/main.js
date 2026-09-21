@@ -87,6 +87,64 @@ const app = createApp({
       if (diff < 60) return diff.toFixed(0) + 's ago';
       return (diff / 60).toFixed(1) + 'm ago';
     },
+    // Formatting of what the firmware reports about one structural episode. Nothing
+    // here decides when an episode started or ended: the state, elapsed time,
+    // duration and end reason all arrive from the firmware and are shown as received.
+    episodeSummary(name) {
+      const e = this.s.live.episodes && this.s.live.episodes[name];
+      if (!e) return 'idle';
+      const sec = (ms) => (ms / 1000).toFixed(1) + 's';
+      if (e.state === 'active') return 'active ' + sec(e.elapsedMs);
+      if (e.state === 'fading') return 'waiting, ' + sec(e.elapsedMs) + ' so far';
+      if (e.state === 'arming') return 'arming';
+      if (e.lastEndReason !== 'none') {
+        return 'ended (' + e.lastEndReason + ') ' + sec(e.lastDurationMs) + ', ' +
+          sec(e.sinceEndMs) + ' ago';
+      }
+      return 'idle';
+    },
+    episodeState(name) {
+      const e = this.s.live.episodes && this.s.live.episodes[name];
+      return e ? e.state : 'idle';
+    },
+    // The diverging bar shows the state of whichever of buildup or descent is open.
+    sectionBarState() {
+      const b = this.episodeState('buildup');
+      return b !== 'idle' ? b : this.episodeState('descent');
+    },
+    // The bar is scaled to +-0.4 of displacement. The ticks at +-0.15 mirror
+    // BUILDUP_LEVEL and DESCENT_LEVEL in src/config/Config.h for display only.
+    displacementFill() {
+      const d = this.s.live.displacement || 0;
+      const pct = Math.min(0.4, Math.abs(d)) / 0.4 * 50;
+      return d >= 0 ? { left: '50%', width: pct + '%' } : { right: '50%', width: pct + '%' };
+    },
+    armingFill() {
+      const d = this.s.live.displacement || 0;
+      const pct = Math.min(1, Math.max(0, this.s.live.arming || 0)) * (0.15 / 0.4 * 50);
+      return d >= 0 ? { left: '50%', width: pct + '%' } : { right: '50%', width: pct + '%' };
+    },
+    // Tooltips for the Structure card, one per value.
+    structTip(name, part) {
+      const what = {
+        buildup: 'BUILDUP: a sustained rise of the level above its own 10 s mean. Confirmed after 1.5 s at or above +0.15 with a climb of 0.10. Once confirmed it stays open through a plateau until a descent starts, a drop arrives or the gate closes (60 s at most).',
+        descent: 'DESCENT: a sustained fall of the level below its own 10 s mean. Confirmed after 1.5 s at or below -0.15 with a fall of 0.10. It ends when the level settles back, a drop arrives or the gate closes.',
+        drop: 'DROP WINDOW: opens at a drop onset (quiet passage, then a jump of 0.35 with bass, mid and treble all at or above 0.6) and lasts while the music stays in the payoff. It is provisional until the payoff level holds, then confirmed.',
+        tease: 'TEASE: the established tune continues while something new or off is mixed in, or the sound cuts in and out. The detector is still the old one (post-drop, hush, or level fake-out). A drop resolves it.',
+        anomaly: 'ANOMALY: at least two of the spectral centroid range, beat interval spread and spectral flatness have been unusual for 2.5 s. An overlay: a drop does not end it.'
+      }[name];
+      const parts = {
+        name: '',
+        state: 'State: idle, arming (the hold is accumulating), active (confirmed and open), or waiting (the flag dropped out and the window before it is called over is running).',
+        text: 'Right side: the current state and elapsed time, or how the last one ended (the reason), how long it lasted and how long ago.'
+      };
+      return what + (parts[part] || '');
+    },
+    structureAria() {
+      const d = (this.s.live.displacement || 0).toFixed(2);
+      return 'Displacement ' + d + ', buildup ' + this.episodeSummary('buildup') +
+        ', descent ' + this.episodeSummary('descent');
+    },
     copyDiagnostics(event) {
       const btn = event ? event.currentTarget : null;
       live.copyDiagnostics(btn);
@@ -159,6 +217,9 @@ const app = createApp({
     },
     toggleSceneFreeze() {
       live.toggleSceneFreeze();
+    },
+    triggerLayer() {
+      live.triggerLayer(this.s.live.triggerLayerIndex);
     },
     onSceneSelect(event) {
       const val = parseInt(event.target.value, 10);

@@ -75,7 +75,18 @@ This document describes how the browser visualizer and the debugger/editor UI co
      - 0: volume, 1: loudness, 2: peak, 3: bass, 4: mid, 5: treble
      - 7: dynamics, 8: bpm, 9: beatDetected, 10: level, 11: noiseFloor
      - 13: bassLevel, 14: midLevel, 15: trebleLevel
+     - 16: buildup and 17: descent are displacements (level minus its 10 s follower) while confirmed and 0 otherwise, not 0..1 scores. 18: dropDetected (one frame), 19: teaseDetected, 20: anomaly, 21: gateGain, 22: spectralFlatness, 23 to 46: the 8 coordinates as value, confidence, trend, 47 to 51: clock and beat phase.
+     - 52 to 81: structural episodes, six fields per signal in the order buildup, descent, drop window, tease, anomaly. The fields are state (0 idle, 1 arming, 2 active, 3 fading), episodeId, elapsedMs, lastDurationMs, sinceEndMs and lastEndReason. The signal is `(index - 52) / 6` and the field `(index - 52) % 6`.
+     - 82: displacement (signed, before any threshold), 83: arming (0..1 through the hold), 84: dropConfidence (provisional), 85: dropConfirmed.
+   - The episode event ring is drained by seq with `gg_event_newest_seq()`, `gg_event_oldest_seq()`, `gg_event_load(seq)` and `gg_event_field(0..6)` (signal, kind, reason, confirmed, atMs, durationMs, value). Seq starts at 1 and never goes backwards, not even across `gg_reset_analysis()`, so the page keeps the newest seq it has read and never repeats or loses a record still in the ring. `atMs` is sample time and restarts on a source change. `web/live.js` `drainEpisodeEvents` only formats records.
+   - The four episode windows are tuning entries 11 to 14: section window, tease window, drop safety bound, drop hold fraction.
    - Layers and scene state are read via:
      - `gg_layer_count(strip)`
      - `gg_active_layer_type(strip, index)`
      - `gg_scene_elapsed_ms()`, `gg_scene_min_ms()`, `gg_scene_ideal_ms()`
+
+## Telemetry layout and serving
+
+- `tools/serve-web.js` serves `web/`. `dist/` is a commit-time bundle and is served only with `--dist` or when `web/` is absent.
+- No reading is hidden and nothing is an accordion. Top to bottom: health chips, Structure card beside Live Event Stream, Level and Tempo, Scene clock (built by `buildState` into `#clock-host`), spectrum canvas, Frequency drives, Music coordinates (fat value bar over a 2 px confidence strip: green from 0.8, amber from 0.5, red below, with trend and confidence numbers), then the state groups in two balanced CSS columns. The old Structure rows and the 8D State group are gone because the Structure card and the coordinate cells carry the same data. Copy diagnostics, Copy snapshot and Record sit in the header. Chips and pills carry a fixed min-width so a changing number does not shift the layout.
+- The right panel has a `LED` / `Tuning` tab (`state.hwTab`). `buildState` appends the tuning sliders to `#tuning-host`.

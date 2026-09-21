@@ -13,6 +13,7 @@
 // and rejects them as stray options, so the binary has to be named directly.
 
 const { spawnSync } = require('node:child_process');
+const { findPlatformio } = require('./find-platformio');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -61,7 +62,12 @@ const build = args.includes('--build');
 const dir = args.find((a) => !a.startsWith('--')) || 'web/data';
 
 if (build) {
-  const built = spawnSync('pio', ['run', '-e', 'native'], { cwd: root, stdio: 'inherit', shell: true });
+  const pio = findPlatformio(root, process.env);
+  if (!pio) {
+    console.error('PlatformIO was not found. Run npm run native for the list of places tried.');
+    process.exit(1);
+  }
+  const built = spawnSync(pio.command, [...pio.prefix, 'run', '-e', 'native'], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
   if (built.status !== 0) {
     process.exit(built.status ?? 1);
   }

@@ -405,9 +405,12 @@ public:
         const float tempoMul = 0.5f + (clock.bpmUsed / 120.0f);
         gHue += uint8_t(clock.dt * 30.0f * tempoMul + 1.0f);
 
-        if (f.dropDetected) {
+        // The drop window and the buildup episode, not their raw flags: the window
+        // stays open for as long as the payoff does and a buildup is one episode for
+        // its whole length. f.buildup is kept for a block built by hand.
+        if (f.dropDetected || f.episode[SIG_DROP].state == EP_ACTIVE) {
             mode = TSUNAMI;
-        } else if (f.buildup > 0.4f) {
+        } else if (f.episode[SIG_BUILDUP].state == EP_ACTIVE || f.buildup > 0.4f) {
             mode = BURST;
         } else if (f.anomaly) {
             mode = RIFTS;

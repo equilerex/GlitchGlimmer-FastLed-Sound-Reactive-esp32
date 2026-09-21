@@ -62,9 +62,11 @@ float targetIntensity(MoodType mood) {
 //
 // Cost is bounded by kMaxLayers in addLayer, which refuses past the fourth.
 std::vector<LayerType> layersForIntensity(float intensity) {
-    if (intensity < 0.40f) return {};
-    if (intensity < 0.75f) return { LayerType::BACKGROUND };
-    return { LayerType::BACKGROUND, LayerType::HIGHLIGHT };
+    // No BACKGROUND (the noise-floor mist) in any band. It is a quiet-passage layer
+    // and scene layers live for the whole scene, so listing it here kept a fill on
+    // nearly every scene at almost every moment.
+    if (intensity < 0.75f) return {};
+    return { LayerType::HIGHLIGHT };
 }
 
 void SceneRegistry::registerDefaultScenes() {

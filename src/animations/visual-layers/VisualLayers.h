@@ -99,7 +99,11 @@ public:
         baseHue = uint8_t(160.0f + audio.noiseFloor / NOISE_FLOOR_MAX * 60.0f);
         // Mist recedes when real signal is present, providing a gentle ambient floor
         // during quiet passages without washing out active animations.
-        levelAtten = (1.0f - audio.level) * audio.gateGain;
+        // Full only near silence, gone by a level of 0.25. Linear (1 - level) left
+        // most of the mist showing at ordinary listening levels.
+        float quiet = 1.0f - audio.level * 4.0f;
+        if (quiet < 0.0f) quiet = 0.0f;
+        levelAtten = quiet * audio.gateGain;
     }
 
     void render(CRGB* leds, int count) override {
@@ -650,3 +654,83 @@ public:
     const char* getName() const override { return "CentroidColorFlowLayer"; }
 };
 
+
+// === Structural episode layers ===
+//
+// Both follow an episode and not a timer. The director attaches one when the
+// firmware opens the episode and releases it when the firmware ends it, so how long
+// either lives is decided by the music. They read the episode's own elapsed time
+// for how far along they are, and both draw a resting look when the episode is idle,
+// which is how the layer sweep sees them.
+
+// A buildup: light fills in from both ends and grows for as long as the buildup has
+// run, reaching full reach at 12 s. Warm and saturated at first, whitening as it
+// approaches the middle.
+class BuildupSwellLayer : public VisualLayer {
+    float swell = 0.25f;
+    float drive = 0.0f;
+
+public:
+    BuildupSwellLayer() {
+        opacity = 0.6f;
+    }
+
+    void update(const AudioFeatures& now, const AudioHistory&) override {
+        const unsigned long ms = now.episode[SIG_BUILDUP].elapsedMs;
+        const float grow = ms >= 12000UL ? 1.0f : float(ms) / 12000.0f;
+        swell = 0.25f + 0.75f * grow;
+        drive = now.level;
+    }
+
+    void render(CRGB* leds, int count) override {
+        if (count <= 0) return;
+        const float reach = swell * 0.5f * float(count);
+        const float gain = 0.35f + 0.65f * drive;
+        for (int i = 0; i < count; ++i) {
+            const int fromEnd = i < count - 1 - i ? i : count - 1 - i;
+            if (float(fromEnd) >= reach) continue;
+            const float edge = 1.0f - float(fromEnd) / reach;
+            const uint8_t v = uint8_t(255.0f * gain * (0.4f + 0.6f * edge));
+            leds[i] += CHSV(20, uint8_t(255.0f - 200.0f * swell), v);
+        }
+    }
+
+    const char* getName() const override { return "BuildupSwellLayer"; }
+};
+
+// A descent: a cool comet falling toward the start of the strip, dimmer the longer
+// the descent has run, so the light thins out as the music does.
+class DescentCoolLayer : public VisualLayer {
+    float phase = 0.0f;
+    float gain  = 1.0f;
+    float drive = 0.0f;
+
+public:
+    DescentCoolLayer() {
+        opacity = 0.5f;
+    }
+
+    void update(const AudioFeatures& now, const AudioHistory&) override {
+        phase += (0.25f + 0.5f * now.level) * now.dtSeconds;
+        if (phase >= 1.0f) phase -= 1.0f;
+        const unsigned long ms = now.episode[SIG_DESCENT].elapsedMs;
+        const float aged = ms >= 10000UL ? 1.0f : float(ms) / 10000.0f;
+        gain = 1.0f - 0.5f * aged;
+        drive = now.level;
+    }
+
+    void render(CRGB* leds, int count) override {
+        if (count <= 0) return;
+        const float head = 1.0f - phase;
+        for (int i = 0; i < count; ++i) {
+            const float pos = float(i) / float(count);
+            float d = pos - head;
+            if (d < 0.0f) d = -d;
+            const float comet = d < 0.25f ? 1.0f - d / 0.25f : 0.0f;
+            const float v = (0.15f + 0.85f * comet) * (0.4f + 0.6f * drive) * gain;
+            leds[i] += CHSV(uint8_t(150.0f + 30.0f * pos), 220, uint8_t(255.0f * v));
+        }
+    }
+
+    const char* getName() const override { return "DescentCoolLayer"; }
+};

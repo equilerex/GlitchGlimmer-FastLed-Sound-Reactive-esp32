@@ -218,6 +218,19 @@ void gg_unlock_scene(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+int gg_layer_type_count(void) { return static_cast<int>(LayerType::COUNT); }
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_layer_type_name(int type) {
+    if (type < 0 || type >= static_cast<int>(LayerType::COUNT)) return "";
+    return layerTypeToString(static_cast<LayerType>(type));
+}
+
+// Clear every layer and show only the one of this type until called with -1.
+EMSCRIPTEN_KEEPALIVE
+int gg_trigger_layer(int type) { return g_ctrl.triggerLayer(type) ? 1 : 0; }
+
+EMSCRIPTEN_KEEPALIVE
 int gg_locked_scene(void) {
     return g_ctrl.getLockedSceneIndex();
 }
@@ -294,7 +307,61 @@ float gg_feature(int index) {
         // Autocorrelation rhythm and phase tracking
         case 50: return g_last.beatPhase;
         case 51: return g_last.beatConfidence;
-        default: return 0.0f;
+        // Structural episodes, decided in the firmware. 52 to 81 is six fields per
+        // signal in the order buildup, descent, drop, tease, anomaly: state (0 idle,
+        // 1 arming, 2 active, 3 fading), episodeId, elapsedMs, lastDurationMs,
+        // sinceEndMs, lastEndReason. The page reads them and derives nothing.
+        case 82: return g_last.displacement;
+        case 83: return g_last.arming;
+        case 84: return g_last.dropConfidence;
+        case 85: return g_last.dropConfirmed ? 1.0f : 0.0f;
+        default:
+            if (index >= 52 && index < 52 + 6 * SIG_COUNT) {
+                const EpisodeStatus& e = g_last.episode[(index - 52) / 6];
+                switch ((index - 52) % 6) {
+                    case 0: return float(e.state);
+                    case 1: return float(e.episodeId);
+                    case 2: return float(e.elapsedMs);
+                    case 3: return float(e.lastDurationMs);
+                    case 4: return float(e.sinceEndMs);
+                    default: return float(e.lastEndReason);
+                }
+            }
+            return 0.0f;
+    }
+}
+
+// The episode event ring. Records are numbered from 1 and the numbers never go back,
+// not even across gg_reset_analysis, so the page keeps the newest seq it has drained
+// and asks for the ones after it. gg_event_load fills a one-record buffer and says
+// whether the record is still in the ring, and gg_event_field reads it.
+EMSCRIPTEN_KEEPALIVE
+double gg_event_newest_seq(void) { return double(g_proc.structuralEpisodes().newestSeq()); }
+
+EMSCRIPTEN_KEEPALIVE
+double gg_event_oldest_seq(void) { return double(g_proc.structuralEpisodes().oldestSeq()); }
+
+namespace { EpisodeEvent g_event; }
+
+EMSCRIPTEN_KEEPALIVE
+int gg_event_load(double seq) {
+    return g_proc.structuralEpisodes().eventBySeq(uint32_t(seq), g_event) ? 1 : 0;
+}
+
+// 0 signal, 1 kind (0 started, 1 ended, 2 triggered, 3 confirmed), 2 end reason,
+// 3 confirmed, 4 atMs (sample time), 5 durationMs, 6 value (preparation on a drop
+// onset).
+EMSCRIPTEN_KEEPALIVE
+double gg_event_field(int field) {
+    switch (field) {
+        case 0: return g_event.signal;
+        case 1: return g_event.kind;
+        case 2: return g_event.reason;
+        case 3: return g_event.confirmed;
+        case 4: return double(g_event.atMs);
+        case 5: return double(g_event.durationMs);
+        case 6: return double(g_event.value);
+        default: return 0.0;
     }
 }
 
@@ -428,7 +495,11 @@ constexpr int kTuneDynDown        = 7;
 constexpr int kTuneAudioDynDecay  = 8;
 constexpr int kTuneGainSmoothing  = 9;
 constexpr int kTuneDynGrowth      = 10;
-constexpr int kTuneCount           = 11;
+constexpr int kTuneSectionWindow  = 11;
+constexpr int kTuneTeaseWindow    = 12;
+constexpr int kTuneDropMax        = 13;
+constexpr int kTuneDropHold       = 14;
+constexpr int kTuneCount          = 15;
 }  // namespace
 
 EMSCRIPTEN_KEEPALIVE
@@ -445,6 +516,10 @@ float gg_tuning(int which) {
         case kTuneAudioDynDecay:  return g_proc.getDynamicsDecayPerBlock();
         case kTuneGainSmoothing:  return g_proc.getGainSmoothing();
         case kTuneDynGrowth:      return g_proc.getDynamicsGrowthPerBlock();
+        case kTuneSectionWindow:  return float(g_proc.structuralEpisodes().sectionWindowMs);
+        case kTuneTeaseWindow:    return float(g_proc.structuralEpisodes().teaseWindowMs);
+        case kTuneDropMax:        return float(g_proc.structuralEpisodes().dropMaxMs);
+        case kTuneDropHold:       return g_proc.structuralEpisodes().dropHoldFraction;
         default:                  return 0.0f;
     }
 }
@@ -463,6 +538,12 @@ void gg_set_tuning(int which, float value) {
         case kTuneAudioDynDecay:  g_proc.setDynamicsDecayPerBlock(value); break;
         case kTuneGainSmoothing:  g_proc.setGainSmoothing(value); break;
         case kTuneDynGrowth:      g_proc.setDynamicsGrowthPerBlock(value); break;
+        // Clamped here so a slider cannot make a window negative or a fraction
+        // above one. What the number means is decided in StructuralEpisodes.
+        case kTuneSectionWindow:  g_proc.structuralEpisodesForTuning().sectionWindowMs = value < 0.0f ? 0 : (unsigned long)value; break;
+        case kTuneTeaseWindow:    g_proc.structuralEpisodesForTuning().teaseWindowMs   = value < 0.0f ? 0 : (unsigned long)value; break;
+        case kTuneDropMax:        g_proc.structuralEpisodesForTuning().dropMaxMs       = value < 0.0f ? 0 : (unsigned long)value; break;
+        case kTuneDropHold:       g_proc.structuralEpisodesForTuning().dropHoldFraction = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value); break;
         default: break;
     }
 }

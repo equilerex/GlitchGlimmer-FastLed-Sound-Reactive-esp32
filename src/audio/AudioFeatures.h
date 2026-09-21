@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <cmath>
 #include "MusicState.h"
+#include "EpisodeTypes.h"
 
 struct AudioFeatures {
     unsigned long long sampleFrame = 0;
@@ -190,6 +191,27 @@ struct AudioFeatures {
     // a pulse that will not sustain. Any one of the three is enough, because to a
     // listener they are the same thing.
     bool teaseDetected = false;
+
+    // ==== Episodes ====
+    //
+    // The flags above say a condition holds this block. These say a section began,
+    // went on and ended, and are decided by StructuralEpisodes, never by a reader.
+    // All default to an idle, never-ended signal so a hand-built block stays valid.
+    EpisodeStatus episode[SIG_COUNT];
+
+    // The signed distance from the slow mean, before any threshold. buildup and
+    // descent are its two halves and are zero until a hold has confirmed them, so
+    // this is what shows how close a section is to starting.
+    float displacement = 0.0f;
+
+    // 0..1 progress through the hold of whichever of buildup or descent is arming,
+    // and zero when neither is. The direction is the sign of displacement.
+    float arming = 0.0f;
+
+    // The open drop window. 0..1 and provisional in its definition, see
+    // StructuralEpisodes::updateConfidence. Zero when no window is open.
+    float dropConfidence = 0.0f;
+    bool  dropConfirmed  = false;
 
     MusicState music;
 

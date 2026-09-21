@@ -275,6 +275,12 @@
 // on its own as the follower catches up, so a build cannot re-fire from a level
 // that has stopped moving.
 #define BUILDUP_HOLD_MS      1500
+// A confirmed buildup is kept until a descent begins, a drop arrives or the gate
+// closes, however far the displacement has decayed. A buildup plateaus and sits
+// there for a while, and the follower catching up with the plateau is not the
+// section ending. This is the longest it is kept without one of those, so a
+// buildup that never resolves cannot hold the state for the rest of a song.
+#define BUILDUP_SUSTAIN_MAX_MS 60000
 
 // DESCENT: the same measurement on the other side of the slow mean, and the
 // mirror of BUILDUP. Displacement below the mean, still falling, held.
@@ -318,6 +324,37 @@
 // pulse, which the confirmation window would reject before it could ever be shown,
 // so MoodHistory adopts it at once and holds the display for this long.
 #define DROP_PIN_MS          3000
+
+// Episode lifecycle (StructuralEpisodes). A detector flag says a condition holds
+// right now and an episode says a section began, went on and ended, so these are
+// how long a flag may stay false before the firmware calls the episode over.
+//
+// Every value here is a starting guess. The only recording in docs/ is 2.3 s, which
+// is shorter than each window, so none of them can be tuned until a longer capture
+// from the real microphone exists.
+//
+// One second was too short: a section can thin out for a bar without ending, and a
+// riser that pauses on a rest is still the same riser.
+#define STRUCT_SECTION_WINDOW_MS  4000
+// Tease's flag has no hold and no cooldown of its own and flickers, so the gap that
+// still counts as one tease is set here instead.
+#define STRUCT_TEASE_WINDOW_MS    4000
+// Backstop for the drop window and never its definition. The window ends because the
+// music stops behaving like a payoff, and this is only what stops a wedged detector
+// holding one open for the rest of the session.
+#define STRUCT_DROP_MAX_MS        60000
+// The provisional end test for a drop window: the level staying above this share of
+// the level averaged over the first STRUCT_DROP_PLATEAU_MS after the onset. The mean
+// is taken over the window because the slow follower catches up with a sustained
+// payoff, so a comparison against it would end every long drop.
+#define STRUCT_DROP_HOLD_FRACTION 0.6f
+#define STRUCT_DROP_PLATEAU_MS    2000
+// An onset with weak preparation is confirmed as a drop when that mean is at least
+// this, and closed as an impact when it is not.
+#define STRUCT_DROP_CONFIRM_LEVEL 0.5f
+// Preparation at or above this confirms an onset at once, without waiting for the
+// plateau. Preparation raises confidence and is never required.
+#define STRUCT_DROP_PREP_CONFIRM  0.7f
 
 // TEASE: tension without full energy. The broadest reading, so it is a composite
 // and any one of three triggers is enough. A breakdown after a drop, a hush before

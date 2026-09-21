@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { findPlatformio } = require('./find-platformio');
 
 function existingDir(candidate) {
   try {
@@ -38,7 +39,11 @@ function compilerBin() {
 const bin = compilerBin();
 const env = { ...process.env };
 if (bin) {
-  env.PATH = `${bin}${path.delimiter}${env.PATH || ''}`;
+  // Windows names the variable `Path`. The spread copy is a plain, case-sensitive
+  // object, so writing `PATH` there replaced the whole search path with just the
+  // compiler directory and dropped System32, which is where cmd's `doskey` lives.
+  const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'PATH';
+  env[pathKey] = `${bin}${path.delimiter}${env[pathKey] || ''}`;
   console.log(`Native toolchain: ${bin}`);
 } else {
   const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['g++'], {
@@ -55,24 +60,15 @@ if (args.length === 0) args.push('run', '-e', 'native', '-t', 'exec');
 
 const cwd = path.resolve(__dirname, '..');
 const shell = process.platform === 'win32';
-const candidates = process.platform === 'win32'
-  ? [['pio', []], ['python', ['-m', 'platformio']], ['py', ['-m', 'platformio']]]
-  : [['pio', []], ['python3', ['-m', 'platformio']], ['python', ['-m', 'platformio']]];
 
-let platformio = null;
-for (const [command, prefix] of candidates) {
-  const probe = spawnSync(command, [...prefix, '--version'], {
-    cwd, env, stdio: 'ignore', shell,
-  });
-  if (probe.status === 0) {
-    platformio = [command, prefix];
-    break;
-  }
-}
-if (!platformio) {
-  console.error('PlatformIO was not found. Install it with `python -m pip install platformio`, then retry.');
+const tried = [];
+const found = findPlatformio(cwd, env, tried);
+if (!found) {
+  console.error('PlatformIO was not found. Tried:\n  ' + tried.join('\n  ') +
+    '\nInstall it with: python -m pip install platformio');
   process.exit(1);
 }
+const platformio = [found.command, found.prefix];
 
 const [command, prefix] = platformio;
 const result = spawnSync(command, [...prefix, ...args], {

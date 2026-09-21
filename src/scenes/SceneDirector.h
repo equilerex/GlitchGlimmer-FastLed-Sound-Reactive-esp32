@@ -34,12 +34,11 @@ private:
     MoodHistory&   mood;
     SceneRegistry& registry;
     unsigned long  lastScenePrint = 0;
-    // Cooldown stamps for reactive layer injection. Members and not function statics,
-    // so two directors do not share a cooldown and a fresh one starts clear.
+    // Cooldown stamps for the accent layers. Members and not function statics, so two
+    // directors do not share a cooldown and a fresh one starts clear. The structural
+    // layers have none: the firmware's episodes say when they start and end.
     unsigned long  lastBeat   = 0;
     unsigned long  lastEnergy = 0;
-    unsigned long  lastDrop   = 0;
-    unsigned long  lastBuild  = 0;
 
     // The scene that has been a better fit than the running one, and since when.
     // A challenger has to stay ahead for kChallengeMs before it takes over, so a
@@ -163,6 +162,59 @@ public:
         if (el > (unsigned long)(state->sceneIdealDurationMs * 2.0f)) switchTo(best);
     }
 
+    /*-------------------- episode layers --------------------*/
+    static inline bool episodeOpen(const EpisodeStatus& e) {
+        return e.state == EP_ACTIVE || e.state == EP_FADING;
+    }
+
+    // Attach the layer an open episode wants, once. The drop onset is the exception:
+    // its one-shots run their own attack, hold and decay and are not bound to
+    // anything, so they are fired once per episode per strip and left to expire.
+    inline void attachEpisodeLayers(LayerManager& lm, const AudioFeatures& af) {
+        const EpisodeStatus& drop = af.episode[SIG_DROP];
+
+        if (drop.episodeId != 0 && drop.episodeId != lm.impactFiredFor()) {
+            // Scaled by how sure the firmware is at the onset. Confidence is
+            // provisional, so it only sets how hard the flash hits.
+            const float hit = 0.6f + 0.4f * af.dropConfidence;
+            lm.addOwnedLayerByType(LayerType::HIGHLIGHT, LayerClass::IMPACT, -1, 0, hit, 2500);
+            lm.addOwnedLayerByType(LayerType::ENERGY, LayerClass::IMPACT, -1, 0, hit, 3500);
+            lm.markImpactFired(drop.episodeId);
+        }
+
+        const EpisodeStatus& build = af.episode[SIG_BUILDUP];
+        if (episodeOpen(build) && !lm.hasOwned(SIG_BUILDUP, build.episodeId)) {
+            lm.addOwnedLayerByType(LayerType::BUILDUP_SWELL, LayerClass::SECTION,
+                                   SIG_BUILDUP, build.episodeId);
+        }
+
+        const EpisodeStatus& fall = af.episode[SIG_DESCENT];
+        if (episodeOpen(fall) && !lm.hasOwned(SIG_DESCENT, fall.episodeId)) {
+            lm.addOwnedLayerByType(LayerType::DESCENT_COOL, LayerClass::SECTION,
+                                   SIG_DESCENT, fall.episodeId);
+        }
+
+        // The sustained payoff, only once the window is confirmed. A window closed
+        // as an impact never gets one, and a provisional window drives the one-shots
+        // alone.
+        if (episodeOpen(drop) && af.dropConfirmed && !lm.hasOwned(SIG_DROP, drop.episodeId)) {
+            lm.addOwnedLayerByType(LayerType::ENERGY_SPIRAL, LayerClass::SECTION,
+                                   SIG_DROP, drop.episodeId);
+        }
+
+        const EpisodeStatus& tease = af.episode[SIG_TEASE];
+        if (episodeOpen(tease) && !lm.hasOwned(SIG_TEASE, tease.episodeId)) {
+            lm.addOwnedLayerByType(LayerType::MOOD_ARC, LayerClass::OVERLAY,
+                                   SIG_TEASE, tease.episodeId);
+        }
+
+        const EpisodeStatus& odd = af.episode[SIG_ANOMALY];
+        if (episodeOpen(odd) && !lm.hasOwned(SIG_ANOMALY, odd.episodeId)) {
+            lm.addOwnedLayerByType(LayerType::DYNAMICS_FLICKER_STORM, LayerClass::OVERLAY,
+                                   SIG_ANOMALY, odd.episodeId);
+        }
+    }
+
     /*-------------------- reactive layer injection --------------------*/
     inline void maybeInjectReactiveLayer(LayerManager& lm,
                                          const AudioFeatures& af,
@@ -170,24 +222,16 @@ public:
     {
         constexpr int MAX_LAYERS = 4;
 
+        // Structural layers first, and ahead of the cap test: a full manager makes
+        // room for a layer that outranks something in it, so an episode is answered
+        // even when the scene already has its layers up.
+        //
+        // Each is bound to the firmware's episode. It is attached while the episode
+        // is open and released by the manager when the firmware ends it, so nothing
+        // here has a timer or a cooldown, and a layer lost to a scene change comes
+        // back on the next frame for as long as its episode is still open.
+        attachEpisodeLayers(lm, af);
         if (lm.activeCount() >= MAX_LAYERS) return;
-
-        // Structural events first. They are rare and each is the moment the
-        // visuals should answer, so they bypass the probability gates below and
-        // keep only a cooldown, so a drop that is reported for several frames adds
-        // its layers once.
-        // Structural events first. They are rare and intentional.
-        if (af.dropDetected && now - lastDrop > 4000) {
-            lm.addLayerByType(LayerType::HIGHLIGHT, 2500); // 2.5s impact flash
-            lm.addLayerByType(LayerType::ENERGY, 3500);    // 3.5s energy surge
-            lastDrop = now;
-            return;
-        }
-        if (af.buildup > 0.0f && now - lastBuild > 5000) {
-            lm.addLayerByType(LayerType::OVERLAY, 3000);   // 3s buildup swell
-            lastBuild = now;
-            return;
-        }
 
         // A beat accent. Trusted only when the tracker has a solid lock (>= 0.70 confidence),
         // punchy transient 450ms pop that expires promptly.
@@ -200,7 +244,7 @@ public:
         // High-energy dynamic surge: level > 0.85 with dynamic range > 0.35, brief 1200ms flare
         if (af.level > 0.85f && af.dynamics > 0.35f && now - lastEnergy > 4000) {
             if (random(100) < 40) {
-                lm.addLayerByType(LayerType::OVERLAY, 1200);
+                lm.addLayerByType(LayerType::OVERLAY, 1200, LayerClass::OVERLAY);
             }
             lastEnergy = now;
         }

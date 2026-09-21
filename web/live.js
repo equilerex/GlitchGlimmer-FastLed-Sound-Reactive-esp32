@@ -162,6 +162,13 @@ async function loadWasm() {
     }
     state.live.sceneCatalog = catalog;
   }
+  if (module._gg_layer_type_count && module._gg_layer_type_name) {
+    const layers = [];
+    for (let i = 0, n = module._gg_layer_type_count(); i < n; ++i) {
+      layers.push({ index: i, name: module.UTF8ToString(module._gg_layer_type_name(i)) });
+    }
+    state.live.layerCatalog = layers;
+  }
   applyTuning();
 }
 
@@ -332,7 +339,17 @@ export async function loadAudioFile(file) {
   const ctx = ensureAudioContext();
   try {
     const arrayBuf = await file.arrayBuffer();
-    customAudioBuffer = await ctx.decodeAudioData(arrayBuf);
+    if (/\.f32$/i.test(file.name)) {
+      // A capture from the Record button: raw mono float32 at the analysis rate. Not
+      // decodable as audio, so it becomes a buffer directly and plays through the
+      // same path as any other file, which is what lets a real-microphone capture be
+      // replayed in the page with its event stream and structure readouts.
+      const samples = new Float32Array(arrayBuf, 0, Math.floor(arrayBuf.byteLength / 4));
+      customAudioBuffer = ctx.createBuffer(1, samples.length, SAMPLE_RATE);
+      customAudioBuffer.copyToChannel(samples, 0);
+    } else {
+      customAudioBuffer = await ctx.decodeAudioData(arrayBuf);
+    }
     currentAudioBuffer = customAudioBuffer;
     currentTrackId = 'custom';
     state.live.demoTrack = 'custom';
@@ -391,6 +408,68 @@ function fillDemo(samples) {
     const treble = (demo.noise / 2147483647 * 2 - 1) * 0.05 * (0.2 + 0.8 * pulse);
     samples[i] = (bass + mid + treble) * DEMO_GAIN;
   }
+}
+
+const EPISODE_SIGNALS = ['buildup', 'descent', 'drop', 'tease', 'anomaly'];
+const EPISODE_STATES = ['idle', 'arming', 'active', 'fading'];
+const EPISODE_END_REASONS = ['none', 'window', 'drop', 'replaced', 'gate', 'faded',
+  'timeout', 'resolved', 'impact', 'released'];
+
+function readEpisodes() {
+  const out = {};
+  EPISODE_SIGNALS.forEach((name, i) => {
+    const b = 52 + i * 6;
+    out[name] = {
+      state: EPISODE_STATES[wasm._gg_feature(b)] || 'idle',
+      episodeId: wasm._gg_feature(b + 1),
+      elapsedMs: wasm._gg_feature(b + 2),
+      lastDurationMs: wasm._gg_feature(b + 3),
+      sinceEndMs: wasm._gg_feature(b + 4),
+      lastEndReason: EPISODE_END_REASONS[wasm._gg_feature(b + 5)] || 'none',
+    };
+  });
+  return out;
+}
+
+// Drains the firmware's event ring by seq. The firmware numbers records from 1 and
+// never repeats or reuses a number, so remembering the newest one drained means a
+// slow frame or a reload cannot repeat a record or silently lose one. This only
+// formats: no edge is detected and no duration is computed here.
+let lastEventSeq = 0;
+
+function drainEpisodeEvents() {
+  if (!wasm._gg_event_newest_seq) return;
+  const newest = wasm._gg_event_newest_seq();
+  if (newest < lastEventSeq) lastEventSeq = 0;   // a new module instance
+  if (newest === lastEventSeq) return;
+  const oldest = wasm._gg_event_oldest_seq();
+  if (oldest > lastEventSeq + 1) {
+    pushLiveEvent('gate', 'EVENTS MISSED',
+      `${oldest - lastEventSeq - 1} records left the ring before they were read`);
+    lastEventSeq = oldest - 1;
+  }
+  for (let seq = lastEventSeq + 1; seq <= newest; ++seq) {
+    if (!wasm._gg_event_load(seq)) continue;
+    const signal = EPISODE_SIGNALS[wasm._gg_event_field(0)] || 'unknown';
+    const kind = wasm._gg_event_field(1);
+    const reason = EPISODE_END_REASONS[wasm._gg_event_field(2)] || 'none';
+    const confirmed = wasm._gg_event_field(3) > 0;
+    const atMs = wasm._gg_event_field(4);
+    const durationMs = wasm._gg_event_field(5);
+    const value = wasm._gg_event_field(6);
+    const name = signal === 'drop' && kind !== 2 ? 'DROP WINDOW' : signal.toUpperCase();
+    if (kind === 0) {
+      pushLiveEvent(signal, `${name} STARTED`, confirmed ? 'confirmed' : '', atMs);
+    } else if (kind === 1) {
+      pushLiveEvent(signal, `${name} ENDED (${reason})`,
+        `${(durationMs / 1000).toFixed(1)}s` + (signal === 'drop' && confirmed ? ', confirmed' : ''), atMs);
+    } else if (kind === 2) {
+      pushLiveEvent(signal, 'DROP TRIGGERED', `preparation ${(value * 100).toFixed(0)}%`, atMs);
+    } else if (kind === 3) {
+      pushLiveEvent(signal, 'DROP CONFIRMED', '', atMs);
+    }
+  }
+  lastEventSeq = newest;
 }
 
 function readFeatures() {
@@ -461,7 +540,18 @@ function readFeatures() {
     sampleFrame: wasm._gg_sample_frame ? wasm._gg_sample_frame() : wasm._gg_feature(49),
     beatPhase: wasm._gg_beat_phase ? wasm._gg_beat_phase() : wasm._gg_feature(50),
     beatConfidence: wasm._gg_beat_confidence ? wasm._gg_beat_confidence() : wasm._gg_feature(51),
+    // Episode state, decided in the firmware. Six fields a signal from index 52, see
+    // gg_feature in src/wasm_main.cpp. Held as received.
+    episodes: readEpisodes(),
+    displacement: wasm._gg_feature(82),
+    arming: wasm._gg_feature(83),
+    dropConfidence: wasm._gg_feature(84),
+    dropConfirmed: wasm._gg_feature(85) > 0,
     average:  wasm._gg_average(),
+    // Derived here from level with BRIGHTNESS_GAMMA (src/config/Config.h) so the
+    // values the animations actually drive brightness from are visible.
+    pixelLevel: Math.pow(Math.max(0, wasm._gg_feature(10)), 0.5),
+    hsvLevel: Math.pow(Math.max(0, wasm._gg_feature(10)), 0.25),
     centroid: wasm._gg_spectrum_centroid(),
     band:     wasm._gg_dominant_band(),
     history:  wasm._gg_history_size(),
@@ -491,19 +581,15 @@ import { state } from './state.js';
 let lastSeen = {
   mood: '',
   scene: '',
-  drop: false,
-  tease: false,
-  buildup: false,
-  descent: false,
   presenceConfirmed: undefined,
   presenceCandidate: undefined,
   presenceCandidateSince: 0,
   lastGateEventTime: 0,
 };
 
-function pushLiveEvent(type, label, detail) {
+function pushLiveEvent(type, label, detail, atMs) {
   if (!state.live.events) state.live.events = [];
-  const rawTimeMs = (state.live.sampleTimeMs > 0)
+  const rawTimeMs = atMs !== undefined ? atMs : (state.live.sampleTimeMs > 0)
     ? state.live.sampleTimeMs
     : performance.now();
   const timeStr = (rawTimeMs / 1000).toFixed(1) + 's';
@@ -570,6 +656,12 @@ function updateHud(f) {
     state.live.coords.texture = { value: f.coordTexture, conf: f.coordTextureConf, trend: f.coordTextureTrend };
     state.live.coords.presence = { value: f.coordPresence, conf: f.coordPresenceConf, trend: f.coordPresenceTrend };
   }
+  state.live.episodes = f.episodes;
+  state.live.displacement = f.displacement;
+  state.live.arming = f.arming;
+  state.live.dropConfidence = f.dropConfidence;
+  state.live.dropConfirmed = f.dropConfirmed;
+  drainEpisodeEvents();
   state.live.sampleFrame = f.sampleFrame;
   state.live.sampleTimeMs = f.sampleTimeMs;
   state.live.dtSeconds = f.dtSeconds;
@@ -585,31 +677,11 @@ function updateHud(f) {
   if (state.live.eventHold) {
     if (f.dropDetected > 0) {
       state.live.eventHold.drop = now + 2500;
-      if (!lastSeen.drop) {
-        pushLiveEvent('drop', 'DROP DETECTED', `bass: ${(f.bassLevel * 100).toFixed(0)}%, level: ${(f.level * 100).toFixed(0)}%`);
-      }
     }
-    lastSeen.drop = f.dropDetected > 0;
 
     if (f.teaseDetected > 0) {
       state.live.eventHold.tease = now + 2500;
-      if (!lastSeen.tease) {
-        pushLiveEvent('tease', 'TEASE DETECTED', `breakdown / tension`);
-      }
     }
-    lastSeen.tease = f.teaseDetected > 0;
-
-    const isBuildup = f.buildup > 0;
-    if (isBuildup && !lastSeen.buildup) {
-      pushLiveEvent('buildup', 'BUILDUP ACTIVE', `displacement: +${f.buildup.toFixed(3)}`);
-    }
-    lastSeen.buildup = isBuildup;
-
-    const isDescent = f.descent > 0;
-    if (isDescent && !lastSeen.descent) {
-      pushLiveEvent('descent', 'DESCENT ACTIVE', `displacement: -${f.descent.toFixed(3)}`);
-    }
-    lastSeen.descent = isDescent;
 
     if (lastSeen.mood && f.mood !== lastSeen.mood) {
       pushLiveEvent('mood', `MOOD → ${f.mood}`, `pred: ${f.predicted}`);
@@ -635,7 +707,9 @@ function updateHud(f) {
         if ((now - lastSeen.presenceCandidateSince >= requiredDwell) && (now - lastSeen.lastGateEventTime >= 2000)) {
           lastSeen.presenceConfirmed = hasPresence;
           lastSeen.lastGateEventTime = now;
-          pushLiveEvent('gate', hasPresence ? 'GATE OPENED' : 'GATE CLOSED', `noise: ${f.noiseFloor.toFixed(4)}, gain: ${f.gateGain.toFixed(2)}`);
+          pushLiveEvent('gate', hasPresence ? 'SOUND DETECTED' : 'SOUND LOST', hasPresence
+            ? `silence gate opened: signal volume rose above 2x the noise floor (${f.noiseFloor.toFixed(4)})`
+            : `silence gate closed: signal volume fell below 1.5x the noise floor (${f.noiseFloor.toFixed(4)})`);
         }
       }
     } else {
@@ -663,6 +737,12 @@ const STATE_GROUPS = [
   {
     title: 'What the classifier reads',
     rows: [
+      { name: 'loudness', key: 'loudness', max: 100, digits: 1,
+        note: 'Smoothed loudness (0..100). The older loudness value. The animations use level; only the legacy mood history still reads this.' },
+      { name: 'pixel level', key: 'pixelLevel', max: 1, digits: 2,
+        note: 'level ^ BRIGHTNESS_GAMMA (0.5). The brightness curve most animations drive pixels from.' },
+      { name: 'hsv level', key: 'hsvLevel', max: 1, digits: 2,
+        note: 'sqrt(pixel level), which is level ^ 0.25. The value channel of HSV colours, used by the animations that pick a hue.' },
       { name: 'level', key: 'level', max: 1, digits: 2,
         marks: [0.3, 0.4, 0.6, 0.8],
         note: 'Loudness tested by the mood classifier (0..1).\n\n' +
@@ -684,17 +764,17 @@ const STATE_GROUPS = [
               '• Base data: Detected beat onset timestamps from level and bass flux threshold crossings.\n' +
               '• Calculation: Derived from median inter-beat interval: 60000 / median(interval_ms).\n' +
               '• Meaning: Track BPM. Markers at 80 and 100 BPM split low, mid, and fast tempo moods.' },
-      { name: 'volume', key: 'volume', digits: 4,
+      { name: 'volume', key: 'volume', max: 0.5, sqrt: true, digits: 4,
         note: 'Raw physical RMS sample amplitude.\n\n' +
               '• Base data: 512 raw PCM input samples.\n' +
               '• Calculation: Root Mean Square: sqrt(sum(sample^2) / 512).\n' +
               '• Meaning: Unscaled physical signal amplitude (~0.006 RMS in quiet room). Dependent on mic hardware gain.' },
-      { name: 'peak', key: 'peak', digits: 4,
+      { name: 'peak', key: 'peak', max: 1, sqrt: true, digits: 4,
         note: 'Raw physical peak sample amplitude.\n\n' +
               '• Base data: 512 raw PCM input samples.\n' +
               '• Calculation: Maximum absolute sample value: max(|sample|).\n' +
               '• Meaning: Instantaneous peak amplitude (~0.017 peak in quiet room). Indicates headroom and clipping.' },
-      { name: 'average', key: 'average', digits: 4,
+      { name: 'average', key: 'average', max: 0.5, sqrt: true, digits: 4,
         note: 'Mean absolute deviation of audio samples.\n\n' +
               '• Base data: 512 raw PCM input samples.\n' +
               '• Calculation: sum(|sample|) / 512.\n' +
@@ -754,12 +834,12 @@ const STATE_GROUPS = [
               '• Base data: Treble band energy sum (> 2000 Hz).\n' +
               '• Calculation: Normalized against its own 20s rolling treble peak envelope: treble / treblePeak.\n' +
               '• Meaning: Primary driver for high-frequency sparkles, glitter, and crisp percussion.' },
-      { name: 'spectrum centroid', key: 'centroid', digits: 1,
+      { name: 'spectrum centroid', key: 'centroid', max: 255, digits: 1,
         note: 'Spectral center of mass (brightness).\n\n' +
               '• Base data: 256-bin FFT magnitudes.\n' +
               '• Calculation: Energy-weighted bin average: sum(k * mag[k]) / sum(mag[k]).\n' +
               '• Meaning: Average perceived frequency. Low bins indicate dark, bass-heavy audio; high bins indicate bright, airy sound.' },
-      { name: 'dominant band', key: 'band', digits: 0,
+      { name: 'dominant band', key: 'band', max: 255, digits: 0,
         note: 'Dominant spectral peak bin.\n\n' +
               '• Base data: 256-bin FFT magnitudes.\n' +
               '• Calculation: Bin index containing the maximum magnitude peak across the entire spectrum.\n' +
@@ -769,161 +849,6 @@ const STATE_GROUPS = [
               '• Base data: 256-bin FFT magnitudes.\n' +
               '• Calculation: Geometric mean divided by arithmetic mean: exp(mean(ln(mag + eps))) / (mean(mag) + eps).\n' +
               '• Meaning: 0.0 = pure harmonic tone or sine wave; 1.0 = white noise, distortion, or snare splash.' },
-    ],
-  },
-  {
-    title: 'Structure',
-    rows: [
-      { name: 'buildup', key: 'buildup', max: 1, digits: 3,
-        note: 'Buildup progression score (0..1).\n\n' +
-              '• Base data: Multi-second trends in energy, activity, and high-frequency centroid.\n' +
-              '• Calculation: Integrated positive trend displacement slope over a 3-5s rolling window.\n' +
-              '• Meaning: Rising musical tension, pre-drop risers, and drum roll acceleration.' },
-      { name: 'descent', key: 'descent', max: 1, digits: 3,
-        note: 'Descent / outro fade score (0..1).\n\n' +
-              '• Base data: Multi-second trends in energy and level.\n' +
-              '• Calculation: Integrated negative trend displacement slope over a 3-5s rolling window.\n' +
-              '• Meaning: Song outro, breakdown energy drain, or quiet transitional passage.' },
-      { name: 'drop detected', key: 'dropDetected', max: 1, digits: 0,
-        note: 'Musical drop event flag (0 or 1).\n\n' +
-              '• Base data: Bass drive surge and silence gate recovery.\n' +
-              '• Calculation: Single-frame edge triggered when bass drive spikes >0.8 immediately following a buildup or silence drop-out (held for 2.5s in UI).\n' +
-              '• Meaning: Sudden release of tension / heavy kick arrival.' },
-      { name: 'tease detected', key: 'teaseDetected', max: 1, digits: 0,
-        note: 'Musical tease / fake drop flag (0 or 1).\n\n' +
-              '• Base data: High energy/activity paired with absent bass.\n' +
-              '• Calculation: Triggered when activity/energy remains high (>0.6) while bass drops below 0.25.\n' +
-              '• Meaning: Breakdown or tension section where the beat does not drop.' },
-      { name: 'anomaly', key: 'anomaly', max: 3, digits: 0,
-        note: 'Coordinate anomaly counter (0..3).\n\n' +
-              '• Base data: 8D coordinate values and confidence metrics.\n' +
-              '• Calculation: Count of coordinates exhibiting extreme rate-of-change or zero confidence.\n' +
-              '• Meaning: Detects sudden audio discontinuities or tracking failure.' },
-    ],
-  },
-  {
-    title: 'Music Coordinates (8D State)',
-    rows: [
-      { name: 'intensity', key: 'coordIntensity', max: 1, digits: 3,
-        note: 'Loudness Coordinate (0..1).\n\n' +
-              '• Base data: 512-sample time-domain block RMS envelope.\n' +
-              '• Calculation: Dual EMA follower (fast tau 0.3s, slow tau 3.0s) tracking level = clamp((RMS - floor)/(peak - floor), 0, 1) * gateGain.\n' +
-              '• Meaning: Gain-invariant perceived volume.' },
-      { name: 'intensity conf', key: 'coordIntensityConf', max: 1, digits: 2,
-        note: 'Intensity Tracker Confidence (0..1).\n\n' +
-              '• Base data: Silence gate state and SNR.\n' +
-              '• Calculation: 1.0 when gate is settled open; decays toward 0 during silence or ambiguous low levels.\n' +
-              '• Meaning: Reliability of loudness measurement.' },
-      { name: 'intensity trend', key: 'coordIntensityTrend', digits: 3,
-        note: 'Intensity Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of slow intensity EMA follower.\n' +
-              '• Calculation: (currIntensity - prevIntensity) / dtSeconds.\n' +
-              '• Meaning: Positive = crescendo / rising volume; negative = decrescendo / fading volume.' },
-      { name: 'activity', key: 'coordActivity', max: 1, digits: 3,
-        note: 'Activity Coordinate (0..1).\n\n' +
-              '• Base data: 256-bin FFT magnitude spectra from consecutive blocks.\n' +
-              '• Calculation: Half-wave rectified spectral flux sum(max(0, mag[k] - prevMag[k])) normalized against 20s rolling peak flux. Fast tau 0.5s, slow tau 5.0s.\n' +
-              '• Meaning: Rhythm density and onset speed (spikes on drum hits and note attacks).' },
-      { name: 'activity conf', key: 'coordActivityConf', max: 1, digits: 2,
-        note: 'Activity Tracker Confidence (0..1).\n\n' +
-              '• Base data: Flux reference stability and gate state.\n' +
-              '• Calculation: Ratio of rolling flux headroom and gateGain.\n' +
-              '• Meaning: Reliability of transient tracking.' },
-      { name: 'activity trend', key: 'coordActivityTrend', digits: 3,
-        note: 'Activity Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of slow activity EMA follower.\n' +
-              '• Calculation: (currActivity - prevActivity) / dtSeconds.\n' +
-              '• Meaning: Positive = accelerating rhythm / percussion density; negative = thinning rhythm.' },
-      { name: 'brightness coord', key: 'coordBrightness', max: 1, digits: 3,
-        note: 'Brightness Coordinate (0..1).\n\n' +
-              '• Base data: 256-bin FFT magnitude spectrum.\n' +
-              '• Calculation: Normalized spectral centroid: sum(k * mag[k]) / (sum(mag[k]) * 128). Fast tau 0.3s, slow tau 3.0s.\n' +
-              '• Meaning: Timbre color (0 = deep sub/bass, 1 = crisp treble/cymbals).' },
-      { name: 'brightness conf', key: 'coordBrightnessConf', max: 1, digits: 2,
-        note: 'Brightness Tracker Confidence (0..1).\n\n' +
-              '• Base data: Spectral energy sum.\n' +
-              '• Calculation: 1.0 when total energy > silence threshold; fades if signal is too quiet to measure centroid.\n' +
-              '• Meaning: Reliability of timbre estimation.' },
-      { name: 'brightness trend', key: 'coordBrightnessTrend', digits: 3,
-        note: 'Brightness Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of slow brightness EMA follower.\n' +
-              '• Calculation: (currBrightness - prevBrightness) / dtSeconds.\n' +
-              '• Meaning: Positive = filter opening / brighter timbre; negative = filter sweep down / darkening.' },
-      { name: 'weight', key: 'coordWeight', max: 1, digits: 3,
-        note: 'Weight Coordinate (0..1).\n\n' +
-              '• Base data: Low-frequency FFT bins (< 200 Hz).\n' +
-              '• Calculation: Bass energy sum normalized against its own 20s rolling peak envelope. Fast tau 0.3s, slow tau 3.0s.\n' +
-              '• Meaning: Low-end acoustic weight independent of overall track volume.' },
-      { name: 'weight conf', key: 'coordWeightConf', max: 1, digits: 2,
-        note: 'Weight Tracker Confidence (0..1).\n\n' +
-              '• Base data: Bass peak reference stability and gate gain.\n' +
-              '• Calculation: Normalized ratio of bass peak to total energy floor.\n' +
-              '• Meaning: Reliability of low-end measurement.' },
-      { name: 'weight trend', key: 'coordWeightTrend', digits: 3,
-        note: 'Weight Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of slow weight EMA follower.\n' +
-              '• Calculation: (currWeight - prevWeight) / dtSeconds.\n' +
-              '• Meaning: Positive = bass entry / kick buildup; negative = bass cut / breakdown.' },
-      { name: 'pulse', key: 'coordPulse', max: 1, digits: 3,
-        note: 'Pulse Regularity Coordinate (0..1).\n\n' +
-              '• Base data: Ring buffer of last 12 inter-beat intervals in ms.\n' +
-              '• Calculation: Periodicity consistency: 1.0 - (Median Absolute Deviation / Median Interval). Fast tau 2.0s, slow tau 10.0s.\n' +
-              '• Meaning: Metric regularity (near 1.0 for steady electronic beats; near 0 for ambient, speech, or syncopated breaks).' },
-      { name: 'pulse conf', key: 'coordPulseConf', max: 1, digits: 2,
-        note: 'Pulse Tracker Confidence (0..1).\n\n' +
-              '• Base data: Beat history buffer occupancy.\n' +
-              '• Calculation: Fraction of the 12-beat window filled: min(1.0, beatCount / 12.0).\n' +
-              '• Meaning: Confidence in beat periodicity.' },
-      { name: 'pulse trend', key: 'coordPulseTrend', digits: 3,
-        note: 'Pulse Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of slow pulse EMA follower.\n' +
-              '• Calculation: (currPulse - prevPulse) / dtSeconds.\n' +
-              '• Meaning: Positive = rhythm locking into steady meter; negative = rhythm dissolving into rubato/ambient.' },
-      { name: 'tempo coord', key: 'coordTempo', max: 1, digits: 3,
-        note: 'Tempo Coordinate (0..1).\n\n' +
-              '• Base data: Median inter-beat interval from onset detection.\n' +
-              '• Calculation: BPM = 60000 / medianInterval, normalized as BPM / 240.0. Decays exponentially on beat silence.\n' +
-              '• Meaning: Speed coordinate (0.5 = 120 BPM, 1.0 = 240 BPM).' },
-      { name: 'tempo conf', key: 'coordTempoConf', max: 1, digits: 2,
-        note: 'Tempo Tracker Confidence (0..1).\n\n' +
-              '• Base data: Beat interval variance and window fill.\n' +
-              '• Calculation: pulseConsistency * min(1.0, beatCount / 12.0).\n' +
-              '• Meaning: Confidence that estimated BPM matches actual musical meter.' },
-      { name: 'tempo trend', key: 'coordTempoTrend', digits: 3,
-        note: 'Tempo Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of slow tempo EMA follower.\n' +
-              '• Calculation: (currTempo - prevTempo) / dtSeconds.\n' +
-              '• Meaning: Positive = speeding up (accelerando); negative = slowing down (ritardando).' },
-      { name: 'texture', key: 'coordTexture', max: 1, digits: 3,
-        note: 'Texture / Noisiness Coordinate (0..1).\n\n' +
-              '• Base data: 256 FFT magnitude bins across full spectrum.\n' +
-              '• Calculation: Wiener entropy (spectral flatness): exp(mean(ln(mag + eps))) / (mean(mag) + eps). Fast tau 1.0s, slow tau 8.0s.\n' +
-              '• Meaning: Tone vs noise (0 = pure sine / harmonic tones; 1 = white noise, heavy distortion, snare splash).' },
-      { name: 'texture conf', key: 'coordTextureConf', max: 1, digits: 2,
-        note: 'Texture Tracker Confidence (0..1).\n\n' +
-              '• Base data: Spectrum total energy and gate gain.\n' +
-              '• Calculation: 1.0 when energy is sufficient for reliable entropy computation; decays during silence.\n' +
-              '• Meaning: Reliability of noise/tonality measurement.' },
-      { name: 'texture trend', key: 'coordTextureTrend', digits: 3,
-        note: 'Texture Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of slow texture EMA follower.\n' +
-              '• Calculation: (currTexture - prevTexture) / dtSeconds.\n' +
-              '• Meaning: Positive = audio becoming noisier / more distorted; negative = audio becoming cleaner / more tonal.' },
-      { name: 'presence coord', key: 'coordPresence', max: 1, digits: 3,
-        note: 'Presence Coordinate (0..1).\n\n' +
-              '• Base data: Time-domain RMS volume vs adaptive noise floor follower.\n' +
-              '• Calculation: Schmitt trigger with hysteresis slewed through attack/release ramp = gateGain (0..1).\n' +
-              '• Meaning: Smooth gate (0 = room silence; 1 = active music playback).' },
-      { name: 'presence conf', key: 'coordPresenceConf', max: 1, digits: 2,
-        note: 'Presence Tracker Confidence (0..1).\n\n' +
-              '• Base data: Distance between volume and noise floor.\n' +
-              '• Calculation: min(1.0, |volume - noiseFloor| / noiseFloor).\n' +
-              '• Meaning: Confidence that gate state is not ambiguous.' },
-      { name: 'presence trend', key: 'coordPresenceTrend', digits: 3,
-        note: 'Presence Rate of Change (units/sec).\n\n' +
-              '• Base data: Derivative of presence coordinate.\n' +
-              '• Calculation: (currPresence - prevPresence) / dtSeconds.\n' +
-              '• Meaning: Positive = audio appearing / gate opening; negative = audio ceasing / gate closing.' },
     ],
   },
   {
@@ -1335,6 +1260,16 @@ const TUNING = [
     format: (v) => v.toFixed(2) },
   { index: 10, name: 'dynamics signal growth', min: 0, max: 1, step: 0.01, value: 0.5,
     format: (v) => v.toFixed(2) + '/block' },
+  // The structural windows. Starting guesses, since the only real capture is 2.3 s.
+  // The firmware decides what each one means and the page only sends the number.
+  { index: 11, name: 'section window', min: 1000, max: 10000, step: 250, value: 4000,
+    format: asSeconds },
+  { index: 12, name: 'tease window', min: 1000, max: 10000, step: 250, value: 4000,
+    format: asSeconds },
+  { index: 13, name: 'drop safety bound', min: 10000, max: 120000, step: 5000, value: 60000,
+    format: asSeconds },
+  { index: 14, name: 'drop hold fraction', min: 0.2, max: 1, step: 0.05, value: 0.6,
+    format: (v) => v.toFixed(2) },
 ];
 
 // Captured before loadTuning() may overwrite `value`, so Reset has something to
@@ -1387,46 +1322,29 @@ function resetTuning() {
 
 function buildState() {
   const host = document.getElementById('live-state');
-  const actions = document.createElement('div');
-  actions.className = 'state-actions';
-  const copyDiagBtn = document.createElement('button');
-  copyDiagBtn.type = 'button';
-  copyDiagBtn.textContent = 'Copy diagnostics';
-  copyDiagBtn.title = 'Copy compact Markdown diagnostics (<250 tokens) to clipboard';
-  copyDiagBtn.addEventListener('click', () => copyDiagnostics(copyDiagBtn));
+  // Snapshot and Record live in the header beside Copy Diagnostics, so this panel is
+  // only readings.
   const copyButton = document.createElement('button');
   copyButton.type = 'button';
   copyButton.textContent = 'Copy snapshot';
+  copyButton.title = 'Writes the current frame, the min and max of every value since load, the scene and mood history and the spectrum bars to the clipboard.';
   copyButton.addEventListener('click', () => copySnapshot(copyButton));
   const recordButton = document.createElement('button');
   recordButton.type = 'button';
   recordButton.textContent = 'Record';
+  recordButton.title = 'Records the audio this page analyses into a .f32 file. Replay it offline with .pio/build/native/program --replay <file> to get min, max, mean and churn of every value.';
   recordButton.addEventListener('click', () => toggleRecording(recordButton));
-  actions.append(copyDiagBtn, copyButton, recordButton);
-  const actionNote = document.createElement('p');
-  actionNote.className = 'state-note';
-  actionNote.textContent =
-    'Copy snapshot writes the current frame, the min and max of every value since ' +
-    'the page loaded, the scene and mood history, and the spectrum bars to the ' +
-    'clipboard.';
-  const recordNote = document.createElement('p');
-  recordNote.className = 'state-note';
-  recordNote.textContent =
-    'Record captures the audio this page is analysing, frame by frame, into a ' +
-    '.f32 file. Stop it, then replay it offline with ' +
-    '.pio/build/native/program --replay <file>, which reports the min, max, ' +
-    'mean and frame-to-frame churn of every value plus the mood dwell times. That ' +
-    'is the loop for tuning a threshold against your microphone without a browser ' +
-    'round trip per attempt.';
-  host.append(actions, actionNote, recordNote);
+  (document.getElementById('header-actions') || host).append(copyButton, recordButton);
+  const fold = host;
+  const pair = host;
 
   for (const group of STATE_GROUPS) {
     const box = document.createElement('div');
-    box.className = 'state-group';
+    box.className = group.title === 'Bands' ? 'state-group split' : 'state-group';
     const h = document.createElement('h3');
     h.textContent = group.title;
     box.append(h);
-    host.append(box);
+    (group.title === 'Output' ? pair : fold).append(box);
     for (const row of group.rows) appendRow(box, row);
   }
 
@@ -1453,7 +1371,9 @@ function buildState() {
     'are this scene’s own minimum and ideal durations, recomputed whenever ' +
     'a scene begins.';
   clockBox.append(clockNote);
-  host.append(clockBox);
+  clockBox.title = clockNote.textContent;
+  clockNote.remove();
+  (document.getElementById('clock-host') || pair).append(clockBox);
 
   // The tuning dials. Built from the same table the wasm indices come from, so a
   // dial cannot exist on screen without a setter behind it.
@@ -1520,7 +1440,7 @@ function buildState() {
     'lower values respond faster. The two signal controls set how quickly the raw ' +
     'dynamics span grows and closes.';
   tuningBox.append(tuningNote);
-  host.append(tuningBox);
+  (document.getElementById('tuning-host') || host).append(tuningBox);
 
   clockCell = cells.get(clockRow.name);
   stateBuilt = true;
@@ -1543,7 +1463,8 @@ function paintState(f) {
       }
       if (cell.fill) {
         const max = (row.key === 'energy') ? Math.max(row.max, maxEnergySeen) : row.max;
-        cell.fill.style.width = Math.max(0, Math.min(100, (v / max) * 100)).toFixed(2) + '%';
+        const frac = row.sqrt ? Math.sqrt(Math.max(0, v) / max) : v / max;
+        cell.fill.style.width = Math.max(0, Math.min(100, frac * 100)).toFixed(2) + '%';
       }
 
       if (cell.nameEl && group.title === 'Structure') {
@@ -1882,6 +1803,12 @@ export function unlockScene() {
   state.live.sceneFrozen = false;
   state.live.selectedSceneIndex = wasm._gg_current_scene_index ? wasm._gg_current_scene_index() : -1;
   if (wasm._gg_scene_name) state.live.scene = wasm.UTF8ToString(wasm._gg_scene_name());
+}
+
+export function triggerLayer(index) {
+  if (!wasm || !wasm._gg_trigger_layer) return false;
+  // -1 releases the pick and hands the strip back to the director.
+  return wasm._gg_trigger_layer(parseInt(index, 10)) === 1;
 }
 
 export function toggleSceneFreeze() {

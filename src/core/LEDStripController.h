@@ -284,6 +284,17 @@ public:
     }
     inline int getSceneChangeCount() const { return sceneState.sceneChangeCount; }
 
+    // Manual layer pick for the visualiser: every strip drops its layers and shows
+    // only the one asked for until released. A negative type releases.
+    inline bool triggerLayer(int type) {
+        bool any = false;
+        for (int i = 0; i < stripCount; ++i) {
+            if (type < 0) { strips[i].layerMgr.releaseManual(); continue; }
+            any = strips[i].layerMgr.triggerManual(static_cast<LayerType>(type)) || any;
+        }
+        return any;
+    }
+
     // The scene clock. A transition needs both a minimum elapsed time and a mood
     // shift, so elapsed-against-minimum is the only way to tell a scene that is
     // holding from one that is about to be replaced.

@@ -778,6 +778,31 @@ button[aria-pressed="true"] {
   margin: 0;
 }
 
+.mood-banner {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(56, 189, 248, 0.10);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 6px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.mood-banner-mood {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.mood-banner-sep { font-size: 22px; color: var(--accent); opacity: 0.6; }
+.mood-banner-role {
+  font-size: 20px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
 .audio-player-bar {
   display: flex;
   align-items: center;
@@ -1006,6 +1031,68 @@ button[aria-pressed="true"] {
   color: var(--error);
   border-color: var(--error);
 }
+.structure-card { display: flex; flex-direction: column; gap: 6px; }
+.struct-bar {
+  position: relative;
+  height: 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+.struct-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--mute);
+  opacity: 0.55;
+  transition: width 90ms linear;
+}
+.struct-bar.is-active .struct-fill { background: var(--hot); opacity: 1; }
+.struct-bar.is-fading .struct-fill { background: var(--hot); opacity: 0.4; }
+.struct-arming {
+  position: absolute;
+  bottom: 0;
+  height: 3px;
+  background: var(--ok);
+}
+.struct-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-2);
+}
+.struct-zero {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--mute);
+}
+.struct-axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--mute);
+}
+.struct-rows { display: flex; flex-direction: column; gap: 3px; }
+.struct-row {
+  display: grid;
+  grid-template-columns: 78px 52px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.struct-name { color: var(--ink); }
+.struct-state { color: var(--mute); }
+.struct-state.is-active { color: var(--hot); }
+.struct-state.is-arming { color: var(--ok); }
+.struct-state.is-fading { color: var(--mute); opacity: 0.7; }
+.struct-text { color: var(--mute); overflow-wrap: anywhere; }
 .time-since {
   font-size: 9px;
   color: var(--mute);
@@ -1340,3 +1427,57 @@ button[aria-pressed="true"] {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ---- Telemetry layout: health chips, confidence strips, two-column groups ---- */
+.health-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; justify-content: center;
+  font-family: var(--mono); font-size: 10px; color: var(--ink-2);
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: 10px; padding: 2px 8px; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip.ok { color: var(--ok); }
+.chip.warn { color: var(--hot); border-color: var(--hot); }
+.chip.bad { color: var(--error); border-color: var(--error); }
+
+/* Coordinates: a fat value bar over a 2 px confidence strip. */
+.coord-item { position: relative; padding-bottom: 5px; }
+.coord-item .meter { height: 8px; }
+.health-strip {
+  grid-column: 1 / -1; height: 2px; border-radius: 1px;
+  background: var(--ok); align-self: end; margin-top: 1px;
+}
+.health-strip.warn { background: var(--hot); }
+.health-strip.bad { background: var(--error); }
+.coords-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.c-trend b { display: inline-block; min-width: 5ch; text-align: right; font-weight: 400; font-size: 9px; margin-left: 2px; }
+.coord-val { min-width: 7ch; }
+
+.drawer-tabs { display: flex; gap: 2px; }
+.drawer-tabs button {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  background: transparent; color: var(--mute); border: 0; border-bottom: 2px solid transparent;
+  padding: 4px 10px; cursor: pointer;
+}
+.drawer-tabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+#tuning-host { display: grid; gap: 12px; }
+
+/* Structure card beside the event stream, at the top of the telemetry column. */
+.top-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.top-pair .deck-card, .top-pair .deck-card.events-card { grid-column: auto; min-width: 0; }
+.deck-card.coords-card, .deck-card.events-card { grid-column: 1 / -1; }
+.deck-card.bands-card, .deck-card.structure-card { grid-column: auto; }
+.clock-host, .telemetry-deck > .spectrum { grid-column: 1 / -1; }
+.header-actions { display: contents; }
+
+/* State groups: two balanced columns. */
+#live-state { display: block; column-count: 2; column-gap: 8px; }
+#live-state > * { break-inside: avoid; margin-bottom: 8px; }
+#live-state > .state-group.split { break-inside: auto; }
+
+/* Pills and chips reserve the width of their widest value, so a number going from
+   1 to 100 does not shift its neighbours. */
+.beat-pill b { display: inline-block; min-width: 8ch; text-align: center; white-space: nowrap; }
+.struct-state { display: inline-block; min-width: 8ch; text-align: center; white-space: nowrap; }

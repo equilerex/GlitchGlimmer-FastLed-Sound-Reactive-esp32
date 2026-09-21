@@ -199,11 +199,18 @@ void AudioProcessor::resetTracking() {
 }
 
 void AudioProcessor::clearStructure() {
+    // Ends every open episode with reason gate and restarts the tracker's clock, which
+    // the sample clock has just done on a source change. The event ring is kept, so
+    // a reader never loses an end that was decided here.
+    episodes.clearEpisodes();
+    buildupLatched = false;
+
     slowLevel        = 0.0f;
     slowSeeded       = false;
     structuralLastMs = 0;
 
     buildupActive         = false;
+    buildupSince          = 0;
     buildupHoldSince      = 0;
     buildupLastExceededMs = 0;
     buildupFromLevel      = 0.0f;
@@ -828,6 +835,7 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // would read the ramp's own variance as a pulse that does not sustain.
     if (gateGain < GATE_SETTLED) {
         clearStructure();
+        episodes.fill(features, now);
         return;
     }
 
@@ -866,7 +874,9 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // movement that stops ends its own displacement as the mean catches up.
     const unsigned long kStructureHangoverMs = 350;
 
-    if (displacement >= BUILDUP_LEVEL) {
+    if (displacement < BUILDUP_LEVEL) buildupLatched = false;
+
+    if (displacement >= BUILDUP_LEVEL && !buildupLatched) {
         buildupLastExceededMs = now;
         if (buildupHoldSince == 0) {
             buildupHoldSince = now;
@@ -876,12 +886,16 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
         }
         if (now - buildupHoldSince >= BUILDUP_HOLD_MS &&
             (level - buildupFromLevel >= BUILDUP_CLIMB || displacement >= BUILDUP_LEVEL * 1.5f)) {
+            if (!buildupActive) buildupSince = now;
             buildupActive = true;
         }
     } else {
         if (now - buildupLastExceededMs >= kStructureHangoverMs) {
             buildupHoldSince = 0;
-            buildupActive    = false;
+            // A confirmed buildup is not ended by the displacement decaying. It
+            // ends on a descent, a drop or the gate (handled below and in
+            // clearStructure), or after BUILDUP_SUSTAIN_MAX_MS.
+            if (buildupActive && now - buildupSince >= BUILDUP_SUSTAIN_MAX_MS) buildupActive = false;
         }
     }
 
@@ -904,10 +918,18 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
         }
     }
 
+    // A descent begins: the buildup it follows is over.
+    if (descentActive && buildupActive) {
+        buildupActive    = false;
+        buildupHoldSince = 0;
+    }
+
     // Reported as a displacement so a reader can see how hard the movement is, and
     // zero when there is no movement, which is the single test the classifier
     // makes. See the field's comment in AudioFeatures.
-    features.buildup = buildupActive ? displacement : 0.0f;
+    // A sustained buildup on a plateau has a displacement near zero or slightly
+    // negative, and a reader tests only whether this is above zero, so it is floored.
+    features.buildup = buildupActive ? fmaxf(displacement, 0.01f) : 0.0f;
     features.descent = descentActive ? -displacement : 0.0f;
 
     // ==== DROP ====
@@ -941,6 +963,20 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
         now - lastDropMs >= DROP_COOLDOWN_MS) {
         features.dropDetected = true;
         lastDropMs = now;
+
+        // The arrival releases the buildup or descent it ended, so both stop here
+        // and the animations reading features.buildup stop with them. Before this a
+        // drop left them running until the displacement decayed. The buildup is then
+        // held off until the displacement has fallen back under its threshold: the
+        // payoff sits above the slow mean for seconds, and without the latch the
+        // hold would restart on the next block and open a buildup inside the drop.
+        buildupActive    = false;
+        buildupHoldSince = 0;
+        descentActive    = false;
+        descentHoldSince = 0;
+        buildupLatched   = true; 
+        features.buildup = 0.0f;
+        features.descent = 0.0f;
     }
 
     // ==== TEASE ====
@@ -1032,6 +1068,25 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     const bool held = weirdSince != 0 && now - weirdSince >= WEIRD_HOLD_MS;
 
     features.anomaly = held ? float(score) : 0.0f;
+
+    // ==== Episodes ====
+    //
+    // Last, for the same reason the whole function is: it consumes what the
+    // detectors concluded and feeds nothing back into them.
+    StructuralEpisodes::Inputs in;
+    in.now              = now;
+    in.level            = level;
+    in.displacement     = displacement;
+    in.buildupActive    = buildupActive;
+    in.buildupHoldSince = buildupHoldSince;
+    in.descentActive    = descentActive;
+    in.descentHoldSince = descentHoldSince;
+    in.dropOnset        = features.dropDetected;
+    in.dropArrival      = displacement;
+    in.tease            = features.teaseDetected;
+    in.anomaly          = features.anomaly > 0.0f;
+    episodes.update(in);
+    episodes.fill(features, now);
 }
 
 // The spread of the remembered inter-beat intervals over their median. Zero when

@@ -34,6 +34,9 @@ enum class LayerType {
     BPM_WAVE_PULSE,             // Pulse whose rate is the detected tempo
     BPM_BEAT_FLASH,             // Flash on the beat, scaled by tempo
     CENTROID_COLOR_FLOW,        // Hue travelling with the centroid
+    // Written for a structural episode, and bound to one by the director.
+    BUILDUP_SWELL,              // Fills in from both ends for as long as a buildup lasts
+    DESCENT_COOL,               // Cool comet falling toward the start for a descent
     COUNT            // Helper for random choice, etc.
 };
 
@@ -59,6 +62,8 @@ inline const char* layerTypeToString(LayerType type) {
         case LayerType::BPM_WAVE_PULSE: return "BPM_WAVE_PULSE";
         case LayerType::BPM_BEAT_FLASH: return "BPM_BEAT_FLASH";
         case LayerType::CENTROID_COLOR_FLOW: return "CENTROID_COLOR_FLOW";
+        case LayerType::BUILDUP_SWELL: return "BUILDUP_SWELL";
+        case LayerType::DESCENT_COOL: return "DESCENT_COOL";
         case LayerType::COUNT: return "COUNT";
     }
     return "UNKNOWN";

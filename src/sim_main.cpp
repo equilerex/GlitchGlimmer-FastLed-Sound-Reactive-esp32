@@ -45,6 +45,8 @@
 #include "scenes/SceneState.h"
 #include "scenes/LayerTypes.h"
 #include "scenes/LayerManager.h"
+#include "scenes/SceneDirector.h"
+#include "animations/BeatClock.h"
 #include "animations/visual-layers/VisualLayer.h"
 #include "animations/visual-layers/VisualLayers.h"
 #include "animations/AlienPulse.h"
@@ -3127,6 +3129,986 @@ int replayCapture(const char* path, const char* tracePath) {
     return 0;
 }
 
+// -----------------------------------------------------------------------------
+//  Structural detectors and their episodes
+// -----------------------------------------------------------------------------
+//
+// Two layers. checkStructuralDetectors drives the real AudioProcessor with an
+// amplitude schedule and pins what the detectors do today. checkEpisodes scripts the
+// detector flags straight into StructuralEpisodes, so every lifecycle rule can be
+// tested without producing audio that happens to trip a detector.
+//
+// The audio fixtures are amplitude schedules rather than synthetic structure on
+// purpose. Level is a fraction of a slowly decaying reference, so a step down leaves
+// it low for seconds, which is what makes a descent, and a climb back is what makes
+// a buildup. None of this claims a real track behaves like a schedule. A 55 Hz tone
+// cannot produce a buildup and the only real capture is 2.3 s.
+struct AmpSeg { float sec; float from; float to; };
+
+struct StructFrame {
+    float          sec;
+    float          level;
+    float          displacement;
+    float          buildup;
+    float          descent;
+    bool           drop;
+    EpisodeStatus  ep[SIG_COUNT];
+};
+
+std::vector<StructFrame> runAmplitudeSchedule(AudioProcessor& p, const std::vector<AmpSeg>& plan) {
+    constexpr float kTwoPi = 6.28318530718f;
+    const float bps = float(SAMPLE_RATE) / float(NUM_SAMPLES);
+    std::vector<float> buf(NUM_SAMPLES);
+    std::vector<StructFrame> out;
+    int block = 0;
+    for (const AmpSeg& s : plan) {
+        const int n = int(s.sec * bps);
+        for (int b = 0; b < n; ++b, ++block) {
+            const float amp = s.from + (s.to - s.from) * float(b) / float(n);
+            for (int i = 0; i < NUM_SAMPLES; ++i) {
+                const float t = float(i) / float(SAMPLE_RATE);
+                buf[i] = amp * std::sin(kTwoPi * 220.0f * t) +
+                         0.5f * amp * std::sin(kTwoPi * 880.0f * t);
+            }
+            g_tick.fetch_add(1, std::memory_order_relaxed);
+            p.submitSamples(buf.data(), buf.size());
+            const AudioFeatures f = p.analyzeAudio();
+            StructFrame fr;
+            fr.sec          = float(block) / bps;
+            fr.level        = f.level;
+            fr.displacement = f.displacement;
+            fr.buildup      = f.buildup;
+            fr.descent      = f.descent;
+            fr.drop         = f.dropDetected;
+            for (int i = 0; i < SIG_COUNT; ++i) fr.ep[i] = f.episode[i];
+            out.push_back(fr);
+        }
+    }
+    return out;
+}
+
+// Seconds between the displacement falling back inside a threshold and the reported
+// value returning to zero, which is the hangover. -1 when it never happened.
+float hangoverSeconds(const std::vector<StructFrame>& fr, bool buildup) {
+    bool  wasActive = false;
+    float exitSec   = -1.0f;
+    for (const StructFrame& f : fr) {
+        const float v = buildup ? f.buildup : f.descent;
+        if (v > 0.0f) wasActive = true;
+        if (!wasActive) continue;
+        const bool inside = buildup ? f.displacement < BUILDUP_LEVEL
+                                    : f.displacement > -DESCENT_LEVEL;
+        if (inside && exitSec < 0.0f) exitSec = f.sec;
+        if (v == 0.0f && exitSec >= 0.0f) return f.sec - exitSec;
+    }
+    return -1.0f;
+}
+
+void checkStructuralDetectors() {
+    // A step down from a steady bed: level falls and the slow mean lags it.
+    {
+        AudioProcessor p;
+        const auto fr = runAmplitudeSchedule(p, {{12, 0.10f, 0.10f}, {20, 0.03f, 0.03f}});
+        float peak = 0.0f, buildPeak = 0.0f;
+        for (const StructFrame& f : fr) {
+            if (f.descent > peak) peak = f.descent;
+            if (f.buildup > buildPeak) buildPeak = f.buildup;
+        }
+        const float hang = hangoverSeconds(fr, false);
+        record("a step down makes descent positive during the fall",
+               peak > 0.0f && buildPeak == 0.0f,
+               "descent peaked at " + std::to_string(peak) + ", buildup at " +
+               std::to_string(buildPeak));
+        record("descent returns to zero one hangover after the displacement recovers",
+               hang >= 0.30f && hang <= 0.45f,
+               "the reported descent went to zero " + std::to_string(hang) +
+               " s after the displacement came back inside DESCENT_LEVEL, against a 0.35 s hangover");
+    }
+
+    // A slow climb out of a quiet passage: the displacement stays under DROP_SCALE,
+    // so it is a buildup and never a drop.
+    {
+        AudioProcessor p;
+        const auto fr = runAmplitudeSchedule(p, {{12, 0.10f, 0.10f}, {8, 0.03f, 0.03f},
+                                                 {8, 0.03f, 0.10f}, {20, 0.10f, 0.10f}});
+        float peak = 0.0f;
+        int drops = 0;
+        for (const StructFrame& f : fr) {
+            if (f.buildup > peak) peak = f.buildup;
+            if (f.drop) ++drops;
+        }
+        record("a climb makes buildup positive during the climb",
+               peak > 0.0f && drops == 0,
+               "buildup peaked at " + std::to_string(peak) + " with " +
+               std::to_string(drops) + " drops");
+
+        // A confirmed buildup is not ended by the displacement decaying. The climb is
+        // followed by a 20 s plateau, well under BUILDUP_SUSTAIN_MAX_MS, so the reported
+        // buildup has to stay positive on every frame once the displacement is back
+        // inside BUILDUP_LEVEL, and only a descent, a drop or the gate ends it.
+        bool  active = false, recovered = false;
+        int   zeroFramesAfterRecovery = 0, framesAfterRecovery = 0;
+        for (const StructFrame& f : fr) {
+            if (f.buildup > 0.0f) active = true;
+            if (active && f.displacement < BUILDUP_LEVEL) recovered = true;
+            if (recovered) {
+                ++framesAfterRecovery;
+                if (f.buildup == 0.0f) ++zeroFramesAfterRecovery;
+            }
+        }
+        record("a confirmed buildup outlasts the displacement recovering, until a descent, drop or the gate",
+               recovered && framesAfterRecovery > 0 && zeroFramesAfterRecovery == 0,
+               std::to_string(zeroFramesAfterRecovery) + " of " +
+               std::to_string(framesAfterRecovery) +
+               " frames after the displacement recovered reported no buildup");
+    }
+
+    // A sharp step up after a long quiet stretch is a drop.
+    {
+        AudioProcessor p;
+        const auto fr = runAmplitudeSchedule(p, {{12, 0.10f, 0.10f}, {12, 0.008f, 0.008f},
+                                                 {20, 0.10f, 0.10f}});
+        int drops = 0;
+        for (const StructFrame& f : fr) if (f.drop) ++drops;
+        record("dropDetected is true on the triggering frame only",
+               drops == 1,
+               std::to_string(drops) + " frames reported a drop over a 20 s payoff, and the cooldown is " +
+               std::to_string(DROP_COOLDOWN_MS) + " ms");
+    }
+}
+
+// The scripted half. One frame is 33 ms, the device's analysis period.
+struct EpHarness {
+    StructuralEpisodes           t;
+    StructuralEpisodes::Inputs   in;
+    unsigned long                now = 1000;
+
+    void frame() {
+        now += 33;
+        in.now = now;
+        t.update(in);
+        in.dropOnset = false;           // an onset is one frame
+    }
+    void run(unsigned long ms) {
+        for (unsigned long e = 0; e < ms; e += 33) frame();
+    }
+    // A hold that runs for the given time, then confirms. The detector stamps
+    // holdSince at the block the threshold was first crossed.
+    void startBuildup(unsigned long holdMs = BUILDUP_HOLD_MS) {
+        in.buildupHoldSince = now + 33;
+        in.buildupActive = false;
+        run(holdMs);
+        in.buildupActive = true;
+        frame();
+    }
+    void startDescent(unsigned long holdMs = DESCENT_HOLD_MS) {
+        in.descentHoldSince = now + 33;
+        in.descentActive = false;
+        run(holdMs);
+        in.descentActive = true;
+        frame();
+    }
+    void stopBuildup()  { in.buildupActive = false; in.buildupHoldSince = 0; }
+    void stopDescent()  { in.descentActive = false; in.descentHoldSince = 0; }
+    void drop(float arrival = 0.5f) { in.dropOnset = true; in.dropArrival = arrival; frame(); }
+
+    AudioFeatures features() const { AudioFeatures f; t.fill(f, now); return f; }
+    EpisodeStatus st(int sig) const { return features().episode[sig]; }
+
+    int count(int sig, int kind, int reason = -1) const {
+        int n = 0;
+        for (uint32_t q = t.oldestSeq(); q && q <= t.newestSeq(); ++q) {
+            EpisodeEvent e;
+            if (!t.eventBySeq(q, e)) continue;
+            if (e.signal == sig && e.kind == kind && (reason < 0 || e.reason == reason)) ++n;
+        }
+        return n;
+    }
+    bool find(int sig, int kind, EpisodeEvent& out, int reason = -1) const {
+        for (uint32_t q = t.newestSeq(); q && q >= t.oldestSeq(); --q) {
+            EpisodeEvent e;
+            if (!t.eventBySeq(q, e)) continue;
+            if (e.signal == sig && e.kind == kind && (reason < 0 || e.reason == reason)) {
+                out = e;
+                return true;
+            }
+        }
+        return false;
+    }
+    std::string dump() const {
+        std::string s;
+        for (uint32_t q = t.oldestSeq(); q && q <= t.newestSeq(); ++q) {
+            EpisodeEvent e;
+            if (!t.eventBySeq(q, e)) continue;
+            s += " [" + std::to_string(e.seq) + ": sig " + std::to_string(e.signal) + " kind " +
+                 std::to_string(e.kind) + " at " + std::to_string(e.atMs) + " dur " +
+                 std::to_string(e.durationMs) + " reason " + std::to_string(e.reason) + "]";
+        }
+        return s;
+    }
+};
+
+void checkEpisodes() {
+    // --- a gap inside a buildup ---------------------------------------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.run(2000);
+        const uint32_t idBefore = h.st(SIG_BUILDUP).episodeId;
+        h.stopBuildup();
+        h.run(3000);                                   // shorter than the 4 s window
+        const bool fading = h.st(SIG_BUILDUP).state == EP_FADING;
+        h.in.buildupActive = true;
+        h.run(1000);
+        record("a 3 s gap inside a buildup stays one episode",
+               fading && h.st(SIG_BUILDUP).state == EP_ACTIVE &&
+               h.st(SIG_BUILDUP).episodeId == idBefore &&
+               h.count(SIG_BUILDUP, EVT_STARTED) == 1 && h.count(SIG_BUILDUP, EVT_ENDED) == 0,
+               "events:" + h.dump());
+    }
+
+    // --- a gap past the window ends it at the last active frame -------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.run(2000);
+        const unsigned long lastActive = h.now;
+        h.stopBuildup();
+        h.run(STRUCT_SECTION_WINDOW_MS + 200);
+        EpisodeEvent e;
+        const bool got = h.find(SIG_BUILDUP, EVT_ENDED, e, END_WINDOW);
+        const uint32_t start = h.find(SIG_BUILDUP, EVT_STARTED, e) ? e.atMs : 0;
+        EpisodeEvent ended;
+        h.find(SIG_BUILDUP, EVT_ENDED, ended, END_WINDOW);
+        record("a gap longer than the window ends a buildup with reason window",
+               got && h.count(SIG_BUILDUP, EVT_ENDED) == 1 &&
+               h.st(SIG_BUILDUP).state == EP_IDLE &&
+               h.st(SIG_BUILDUP).lastEndReason == END_WINDOW,
+               "events:" + h.dump());
+        record("the end is stamped at the last active frame and the duration excludes the wait",
+               got && ended.atMs == lastActive && ended.durationMs == lastActive - start &&
+               h.st(SIG_BUILDUP).lastDurationMs == ended.durationMs,
+               "last active " + std::to_string(lastActive) + " ms, event at " +
+               std::to_string(ended.atMs) + " ms with duration " + std::to_string(ended.durationMs) +
+               " ms and a start stamp of " + std::to_string(start) + " ms");
+    }
+
+    // --- the start stamp is the hold start ----------------------------------------
+    {
+        EpHarness h;
+        h.in.buildupHoldSince = h.now + 33;
+        const unsigned long holdStart = h.in.buildupHoldSince;
+        h.run(BUILDUP_HOLD_MS);
+        const AudioFeatures arming = h.features();
+        h.in.buildupActive = true;
+        h.frame();
+        EpisodeEvent e;
+        const bool got = h.find(SIG_BUILDUP, EVT_STARTED, e);
+        record("a buildup's start stamp is the hold start and not the confirmation",
+               got && e.atMs == holdStart && h.now - holdStart >= BUILDUP_HOLD_MS,
+               "hold started at " + std::to_string(holdStart) + " ms, confirmed at " +
+               std::to_string(h.now) + " ms, start record at " + std::to_string(e.atMs) + " ms");
+        record("a hold in progress reads as arming with rising progress",
+               arming.episode[SIG_BUILDUP].state == EP_ARMING &&
+               arming.arming > 0.9f && arming.arming <= 1.0f,
+               "state " + std::to_string(arming.episode[SIG_BUILDUP].state) + ", arming " +
+               std::to_string(arming.arming));
+    }
+
+    // --- a drop during a buildup --------------------------------------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.run(3000);
+        h.stopBuildup();                                // the processor clears the flag on a drop
+        h.drop();
+        EpisodeEvent onset, endedB, started;
+        const bool gotOnset  = h.find(SIG_DROP, EVT_TRIGGERED, onset);
+        const bool gotEnded  = h.find(SIG_BUILDUP, EVT_ENDED, endedB);
+        const bool gotWindow = h.find(SIG_DROP, EVT_STARTED, started);
+        record("a drop ends the buildup it released, with reason drop",
+               gotEnded && endedB.reason == END_DROP && h.st(SIG_BUILDUP).state == EP_IDLE &&
+               h.count(SIG_BUILDUP, EVT_ENDED) == 1,
+               "events:" + h.dump());
+        record("a drop after a buildup is recorded once, with high preparation",
+               gotOnset && onset.value >= 0.6f && h.count(SIG_DROP, EVT_TRIGGERED) == 1 &&
+               gotWindow && h.count(SIG_DROP, EVT_STARTED) == 1 && started.confirmed == 1,
+               "preparation " + std::to_string(onset.value) + ", events:" + h.dump());
+        record("a strongly prepared drop window is confirmed at once",
+               h.features().dropConfirmed && h.features().dropConfidence > 0.4f &&
+               h.st(SIG_DROP).state == EP_ACTIVE,
+               "confirmed " + std::to_string(h.features().dropConfirmed) + ", confidence " +
+               std::to_string(h.features().dropConfidence));
+    }
+
+    // --- a drop during a descent ---------------------------------------------------
+    {
+        EpHarness h;
+        h.startDescent();
+        h.run(2000);
+        h.stopDescent();
+        h.drop();
+        EpisodeEvent ended;
+        h.find(SIG_DESCENT, EVT_ENDED, ended);
+        record("a drop ends a descent with reason drop",
+               ended.reason == END_DROP && h.st(SIG_DESCENT).state == EP_IDLE,
+               "events:" + h.dump());
+    }
+
+    // --- replacement --------------------------------------------------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.run(2000);
+        h.stopBuildup();
+        h.startDescent();
+        EpisodeEvent e;
+        const bool got = h.find(SIG_BUILDUP, EVT_ENDED, e);
+        record("a descent replaces an open buildup, with reason replaced",
+               got && e.reason == END_REPLACED && h.st(SIG_DESCENT).state == EP_ACTIVE &&
+               h.st(SIG_BUILDUP).state == EP_IDLE,
+               "events:" + h.dump());
+    }
+    {
+        EpHarness h;
+        h.startDescent();
+        h.run(2000);
+        h.stopDescent();
+        h.startBuildup();
+        EpisodeEvent e;
+        const bool got = h.find(SIG_DESCENT, EVT_ENDED, e);
+        record("a buildup replaces an open descent, with reason replaced",
+               got && e.reason == END_REPLACED && h.st(SIG_BUILDUP).state == EP_ACTIVE &&
+               h.st(SIG_DESCENT).state == EP_IDLE,
+               "events:" + h.dump());
+    }
+
+    // --- a descent runs the same cycle as a buildup ---------------------------------
+    {
+        EpHarness h;
+        h.startDescent();
+        h.run(2000);
+        const unsigned long lastActive = h.now;
+        h.stopDescent();
+        h.run(STRUCT_SECTION_WINDOW_MS + 200);
+        EpisodeEvent e;
+        const bool got = h.find(SIG_DESCENT, EVT_ENDED, e, END_WINDOW);
+        record("a descent starts, ends by window at its last active frame, and gets a duration",
+               h.count(SIG_DESCENT, EVT_STARTED) == 1 && got && e.atMs == lastActive &&
+               e.durationMs > 2000,
+               "events:" + h.dump());
+    }
+
+    // --- tease --------------------------------------------------------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.run(1000);
+        h.in.tease = true;
+        h.run(1000);
+        const bool both = h.st(SIG_BUILDUP).state == EP_ACTIVE && h.st(SIG_TEASE).state == EP_ACTIVE;
+        h.stopBuildup();
+        h.in.level = 0.9f;
+        h.drop();
+        h.run(2000);                                    // the post-drop tease flag is still true
+        EpisodeEvent e;
+        const bool got = h.find(SIG_TEASE, EVT_ENDED, e);
+        record("a tease that starts mid-buildup runs alongside it",
+               both, "buildup " + std::to_string(h.st(SIG_BUILDUP).state) + ", tease " +
+               std::to_string(h.st(SIG_TEASE).state));
+        record("a drop resolves a tease, and the tease does not reopen inside the drop window",
+               got && e.reason == END_RESOLVED && h.count(SIG_TEASE, EVT_STARTED) == 1 &&
+               h.st(SIG_TEASE).state == EP_IDLE,
+               "events:" + h.dump());
+    }
+    {
+        EpHarness h;
+        for (int cycle = 0; cycle < 5; ++cycle) {
+            h.in.tease = true;
+            h.run(500);
+            h.in.tease = false;
+            h.run(1500);                                // well under the 4 s window
+        }
+        const bool one = h.count(SIG_TEASE, EVT_STARTED) == 1 && h.count(SIG_TEASE, EVT_ENDED) == 0;
+        h.run(STRUCT_TEASE_WINDOW_MS + 200);
+        record("tease flicker with gaps under the window is one episode",
+               one && h.count(SIG_TEASE, EVT_ENDED, END_WINDOW) == 1,
+               "events:" + h.dump());
+    }
+
+    // --- anomaly ------------------------------------------------------------------
+    {
+        EpHarness h;
+        h.in.anomaly = true;
+        h.run(1000);
+        const bool open = h.st(SIG_ANOMALY).state == EP_ACTIVE;
+        h.in.anomaly = false;
+        h.run(66);
+        record("an anomaly is its own episode and ends when its hold releases",
+               open && h.count(SIG_ANOMALY, EVT_STARTED) == 1 &&
+               h.count(SIG_ANOMALY, EVT_ENDED, END_RELEASED) == 1,
+               "events:" + h.dump());
+    }
+
+    // --- the gate ------------------------------------------------------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.in.tease = true;
+        h.in.anomaly = true;
+        h.run(1000);
+        h.t.clearEpisodes();
+        AudioFeatures f;
+        h.t.fill(f, h.now);
+        bool allIdle = true;
+        for (int s = 0; s < SIG_COUNT; ++s) if (f.episode[s].state != EP_IDLE) allIdle = false;
+        record("a closing gate ends every open episode with reason gate",
+               allIdle && h.count(SIG_BUILDUP, EVT_ENDED, END_GATE) == 1 &&
+               h.count(SIG_TEASE, EVT_ENDED, END_GATE) == 1 &&
+               h.count(SIG_ANOMALY, EVT_ENDED, END_GATE) == 1,
+               "events:" + h.dump());
+    }
+    {
+        EpHarness h;
+        h.in.level = 0.9f;
+        h.drop();
+        h.run(1000);
+        h.t.clearEpisodes();
+        record("a closing gate ends an open drop window with reason gate",
+               h.count(SIG_DROP, EVT_ENDED, END_GATE) == 1 && h.st(SIG_DROP).state == EP_IDLE,
+               "events:" + h.dump());
+    }
+
+    // --- time -----------------------------------------------------------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.run(2000);
+        // A repeated timestamp, then a backward one, then the clock moving on.
+        StructuralEpisodes::Inputs back = h.in;
+        back.now = h.now;
+        h.t.update(back);
+        back.now = h.now - 900;
+        h.t.update(back);
+        h.stopBuildup();
+        h.run(STRUCT_SECTION_WINDOW_MS + 200);
+        EpisodeEvent e;
+        h.find(SIG_BUILDUP, EVT_ENDED, e);
+        record("repeated or backward timestamps never give a negative duration",
+               h.count(SIG_BUILDUP, EVT_ENDED) == 1 && e.durationMs < 20000 &&
+               h.st(SIG_BUILDUP).lastDurationMs < 20000,
+               "events:" + h.dump());
+    }
+
+    // --- ids ------------------------------------------------------------------------
+    {
+        EpHarness h;
+        h.startBuildup();
+        const uint32_t first = h.st(SIG_BUILDUP).episodeId;
+        h.stopBuildup();
+        h.run(STRUCT_SECTION_WINDOW_MS + 200);
+        h.startBuildup();
+        const uint32_t second = h.st(SIG_BUILDUP).episodeId;
+        record("each new episode gets a new episodeId",
+               first != 0 && second != first && second == first + 1,
+               "ids " + std::to_string(first) + " then " + std::to_string(second));
+    }
+
+    // --- the drop window --------------------------------------------------------------
+    // No preparation: still opens a window, provisional until the payoff is judged.
+    {
+        EpHarness h;
+        h.in.level = 0.9f;
+        h.drop();
+        const bool provisional = h.st(SIG_DROP).state == EP_ACTIVE && !h.features().dropConfirmed;
+        h.run(STRUCT_DROP_PLATEAU_MS + 200);
+        EpisodeEvent c;
+        record("an onset with no preparation opens a provisional window that a sustained payoff confirms",
+               provisional && h.features().dropConfirmed && h.find(SIG_DROP, EVT_CONFIRMED, c) &&
+               h.count(SIG_DROP, EVT_ENDED) == 0,
+               "events:" + h.dump());
+    }
+    {
+        EpHarness h;
+        h.in.level = 0.1f;
+        h.drop();
+        h.run(STRUCT_DROP_PLATEAU_MS + 200);
+        EpisodeEvent e;
+        const bool got = h.find(SIG_DROP, EVT_ENDED, e);
+        record("an onset with no preparation and no payoff is closed as an impact",
+               got && e.reason == END_IMPACT && h.count(SIG_DROP, EVT_CONFIRMED) == 0 &&
+               h.st(SIG_DROP).state == EP_IDLE,
+               "events:" + h.dump());
+    }
+    // A dip inside the window is not the end of the payoff.
+    {
+        EpHarness h;
+        h.in.level = 0.9f;
+        h.drop();
+        h.run(STRUCT_DROP_PLATEAU_MS + 500);
+        h.in.level = 0.2f;
+        h.run(2000);                                    // shorter than the window
+        const bool dipHeld = h.count(SIG_DROP, EVT_ENDED) == 0;
+        h.in.level = 0.9f;
+        h.run(1000);
+        record("a mid-drop dip shorter than the window does not end it",
+               dipHeld && h.count(SIG_DROP, EVT_ENDED) == 0 && h.st(SIG_DROP).state == EP_ACTIVE,
+               "events:" + h.dump());
+    }
+    // A payoff that falls and stays down ends as faded, at its last holding frame.
+    {
+        EpHarness h;
+        h.in.level = 0.9f;
+        h.drop();
+        h.run(STRUCT_DROP_PLATEAU_MS + 500);
+        const unsigned long lastHold = h.now;
+        h.in.level = 0.2f;
+        h.run(STRUCT_SECTION_WINDOW_MS + 300);
+        EpisodeEvent e;
+        const bool got = h.find(SIG_DROP, EVT_ENDED, e);
+        record("a drop window ends with reason faded when the level falls and stays down",
+               got && e.reason == END_FADED && e.atMs == lastHold,
+               "last holding frame " + std::to_string(lastHold) + " ms, events:" + h.dump());
+    }
+    // A long steady payoff outlives any layer, ends by replacement, and only times out at the bound.
+    {
+        EpHarness h;
+        h.in.level = 0.9f;
+        h.drop();
+        h.run(30000);
+        const bool open30 = h.st(SIG_DROP).state == EP_ACTIVE && h.count(SIG_DROP, EVT_ENDED) == 0;
+        h.startDescent();
+        EpisodeEvent e;
+        const bool got = h.find(SIG_DROP, EVT_ENDED, e);
+        record("a drop window stays open through a long steady payoff and ends with replaced when a descent starts",
+               open30 && got && e.reason == END_REPLACED,
+               "events:" + h.dump());
+    }
+    {
+        EpHarness h;
+        h.in.level = 0.9f;
+        h.drop();
+        const unsigned long onsetAt = h.now;
+        h.run(STRUCT_DROP_MAX_MS - 2000);
+        const bool before = h.count(SIG_DROP, EVT_ENDED) == 0;
+        h.run(4000);
+        EpisodeEvent e;
+        const bool got = h.find(SIG_DROP, EVT_ENDED, e);
+        record("a drop window only reaches timeout at the safety bound",
+               before && got && e.reason == END_TIMEOUT && e.atMs - onsetAt >= STRUCT_DROP_MAX_MS - 33,
+               "events:" + h.dump());
+    }
+    {
+        EpHarness h;
+        h.in.level = 0.9f;
+        h.drop();
+        h.run(3000);
+        h.startBuildup();
+        EpisodeEvent e;
+        const bool got = h.find(SIG_DROP, EVT_ENDED, e);
+        record("a new buildup replaces an open drop window",
+               got && e.reason == END_REPLACED && h.st(SIG_BUILDUP).state == EP_ACTIVE,
+               "events:" + h.dump());
+    }
+
+    // --- the ring ---------------------------------------------------------------------
+    {
+        EpHarness h;
+        for (int i = 0; i < 40; ++i) {                  // 80 events through a 32 record ring
+            h.in.anomaly = true;
+            h.run(66);
+            h.in.anomaly = false;
+            h.run(66);
+        }
+        const uint32_t newest = h.t.newestSeq();
+        const uint32_t oldest = h.t.oldestSeq();
+        bool ascending = true, matches = true;
+        uint32_t prev = 0;
+        for (uint32_t q = oldest; q <= newest; ++q) {
+            EpisodeEvent e;
+            if (!h.t.eventBySeq(q, e)) { matches = false; continue; }
+            if (e.seq != q) matches = false;
+            if (prev && e.seq != prev + 1) ascending = false;
+            prev = e.seq;
+        }
+        EpisodeEvent stale, beyond;
+        record("the event ring wraps without losing the newest records and seq never goes backwards",
+               newest == 80 && newest - oldest + 1 == uint32_t(StructuralEpisodes::RING) &&
+               matches && ascending &&
+               !h.t.eventBySeq(oldest - 1, stale) && !h.t.eventBySeq(newest + 1, beyond),
+               "newest " + std::to_string(newest) + ", oldest " + std::to_string(oldest));
+    }
+    {
+        EpHarness h;
+        h.startBuildup();
+        h.run(500);
+        const uint32_t before = h.t.newestSeq();
+        h.t.clearEpisodes();
+        h.t.update(h.in);                                // a fresh clock after a reset
+        record("a reset keeps the ring, so a reader never loses an end decided by it",
+               h.t.newestSeq() > before && h.count(SIG_BUILDUP, EVT_ENDED, END_GATE) == 1,
+               "events:" + h.dump());
+    }
+
+    // --- through the real analyser --------------------------------------------------------
+    // A step up out of a descent: the drop must end it in the firmware and clear the
+    // detector's own active flag, so anything reading features.descent stops too, and
+    // the payoff sitting above the slow mean must not open a buildup inside the drop.
+    {
+        AudioProcessor p;
+        const auto fr = runAmplitudeSchedule(p, {{12, 0.10f, 0.10f}, {12, 0.008f, 0.008f},
+                                                 {20, 0.10f, 0.10f}});
+        float dropSec = -1.0f;
+        for (const StructFrame& f : fr) if (f.drop) { dropSec = f.sec; break; }
+        bool descentWasOn = false, clearedAfter = true, buildupAfter = false;
+        for (const StructFrame& f : fr) {
+            if (f.sec < dropSec - 0.2f && f.descent > 0.0f) descentWasOn = true;
+            if (dropSec >= 0.0f && f.sec >= dropSec && f.sec < dropSec + 3.0f &&
+                (f.descent > 0.0f || f.buildup > 0.0f)) clearedAfter = false;
+            if (dropSec >= 0.0f && f.sec > dropSec && f.buildup > 0.0f) buildupAfter = true;
+        }
+        const StructuralEpisodes& eps = p.structuralEpisodes();
+        int dropStarts = 0, descentEndsDrop = 0, teaseResolved = 0, buildupStarts = 0;
+        for (uint32_t q = eps.oldestSeq(); q && q <= eps.newestSeq(); ++q) {
+            EpisodeEvent e;
+            if (!eps.eventBySeq(q, e)) continue;
+            if (e.signal == SIG_DROP && e.kind == EVT_STARTED) ++dropStarts;
+            if (e.signal == SIG_DESCENT && e.kind == EVT_ENDED && e.reason == END_DROP) ++descentEndsDrop;
+            if (e.signal == SIG_TEASE && e.kind == EVT_ENDED && e.reason == END_RESOLVED) ++teaseResolved;
+            if (e.signal == SIG_BUILDUP && e.kind == EVT_STARTED) ++buildupStarts;
+        }
+        record("a real drop out of a descent ends the descent and clears its active flag",
+               dropSec > 0.0f && descentWasOn && clearedAfter && descentEndsDrop == 1,
+               "drop at " + std::to_string(dropSec) + " s, descent was on " +
+               std::to_string(descentWasOn) + ", flags clear for 3 s " + std::to_string(clearedAfter) +
+               ", descent ended by drop " + std::to_string(descentEndsDrop) + " times");
+        record("a real drop opens one window, resolves the tease and does not open a buildup inside itself",
+               dropStarts == 1 && teaseResolved == 1 && buildupStarts == 0 && !buildupAfter,
+               "window starts " + std::to_string(dropStarts) + ", teases resolved " +
+               std::to_string(teaseResolved) + ", buildup starts " + std::to_string(buildupStarts));
+
+        const uint32_t seqBefore = eps.newestSeq();
+        p.resetTracking();
+        std::vector<float> quiet(NUM_SAMPLES, 0.0f);
+        p.submitSamples(quiet.data(), quiet.size());
+        const AudioFeatures after = p.analyzeAudio();
+        bool idle = true;
+        for (int s = 0; s < SIG_COUNT; ++s) if (after.episode[s].state != EP_IDLE) idle = false;
+        bool ended = false;
+        for (uint32_t q = eps.newestSeq(); q > seqBefore; --q) {
+            EpisodeEvent e;
+            if (eps.eventBySeq(q, e) && e.signal == SIG_DROP && e.kind == EVT_ENDED &&
+                e.reason == END_GATE) ended = true;
+        }
+        record("a source change ends the open drop window with reason gate and leaves every signal idle",
+               idle && ended && eps.newestSeq() > seqBefore,
+               "seq " + std::to_string(seqBefore) + " to " + std::to_string(eps.newestSeq()));
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Layers and animations bound to episodes
+// -----------------------------------------------------------------------------
+//
+// The features are built by hand, which is the contract: the director and the
+// manager read only what the firmware's episodes report. Nothing here runs the
+// detectors, and checkEpisodes above covers the episodes themselves.
+struct LayerRig {
+    SceneRegistry        reg;
+    MoodHistory          mood;
+    SceneDirector        dir;
+    AudioHistoryTracker  hist;
+    LayerManager         lm;
+    CRGB                 buf[16];
+    AudioFeatures        f;
+    uint32_t             nextId[SIG_COUNT];
+
+    LayerRig() : dir(mood, reg) {
+        std::fill(buf, buf + 16, CRGB::Black);
+        lm.setLEDs(buf, 16);
+        lm.setLength(16);
+        for (int s = 0; s < SIG_COUNT; ++s) nextId[s] = 0;
+    }
+
+    // Open a new episode of a signal, or move the open one to another state.
+    void open(int sig, uint8_t state = EP_ACTIVE) {
+        f.episode[sig].state = state;
+        f.episode[sig].episodeId = ++nextId[sig];
+        f.episode[sig].elapsedMs = 0;
+    }
+    void setState(int sig, uint8_t state) { f.episode[sig].state = state; }
+    void end(int sig) { f.episode[sig].state = EP_IDLE; }
+
+    void step(unsigned long ms = 33) {
+        simAdvance(ms);
+        dir.maybeInjectReactiveLayer(lm, f, millis());
+        lm.updateLayers(f, hist.getHistory());
+        lm.renderLayers();
+    }
+    void run(unsigned long ms) {
+        for (unsigned long t = 0; t < ms; t += 33) step();
+    }
+    int count(LayerType t) const { return lm.countLayersOfType(t); }
+    int owned(int sig) const {
+        int n = 0;
+        for (int i = 0; i < lm.activeCount(); ++i) if (lm.getLayerOwnerSignal(i) == sig) ++n;
+        return n;
+    }
+    int ownedAny() const {
+        int n = 0;
+        for (int i = 0; i < lm.activeCount(); ++i) if (lm.getLayerOwnerSignal(i) >= 0) ++n;
+        return n;
+    }
+};
+
+void checkEpisodeLayers() {
+    // --- a layer follows its episode, not a timer ---------------------------------
+    {
+        LayerRig r;
+        r.open(SIG_BUILDUP);
+        r.run(200);
+        const bool attached = r.count(LayerType::BUILDUP_SWELL) == 1 &&
+                              r.lm.hasOwned(SIG_BUILDUP, r.f.episode[SIG_BUILDUP].episodeId);
+        int cls = -1;
+        for (int i = 0; i < r.lm.activeCount(); ++i) {
+            if (r.lm.getLayerType(i) == LayerType::BUILDUP_SWELL) cls = int(r.lm.getLayerClass(i));
+        }
+        record("a buildup layer appears when its episode starts, in the section class",
+               attached && cls == int(LayerClass::SECTION),
+               "swell layers " + std::to_string(r.count(LayerType::BUILDUP_SWELL)) + ", class " +
+               std::to_string(cls));
+
+        r.run(30000);                                   // far longer than any old timer
+        record("a buildup layer outlives every timer the old injector used while the episode is open",
+               r.count(LayerType::BUILDUP_SWELL) == 1,
+               "swell layers after 30 s: " + std::to_string(r.count(LayerType::BUILDUP_SWELL)));
+
+        r.end(SIG_BUILDUP);
+        r.step();
+        bool fading = false;
+        for (int i = 0; i < r.lm.activeCount(); ++i) {
+            if (r.lm.getLayerOwnerSignal(i) == SIG_BUILDUP && r.lm.isLayerReleasing(i)) fading = true;
+        }
+        r.run(LayerManager::kReleaseMs + 100);
+        record("a buildup layer is gone within its fade time after the episode ends",
+               fading && r.count(LayerType::BUILDUP_SWELL) == 0,
+               "fading on the next frame " + std::to_string(fading) + ", left after " +
+               std::to_string(LayerManager::kReleaseMs + 100) + " ms: " +
+               std::to_string(r.count(LayerType::BUILDUP_SWELL)));
+    }
+
+    // --- the layer stays while the episode waits out its window ----------------------
+    {
+        LayerRig r;
+        r.open(SIG_DESCENT);
+        r.run(500);
+        r.setState(SIG_DESCENT, EP_FADING);
+        r.run(1000);
+        record("a descent layer stays through the fading state and is bound to the descent",
+               r.count(LayerType::DESCENT_COOL) == 1 && r.owned(SIG_DESCENT) == 1,
+               "cool layers " + std::to_string(r.count(LayerType::DESCENT_COOL)));
+    }
+
+    // --- a drop releases the buildup layer and the tease layer ------------------------
+    {
+        LayerRig r;
+        r.open(SIG_BUILDUP);
+        r.open(SIG_TEASE);
+        r.run(500);
+        const bool both = r.owned(SIG_BUILDUP) == 1 && r.owned(SIG_TEASE) == 1;
+        // What the firmware reports on the onset: both ended, a drop window opened.
+        r.end(SIG_BUILDUP);
+        r.end(SIG_TEASE);
+        r.open(SIG_DROP);
+        r.f.dropConfirmed = true;
+        r.f.dropConfidence = 0.7f;
+        r.run(LayerManager::kReleaseMs + 100);
+        record("a drop releases the buildup layer",
+               both && r.owned(SIG_BUILDUP) == 0 && r.count(LayerType::BUILDUP_SWELL) == 0,
+               "buildup layers " + std::to_string(r.owned(SIG_BUILDUP)));
+        record("a drop releases the tease layer",
+               r.owned(SIG_TEASE) == 0 && r.count(LayerType::MOOD_ARC) == 0,
+               "tease layers " + std::to_string(r.owned(SIG_TEASE)));
+        record("a confirmed drop window carries a sustained layer, and the onset its one-shots",
+               r.owned(SIG_DROP) == 1 && r.count(LayerType::HIGHLIGHT) == 1 &&
+               r.count(LayerType::ENERGY) == 1,
+               "window " + std::to_string(r.owned(SIG_DROP)) + ", highlight " +
+               std::to_string(r.count(LayerType::HIGHLIGHT)) + ", energy " +
+               std::to_string(r.count(LayerType::ENERGY)));
+    }
+
+    // --- one-shots run their own envelope and fire once ---------------------------------
+    {
+        LayerRig r;
+        r.open(SIG_DROP);
+        r.f.dropConfirmed = true;
+        r.run(500);
+        const bool fired = r.count(LayerType::HIGHLIGHT) == 1;
+        r.run(4500);                                    // past both one-shots, window still open
+        record("the drop onset's one-shots expire on their own while the window's layer stays",
+               fired && r.count(LayerType::HIGHLIGHT) == 0 && r.count(LayerType::ENERGY) == 0 &&
+               r.owned(SIG_DROP) == 1,
+               "highlight " + std::to_string(r.count(LayerType::HIGHLIGHT)) + ", energy " +
+               std::to_string(r.count(LayerType::ENERGY)) + ", window " +
+               std::to_string(r.owned(SIG_DROP)) + " after 5 s, and they did not fire again");
+    }
+    {
+        // Two strips, one director: each strip gets its own one-shots from the one onset.
+        LayerRig a;
+        LayerManager second;
+        CRGB buf2[16];
+        std::fill(buf2, buf2 + 16, CRGB::Black);
+        second.setLEDs(buf2, 16);
+        second.setLength(16);
+        a.open(SIG_DROP);
+        a.f.dropConfirmed = true;
+        simAdvance(33);
+        a.dir.maybeInjectReactiveLayer(a.lm, a.f, millis());
+        a.dir.maybeInjectReactiveLayer(second, a.f, millis());
+        record("every strip gets the drop's one-shots from the one onset",
+               a.count(LayerType::HIGHLIGHT) == 1 && second.countLayersOfType(LayerType::HIGHLIGHT) == 1,
+               "first strip " + std::to_string(a.count(LayerType::HIGHLIGHT)) + ", second " +
+               std::to_string(second.countLayersOfType(LayerType::HIGHLIGHT)));
+    }
+    {
+        LayerRig r;
+        r.open(SIG_DROP);                               // provisional: never confirmed
+        r.f.dropConfirmed = false;
+        r.run(1000);
+        record("a provisional drop window drives the one-shots alone",
+               r.owned(SIG_DROP) == 0 && r.count(LayerType::HIGHLIGHT) == 1,
+               "window layers " + std::to_string(r.owned(SIG_DROP)));
+    }
+
+    // --- overlays ---------------------------------------------------------------------------
+    {
+        LayerRig r;
+        r.open(SIG_TEASE);
+        r.open(SIG_ANOMALY);
+        r.run(300);
+        const bool up = r.owned(SIG_TEASE) == 1 && r.owned(SIG_ANOMALY) == 1;
+        r.end(SIG_ANOMALY);
+        r.run(LayerManager::kReleaseMs + 100);
+        record("tease and anomaly layers come and go on their own episodes",
+               up && r.owned(SIG_TEASE) == 1 && r.owned(SIG_ANOMALY) == 0,
+               "tease " + std::to_string(r.owned(SIG_TEASE)) + ", anomaly " +
+               std::to_string(r.owned(SIG_ANOMALY)));
+    }
+
+    // --- a scene change does not lose a layer whose episode is still open -----------------
+    {
+        LayerRig r;
+        r.open(SIG_BUILDUP);
+        r.run(300);
+        r.lm.clearLayers();
+        r.run(100);
+        record("a layer lost to a scene change is attached again while its episode is open",
+               r.count(LayerType::BUILDUP_SWELL) == 1,
+               "swell layers " + std::to_string(r.count(LayerType::BUILDUP_SWELL)));
+    }
+
+    // --- nothing owned outlives its episode ----------------------------------------------------
+    {
+        LayerRig r;
+        r.open(SIG_BUILDUP);
+        r.open(SIG_TEASE);
+        r.open(SIG_ANOMALY);
+        r.run(500);
+        r.end(SIG_BUILDUP);
+        r.end(SIG_TEASE);
+        r.end(SIG_ANOMALY);
+        r.open(SIG_DESCENT);
+        r.run(500);
+        r.end(SIG_DESCENT);
+        r.run(LayerManager::kReleaseMs + 100);
+        record("no owner-bound layer outlives its episode",
+               r.ownedAny() == 0,
+               "owned layers left: " + std::to_string(r.ownedAny()));
+    }
+
+    // --- the cap and the priority classes -----------------------------------------------------------
+    {
+        LayerRig r;
+        for (int i = 0; i < 4; ++i) r.lm.addLayer(new DrawNothingLayer(1.0f), LayerType::OVERLAY, 0);
+        r.open(SIG_BUILDUP);
+        r.run(200);
+        record("a section layer makes room by evicting a lower class, and the cap holds",
+               r.lm.activeCount() == 4 && r.count(LayerType::BUILDUP_SWELL) == 1,
+               "count " + std::to_string(r.lm.activeCount()) + ", swell " +
+               std::to_string(r.count(LayerType::BUILDUP_SWELL)));
+    }
+    {
+        LayerRig r;
+        for (int i = 0; i < 4; ++i) {
+            r.lm.addLayer(new DrawNothingLayer(1.0f), LayerType::OVERLAY, 0, LayerClass::OVERLAY);
+        }
+        r.open(SIG_TEASE);                              // overlay against overlay
+        r.run(200);
+        record("a newcomer of the same class is refused rather than evicting an older one",
+               r.lm.activeCount() == 4 && r.owned(SIG_TEASE) == 0,
+               "count " + std::to_string(r.lm.activeCount()) + ", tease layers " +
+               std::to_string(r.owned(SIG_TEASE)));
+    }
+    {
+        LayerRig r;
+        r.open(SIG_BUILDUP);
+        r.open(SIG_DESCENT);                            // two section layers
+        r.run(200);
+        r.lm.addLayer(new DrawNothingLayer(1.0f), LayerType::OVERLAY, 0, LayerClass::SCENE);
+        r.lm.addLayer(new DrawNothingLayer(1.0f), LayerType::OVERLAY, 0, LayerClass::SCENE);
+        // An accent arrives against a full manager whose oldest layers are sections.
+        const bool kept = r.lm.addLayer(new DrawNothingLayer(1.0f), LayerType::REACTIVE, 450);
+        record("an accent never evicts a section layer just because the section is oldest",
+               !kept && r.count(LayerType::BUILDUP_SWELL) == 1 && r.count(LayerType::DESCENT_COOL) == 1 &&
+               r.lm.activeCount() == 4,
+               "accent kept " + std::to_string(kept) + ", count " + std::to_string(r.lm.activeCount()));
+    }
+    {
+        LayerRig r;
+        // Every episode at once, with the scene already holding layers.
+        r.lm.addLayer(new DrawNothingLayer(1.0f), LayerType::OVERLAY, 0);
+        r.lm.addLayer(new DrawNothingLayer(1.0f), LayerType::OVERLAY, 0);
+        r.open(SIG_BUILDUP);
+        r.open(SIG_TEASE);
+        r.open(SIG_ANOMALY);
+        r.open(SIG_DROP);
+        r.f.dropConfirmed = true;
+        int maxSeen = 0;
+        for (int i = 0; i < 300; ++i) {
+            r.step();
+            if (r.lm.activeCount() > maxSeen) maxSeen = r.lm.activeCount();
+        }
+        record("the cap is never exceeded with every episode open at once",
+               maxSeen <= 4, "the most layers seen at once was " + std::to_string(maxSeen));
+    }
+
+    // --- the animations follow the episode ---------------------------------------------------------------
+    {
+        TensionRamp ramp;
+        AudioFeatures f;
+        f.episode[SIG_BUILDUP].state = EP_ACTIVE;
+        float atSix = 0.0f, atTwelve = 0.0f;
+        for (int ms = 0; ms <= 14000; ms += 33) {
+            f.episode[SIG_BUILDUP].elapsedMs = uint32_t(ms);
+            const float v = ramp.update(f, 0.033f);
+            if (ms == 6006) atSix = v;
+            if (ms == 13992) atTwelve = v;
+        }
+        record("a long buildup develops over its whole length rather than pinning at full",
+               atSix > 0.3f && atSix < 0.7f && atTwelve > 0.95f,
+               "tension " + std::to_string(atSix) + " at 6 s and " + std::to_string(atTwelve) + " at 14 s");
+
+        f.episode[SIG_BUILDUP].state = EP_FADING;
+        const float held = ramp.update(f, 0.5f);
+        f.episode[SIG_BUILDUP].state = EP_IDLE;
+        float after = held;
+        for (int i = 0; i < 60; ++i) after = ramp.update(f, 0.033f);
+        record("tension holds while the episode waits out its window and falls when it ends",
+               held > 0.95f && after < 0.05f,
+               "held " + std::to_string(held) + ", after 2 s idle " + std::to_string(after));
+    }
+}
+
 // The capture format is the only channel between the browser and here, so it gets
 // its own check. Without one, a change to the header layout or the block order
 // would show up as every tuning number being wrong rather than as a failure.
@@ -3267,6 +4249,9 @@ int main(int argc, char** argv) {
     setPhase("checkMoodPartition");  checkMoodPartition();
     setPhase("checkAudioProcessor"); checkAudioProcessor();
     setPhase("checkReplay");         checkReplay();
+    setPhase("checkStructuralDetectors"); checkStructuralDetectors();
+    setPhase("checkEpisodes");       checkEpisodes();
+    setPhase("checkEpisodeLayers");  checkEpisodeLayers();
 
     g_watchdogRun.store(false, std::memory_order_relaxed);
     watchdog.join();

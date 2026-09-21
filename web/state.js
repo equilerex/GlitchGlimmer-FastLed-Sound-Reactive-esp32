@@ -58,6 +58,8 @@ export const state = reactive({
   // Open by default where it docks beside the telemetry; on narrower screens it
   // is a slide-over that would cover the stage.
   hwDrawerOpen: window.innerWidth >= 1101,
+  // Right-panel tab: 'led' or 'tuning'.
+  hwTab: 'led',
 
   hw: {
     activeStrip: 0,
@@ -89,6 +91,8 @@ export const state = reactive({
     sceneFrozen: false,
     selectedSceneIndex: -1,
     sceneCatalog: [], // [{ index, name }]
+    layerCatalog: [], // [{ index, name }] every layer type the manual trigger can add
+    triggerLayerIndex: -1,
     mood: '—',
     predicted: '—',
     sceneElapsed: '0.0s',
@@ -146,6 +150,12 @@ export const state = reactive({
     anomaly: 0,
     gateGain: 1.0,
     spectralFlatness: 0,
+    // Episode state as the firmware reports it. Held, never derived.
+    episodes: {},
+    displacement: 0,
+    arming: 0,
+    dropConfidence: 0,
+    dropConfirmed: false,
     events: [],
     hideGateEvents: false,
     eventHold: {

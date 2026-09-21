@@ -74,3 +74,5 @@ from winning over the selected WinLibs runtime. Do not repair Git's global PATH.
 ## Written memory
 
 This repo keeps its own trail, and the `jookoi-paper-trail` skill owns its formats. `_architecture/TODO.md` is the live working set, `BACKLOG.md` holds unscoped items, `ARCHITECTURE.md` holds why the repo is shaped this way, `VISUALIZER_UI.md` holds the browser visualizer and UI architecture, `plans/` holds the audit and its fix plan, and `archive/` holds flushed history. A change that makes any of them wrong is not finished until that file is fixed.
+
+The music research is in `docs/music-research/` (`MODEL.md` first). Read it before changing anything that decides what a drop, buildup, tease, breakdown or section is, or that answers one with a layer or an animation. `ARCHITECTURE.md`, "Musical events and musical states", lists the rules that follow from it.

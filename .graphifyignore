@@ -1,0 +1,34 @@
+# Same syntax as .gitignore. Keeps graphify to the source and the written docs.
+
+# Build output, toolchains, generated bundles
+.pio/
+.tools/
+dist/
+node_modules/
+web/data/
+web/live/
+web/vendor/
+
+# Captures and binaries
+*.f32
+*.wasm
+*.png
+*.log
+*.csv
+sim-run.txt
+
+# Tool and editor state
+.git/
+.idea/
+.vscode/
+.fleet/
+.serena/
+.superpowers/
+.agents/
+.ai/
+.claude/
+graphify-out/
+
+# Old plans and specs, and vendored research dumps
+docs/superpowers/
+_architecture/archive/

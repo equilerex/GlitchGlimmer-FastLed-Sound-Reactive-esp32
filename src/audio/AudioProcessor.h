@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <arduinoFFT.h>
 #include "AudioFeatures.h"
+#include "StructuralEpisodes.h"
 #include "../config/Config.h"
 
 // AudioProcessor: captures audio via I2S and performs FFT-based feature extraction
@@ -140,6 +141,8 @@ private:
     // began, so a plateau wobbling across the threshold is not a climb. No
     // cooldown, see BUILDUP_HOLD_MS.
     bool          buildupActive         = false;
+    unsigned long buildupSince          = 0;       // when the open buildup was confirmed
+    bool          buildupLatched        = false;   // set by a drop, cleared when the displacement falls back
     unsigned long buildupHoldSince      = 0;
     unsigned long buildupLastExceededMs = 0;
     float         buildupFromLevel      = 0.0f;
@@ -149,6 +152,10 @@ private:
     unsigned long descentHoldSince      = 0;
     unsigned long descentLastExceededMs = 0;
     float         descentFromLevel      = 0.0f;
+
+    // The episode lifecycle built on the flags above: state, timing, end reasons
+    // and the event ring. See StructuralEpisodes.h.
+    StructuralEpisodes episodes;
 
     // DROP's preceding quiet. A drop follows a breakdown, so the passage has to
     // have been quiet for DROP_ARM_MS before a slam counts, and at most one drop
@@ -195,6 +202,9 @@ private:
     void updateStructure(AudioFeatures& features, unsigned long now);
 
 public:
+    const StructuralEpisodes& structuralEpisodes() const { return episodes; }
+    StructuralEpisodes&       structuralEpisodesForTuning() { return episodes; }
+
     AudioProcessor();            // Construct and initialize FFT resources
     ~AudioProcessor();           // Clean up allocated resources
 

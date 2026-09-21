@@ -37,6 +37,18 @@ CI invokes `tools/build-wasm.sh` as `bash tools/build-wasm.sh` rather than
 depending on the executable bit surviving checkout. The script's shebang is
 still useful for local shells, but the workflow must not assume file modes.
 
+## Structural event lifecycle — 2026-09-21
+
+Tasks 1 to 5 of `plans/2026-09-21-structural-event-lifecycle.md` are built: the firmware episode state machine and event ring, the WASM exports and ring drain, owner-bound layers with priority eviction, the animations on episodes, and the structure card. Native harness 553/553, `pio run` (esp32s3, gnu++11) flash 26.0% and RAM 9.4%, `npm run wasm` clean, `npm test` 31 of 32 (the one failure is `hardware settings use physical scale by default` in `test/viz/hwStore.test.js`, in code this work did not touch).
+
+- [ ] Buildup sustain (2026-09-22): a confirmed buildup now stays open through a plateau until a descent, a drop or the gate ends it, or `BUILDUP_SUSTAIN_MAX_MS` (60 s) passes, and `features.buildup` is floored at 0.01 while it is open. Changed in `AudioProcessor::updateStructure`, not built or run. Run `npm run native` and `pio run`; a harness check that expects a buildup to end when the displacement decays will now fail and should be rewritten to expect it to hold.
+- [ ] Task 6, real audio: replay a `.f32` recorded with the page's `Record` button that is long enough to contain sections, check starts, ends, reasons and durations, then tune the four windows in the tuning drawer. The only capture in `docs/` is 2.3 s, and the demo signal cannot produce a buildup, so none of the windows is tuned.
+- [ ] Look at the structure card in a foreground browser tab. It builds and the JS parses, but it was not rendered.
+- [ ] Owner review: `dropConfidence` weights, the descent counting as preparation (0.4), whether a drop should end a tease that began before the buildup, and the layer choice per episode.
+- [ ] Density plan, redo of a wrong first pass (2026-09-21). The first pass removed rows and folded them into an accordion; the owner wanted every value kept and visible at once. Now: every row is back and the column fits 1080p (measured scrollHeight equals clientHeight at a 1014 px viewport, no events yet). Order: health chips, Structure beside Live Event Stream, Level and Tempo, Scene clock, spectrum, Frequency drives, Music coordinates (fat value bar over a 2 px confidence strip), then the state groups in two balanced CSS columns. Volume, peak, average, centroid and dominant band now have bars (sqrt scale for the raw amplitudes). Snapshot and Record moved to the header. Open: foreground check with the event stream populated, 1101 px and phone widths.
+- [x] `tools/serve-web.js` served the committed `dist/` whenever it existed, and the pre-commit hook refreshes `dist/` only at commit, so the page silently showed a stale bundle during uncommitted work. It now serves `web/` and takes `--dist` for the bundle.
+- [ ] Tease redefinition (owner, 2026-09-21): a tease is not tied to a buildup or drop. It is the established tune continuing while something odd is mixed in (new timbre, off elements) at steady tempo, or the sound cutting in and out. The current detector is post-drop 12 s, a hush, or a level-variance fake-out. Needs a timbral-novelty or spectral-departure feature; not started.
+
 ## Context
 
 ESP32 sound-reactive LED firmware. PlatformIO, board `ttgo-t1`, FastLED on pins 25/33, TFT_eSPI on 18/19/5/16/23, INMP441 I2S mic on 26/27/32. `src/` is also the audio analysis and the animation library, and three entry points drive it: `src/main.ino` on the board, `src/sim_main.cpp` as the host harness, `src/wasm_main.cpp` in the browser.
