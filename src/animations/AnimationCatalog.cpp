@@ -101,5 +101,17 @@ const std::array<AnimationMeta, static_cast<size_t>(AnimationType::COUNT)> anima
     { AnimationType::RAINBOW_MARCH,      "Rainbow March",       MoodType::DANCY,  0.70f, 0.57f, []() { return new RainbowMarchAnimation(); } },
     { AnimationType::BREATHING,          "Breathing",           MoodType::FLOATY, 0.30f, 0.08f, []() { return new BreathingAnimation(); } },
     { AnimationType::BEAT_TRAILS,        "Beat Trails",         MoodType::CALM,   0.50f, 0.36f, []() { return new BeatTrailsAnimation(); } },
-    { AnimationType::BPM_STRIPES,        "BPM Stripes",         MoodType::ENERGETIC, 0.75f, 0.62f, []() { return new BpmAnimation(); } }
+    { AnimationType::BPM_STRIPES,        "BPM Stripes",         MoodType::ENERGETIC, 0.75f, 0.62f, []() { return new BpmAnimation(); } },
+    { AnimationType::LIQUID_DREAM,       "Liquid Dream",        MoodType::CALM,   0.20f, 0.35f, []() { return new LiquidDreamAnimation(); } },
+    { AnimationType::DREAMWAVE_AURORA,   "Dreamwave Aurora",    MoodType::FLOATY, 0.25f, 0.38f, []() { return new DreamwaveAuroraAnimation(); } },
+    { AnimationType::FIRE_TRIBE,         "Fire Tribe",          MoodType::DANCY,  0.55f, 0.68f, []() { return new FireTribeAnimation(); } },
+    { AnimationType::COSMIC_CHAOS,       "Cosmic Chaos",        MoodType::WEIRD,  0.78f, 0.84f, []() { return new CosmicChaosAnimation(); } },
+    { AnimationType::COSMIC_BEAST,       "Cosmic Beast",        MoodType::INTENSE,0.88f, 0.92f, []() { return new CosmicBeastAnimation(); } },
+    { AnimationType::TRIPPY_HIPPIE,      "Trippy Hippie",       MoodType::FLOATY, 0.45f, 0.58f, []() { return new TrippyHippieAnimation(); } },
+    { AnimationType::PLASMA_EFFECT,      "Plasma Effect",       MoodType::CALM,   0.40f, 0.48f, []() { return new PlasmaEffectAnimation(); } },
+    { AnimationType::PLASMA_EFFECT_TWO,  "Plasma Effect 2",     MoodType::ENERGETIC,0.65f,0.78f, []() { return new PlasmaEffectTwoAnimation(); } },
+    { AnimationType::LAVA_LAMP_TWO,      "Lava Lamp 2",         MoodType::TEASE,  0.38f, 0.52f, []() { return new LavaLampTwoAnimation(); } },
+    { AnimationType::THREE_SIN,          "Three Sin",           MoodType::DANCY,  0.52f, 0.64f, []() { return new ThreeSinAnimation(); } },
+    { AnimationType::TWO_SIN_PSY,        "Two Sin nPsy",        MoodType::WEIRD,  0.58f, 0.72f, []() { return new TwoSinPsyAnimation(); } },
+    { AnimationType::RAINBOW_GLITTER,    "Rainbow with Glitter",MoodType::DANCY,  0.50f, 0.66f, []() { return new RainbowWithGlitterAnimation(); } }
 }};

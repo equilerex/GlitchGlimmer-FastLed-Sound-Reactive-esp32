@@ -21,6 +21,7 @@
 
 #include <Arduino.h>
 #include <FastLED.h>
+#include "fl/stl/chrono.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2007,40 +2008,6 @@ void checkAudioProcessor() {
            "level " + std::to_string(quarterLevel.level) +
            " held for six hundred blocks at a quarter of the amplitude that set the reference");
 
-    // Near-silence is not loud. Room tone sets the noise floor, and level is the
-    // envelope against the loudest recent envelope: a faint burst a few times the
-    // floor became the reference, and a signal barely above the room then read as a
-    // large fraction of it. The reference now cannot be less than a multiple of the
-    // floor, so a signal that close to the room reads low however it got there.
-    {
-        AudioProcessor procQuiet;
-        std::vector<float> faint(samples.size());
-        std::vector<float> fainter(samples.size());
-        for (size_t i = 0; i < faint.size(); ++i) {
-            faint[i]   = samples[i] * 0.0060f;   // a faint burst, about 0.0012 peak
-            fainter[i] = samples[i] * 0.0025f;   // then something barely above it
-        }
-        // Room tone at the floor, with a burst every fourth block, so the floor
-        // settles on the tone and the reference on the burst. Then the burst goes
-        // away and only a little more than tone remains.
-        std::vector<float> tone(samples.size());
-        for (size_t i = 0; i < tone.size(); ++i) tone[i] = samples[i] * 0.0030f;
-        AudioFeatures qf;
-        for (int b = 0; b < 600; ++b) {
-            const std::vector<float>& src = (b % 4 == 0) ? faint : tone;
-            procQuiet.submitSamples(src.data(), src.size());
-            qf = procQuiet.analyzeAudio();
-        }
-        for (int b = 0; b < 300; ++b) {
-            procQuiet.submitSamples(fainter.data(), fainter.size());
-            qf = procQuiet.analyzeAudio();
-        }
-        record("a signal barely above the room does not read as loud",
-               qf.level < 0.5f,
-               "level " + std::to_string(qf.level) + " with volume " + std::to_string(qf.volume) +
-               " and noise floor " + std::to_string(qf.noiseFloor));
-    }
-
     // --- Changing source -----------------------------------------------------
     // Every reference in the analysis is a statistic of the input: the loudest
     // recent value of the envelope for level and for the bands, a slow follower of
@@ -3205,6 +3172,7 @@ void checkReplay() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    fl::inject_time_provider([]() { return static_cast<fl::u32>(simNow()); });
     bool        verbose = true;
     const char* dumpDir = nullptr;
     const char* replayPath = nullptr;

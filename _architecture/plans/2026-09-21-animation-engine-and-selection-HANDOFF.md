@@ -4,7 +4,7 @@
 
 ## System status at handoff
 
-- **Native test harness (`npm run native`)**: 364 of 364 checks passed. Zero allocations in steady-state analysis.
+- **Native test harness (`npm run native`)**: 364 of 364 checks passed at handoff (418 now, see below). Zero allocations in steady-state analysis.
 - **Frontend test suite (`npm test`)**: 32 of 32 unit tests passed.
 - **WebAssembly build (`npm run wasm`)**: Compiled cleanly with Emscripten 6.0.9 into `web/live/glitchglimmer.wasm`.
 - **Device build (`pio run -e esp32s3`)**: Compiled cleanly under `-std=gnu++11` (Flash 25.2%, RAM 9.1%).
@@ -35,6 +35,28 @@ The audio pipeline now produces rich, normalized, gain-invariant musical state e
 
 3. **Structural Events (`f.dropDetected`, `f.teaseDetected`, `f.buildup`, `f.descent`, `f.anomaly`)**:
    - Clear structural signals for triggering breakdowns, drop flashes, build-up sweeps, or anomaly glitches.
+
+## Progress since this handoff (same day, later session)
+
+Everything below is uncommitted. Native harness 418 of 418, `npm test` 32 of 32, `npm run wasm` and `pio run -e esp32s3` build. None of it has run on hardware, and the selector has not been watched on live audio: an automated browser tab is `hidden` and throttled, so that check needs a real foreground tab at `?source=demo`.
+
+Done from the roadmap:
+1. Profiling. `src/animations/AnimationProfile.h` holds a 7-axis target per animation and `profileDistance`. Values are first estimates. Design and rejected alternatives: `plans/decisions/001-select-scenes-by-distance-in-music-space.md`.
+2. Rhythm integration. `src/animations/BeatClock.h`. Heartbeat, Beat Scanner, Gentle Pulse Wave, Color Slam and Neon Beat Tunnel run on it. Rising Tension, Strobe Pulse and Pop Fade follow `f.buildup` through `TensionRamp`. Lava Cyber Storm, Space Wizards, Playa Chaos and Hybrid follow coordinates through `HoldLatch` and `HoldSelect` instead of a mode timer. Roadmap names `GentlePulseWave`, `BeatScanner` and `NeonBeatTunnel`; a `BpmWavePulse` was named there but does not exist.
+3. Selection. `SceneRegistry::pickSceneByMusic`, `sceneDistance`, a recent-scene ring in `SceneState`, and a margin plus dwell in `SceneDirector::update`. The ladder stays as the fallback for hand-built snapshots.
+4. Events. `maybeInjectReactiveLayer` answers a drop and a buildup directly, with cooldown members on the director.
+5. Ports. Eight animations from `D:/repos/Serenity/digital-rgb-led-universal-controller/src/animations/themes` are in `src/animations/ThemeAnimations.h`, each driven by the music. 44 animations are registered.
+
+Also changed: the browser panel (missing methods and CSS; `Mood State` is now `Structure`), a floor on `level`'s reference (`LEVEL_REF_MIN_OVER_NOISE`), and per-animation seeding of FastLED's generator in the harness.
+
+Left, in order of value:
+1. Watch the selector on live audio and tune the profiles. Nothing else can be judged until this is done.
+2. Port the remaining themes: Liquid Dream, Dreamwave Aurora, Fire Tribe Wonderland, Cosmic Chaos, Cosmic Beast of Many Moods, Trippy Hippie Wonderland, both Plasma Effects, Lava Lamp 2, Three Sin, Two Sin nPsy, Rainbow with Glitter. They were dismissed once as not sound reactive; the eight already ported show the pattern for making them so (speed from tempo, density from activity, pulse from `BeatClock`, brightness from `hsvLevel()`).
+3. Give Alien Breath, Bass Pulse Storm, Twilight Ripple, Aurora and Neon Flow a coordinate input, and replace the `CRGB temp[n]` stack array in `MultiLayeredHybrid` with a member buffer.
+4. Decide what `level` should mean. See `BACKLOG.md`.
+5. Layer composition (roadmap item 4) is untouched: how base animations combine with overlay layers is still additive as before.
+
+Two things that cost time this session. The harness shares FastLED's random generator across animations, so an animation that draws from it changed whether Noise Wave and Pacifica lit until each got its own seed. And a check for near-silence reading low could not be written, because the tonal harness signals never form a noise floor.
 
 ## Next steps (Step 4 roadmap)
 

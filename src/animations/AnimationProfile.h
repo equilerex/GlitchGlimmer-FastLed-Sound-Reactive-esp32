@@ -84,6 +84,18 @@ inline const AnimationProfile& animationProfile(AnimationType type) {
         /* BREATHING             */ {{0.10f, 0.05f, kAny, kAny, 0.60f, 0.20f, kAny}, ROLE_RHYTHM},
         /* BEAT_TRAILS           */ {{0.36f, 0.40f, kAny, kAny, 0.80f, 0.50f, kAny}, ROLE_RHYTHM},
         /* BPM_STRIPES           */ {{0.62f, 0.50f, kAny, 0.50f, 0.80f, 0.60f, kAny}, ROLE_RHYTHM},
+        /* LIQUID_DREAM          */ {{0.35f, 0.20f, 0.50f, 0.30f, kAny, 0.25f, 0.20f}, ROLE_BED},
+        /* DREAMWAVE_AURORA      */ {{0.38f, 0.25f, 0.60f, 0.25f, kAny, 0.30f, 0.30f}, ROLE_BED},
+        /* FIRE_TRIBE            */ {{0.68f, 0.60f, 0.40f, 0.70f, 0.70f, 0.55f, 0.40f}, ROLE_RHYTHM},
+        /* COSMIC_CHAOS          */ {{0.84f, 0.80f, 0.75f, 0.50f, 0.40f, 0.75f, 0.85f}, ROLE_BED},
+        /* COSMIC_BEAST          */ {{0.92f, 0.85f, 0.60f, 0.80f, 0.80f, 0.85f, 0.60f}, ROLE_RHYTHM},
+        /* TRIPPY_HIPPIE         */ {{0.58f, 0.50f, 0.70f, 0.30f, 0.60f, 0.45f, 0.40f}, ROLE_BED},
+        /* PLASMA_EFFECT         */ {{0.48f, 0.40f, 0.60f, 0.40f, kAny, 0.40f, 0.30f}, ROLE_BED},
+        /* PLASMA_EFFECT_TWO     */ {{0.78f, 0.70f, 0.70f, 0.50f, 0.70f, 0.65f, 0.40f}, ROLE_RHYTHM},
+        /* LAVA_LAMP_TWO         */ {{0.52f, 0.30f, 0.30f, 0.75f, kAny, 0.35f, 0.30f}, ROLE_BED},
+        /* THREE_SIN             */ {{0.64f, 0.55f, 0.60f, 0.50f, kAny, 0.50f, 0.40f}, ROLE_BED},
+        /* TWO_SIN_PSY           */ {{0.72f, 0.65f, 0.80f, 0.40f, 0.60f, 0.60f, 0.70f}, ROLE_BED},
+        /* RAINBOW_GLITTER       */ {{0.66f, 0.60f, 0.80f, 0.30f, 0.60f, 0.55f, 0.30f}, ROLE_BED},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(AnimationType::COUNT),
                   "one profile per AnimationType");
