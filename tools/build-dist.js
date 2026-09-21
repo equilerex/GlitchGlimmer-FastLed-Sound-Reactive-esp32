@@ -31,7 +31,10 @@ const destination = path.join(root, 'dist');
 fs.rmSync(destination, { recursive: true, force: true });
 fs.cpSync(source, destination, {
   recursive: true,
-  filter: (entry) => !entry.split(path.sep).includes('.obj'),
+  filter: (entry) => {
+    const parts = entry.split(path.sep);
+    return !parts.includes('.obj') && path.basename(entry) !== 'build.json';
+  },
 });
 
 console.log('Wrote committed demo bundle to dist/.');

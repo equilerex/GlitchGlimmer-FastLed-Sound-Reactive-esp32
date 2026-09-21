@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlitchGlimmer</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>
+  [v-cloak] { display: none; }
+</style>
+<script type="importmap">
+  {
+    "imports": {
+      "vue": "./vendor/vue.esm-browser.js"
+    }
+  }
+</script>
+</head>
+<body>
+
+<div id="app" v-cloak class="bench-app">
+
+  <header class="topbar">
+    <div class="brand">
+      <b>GlitchGlimmer</b>
+      <span>fastled &middot; wasm</span>
+    </div>
+
+    <div class="seg" role="group" aria-label="View">
+      <button type="button" :aria-pressed="s.mode === 'recording'"
+              @click="selectMode('recording')">Recording</button>
+      <button type="button" :aria-pressed="s.mode === 'live'"
+              @click="selectMode('live')">Live microphone</button>
+    </div>
+
+    <span class="topbar-spacer"></span>
+
+    <dl class="telemetry">
+      <div><dt>LEDs</dt><dd id="t-count">&mdash;</dd></div>
+      <div><dt>Pitch</dt><dd id="t-pitch">&mdash;</dd></div>
+      <div><dt>Draw</dt><dd id="t-draw">&mdash;</dd></div>
+      <div><dt>Frame</dt><dd id="t-frame">&mdash;</dd></div>
+    </dl>
+
+    <button type="button" class="drawer-btn" :aria-pressed="s.hwDrawerOpen" @click="toggleHwDrawer" title="LED & Hardware Configuration">
+      <span>⚙ LED Settings</span>
+    </button>
+  </header>
+
+  <!-- Slide-away LED Settings Drawer -->
+  <aside class="rail drawer-panel" :class="{ open: s.hwDrawerOpen }">
+    <div class="drawer-header">
+      <h2>LED & Stage Settings</h2>
+      <div class="drawer-actions">
+        <button type="button" class="btn-sm" @click="resetHwSettings" title="Reset all hardware settings to defaults">Reset</button>
+        <button type="button" class="btn-close" @click="toggleHwDrawer" aria-label="Close settings">&times;</button>
+      </div>
+    </div>
+
+    <section class="group">
+      <h2>Strip</h2>
+      <div class="field">
+        <label for="hw-strip">Which strip</label>
+        <select id="hw-strip" v-model.number="s.hw.activeStrip" @change="syncHw">
+          <option v-for="(strip, i) in s.hw.strips" :key="i" :value="i">Strip {{ i }}</option>
+        </select>
+      </div>
+      <div class="profiles" role="group" aria-label="LED profile"
+           v-if="s.hw.strips[s.hw.activeStrip]">
+        <button v-for="p in profiles" :key="p.id" type="button" class="profile"
+                :aria-pressed="s.hw.strips[s.hw.activeStrip].profile === p.id"
+                @click="selectProfile(p.id)">
+          <span class="swatch" :style="{ background: swatchFor(p) }"></span>
+          <span>{{ p.name }}</span>
+          <span class="pitch">{{ (1000 / p.pitch).toFixed(0) }}/m</span>
+        </button>
+      </div>
+      <p class="note">{{ profileNote }}</p>
+    </section>
+
+    <section class="group">
+      <h2>Shape</h2>
+      <div class="chips" role="group" aria-label="Path shape">
+        <button v-for="name in shapes" :key="name" type="button" class="chip"
+                :aria-pressed="s.hw.strips[s.hw.activeStrip] &&
+                               s.hw.strips[s.hw.activeStrip].shape === name"
+                @click="applyShape(name)">{{ name }}</button>
+      </div>
+      <p class="note">Drag across the stage to replace this strip with a new path.</p>
+    </section>
+
+    <section class="group">
+      <h2>Scene</h2>
+      <div class="chips" role="group" aria-label="Strip look">
+        <button type="button" class="chip" :aria-pressed="s.hw.look === 'realistic'"
+                @click="s.hw.look = 'realistic'; syncHw()">realistic</button>
+        <button type="button" class="chip" :aria-pressed="s.hw.look === 'stylized'"
+                @click="s.hw.look = 'stylized'; syncHw()">stylized</button>
+      </div>
+      <p class="note">Realistic draws each strip's physical package to scale; stylized is the glowing-dot look.</p>
+      <div class="field">
+        <label for="hw-surface">Surface</label>
+        <select id="hw-surface" v-model="s.hw.surface" @change="syncHw">
+          <option v-for="su in surfaces" :key="su.id" :value="su.id">{{ su.name }}</option>
+        </select>
+      </div>
+      <div class="field" v-if="s.hw.strips[s.hw.activeStrip]">
+        <label for="hw-length">Software strip length <b>{{ (s.hw.strips[s.hw.activeStrip]?.lengthM || 0).toFixed(1) }} m</b></label>
+        <input type="range" id="hw-length" min="0.1" max="20" step="0.1"
+               v-model.number="s.hw.strips[s.hw.activeStrip].lengthM" @input="syncHw">
+      </div>
+      <div class="field" v-if="s.hw.strips[s.hw.activeStrip]">
+        <label for="hw-density">Density <b>{{ density.toFixed(0) }} LEDs/m &middot; {{ (1000 / density).toFixed(1) }} mm</b></label>
+        <input type="range" id="hw-density" min="3" max="500" step="1"
+               :value="density" @input="setDensity">
+      </div>
+      <p class="note">Drag the stage to set strip length. The selected LED type sets the spacing; pitch can still be overridden.</p>
+      <div class="field">
+        <label for="hw-zoom">Stage zoom <b>{{ zoomPercent }}%</b></label>
+        <input type="range" id="hw-zoom" min="-90" max="900" step="1"
+               :value="zoomPercent" @input="setZoomPercent">
+      </div>
+    </section>
+
+    <section class="group">
+      <h2>Camera</h2>
+      <div class="field">
+        <label for="hw-ev">Exposure <b>{{ s.hw.ev > 0 ? '+' : '' }}{{ s.hw.ev.toFixed(1) }} EV</b></label>
+        <input type="range" id="hw-ev" min="-2" max="3" step="0.1" v-model.number="s.hw.ev" @input="syncHw">
+      </div>
+      <div class="field">
+        <label for="hw-spill">Room spill <b>{{ (s.hw.spill * 100).toFixed(0) }}%</b></label>
+        <input type="range" id="hw-spill" min="0" max="2.2" step="0.05" v-model.number="s.hw.spill" @input="syncHw">
+      </div>
+      <div class="field">
+        <label for="hw-room-glow">Room glow size <b>{{ (s.hw.roomGlow || 2.5).toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-room-glow" min="0.5" max="5.0" step="0.1" v-model.number="s.hw.roomGlow" @input="syncHw">
+      </div>
+      <div class="field">
+        <label for="hw-grain">Sensor grain <b>{{ (s.hw.grain * 100).toFixed(0) }}%</b></label>
+        <input type="range" id="hw-grain" min="0" max="0.6" step="0.01" v-model.number="s.hw.grain" @input="syncHw">
+      </div>
+      <p class="note">Push exposure until the peaks clip to white for realistic glow.</p>
+    </section>
+
+    <section class="group">
+      <h2>Hardware</h2>
+      <div class="field" v-if="s.hw.strips[s.hw.activeStrip]">
+        <label for="hw-pixel-size">Pixel size <b>{{ (s.hw.strips[s.hw.activeStrip]?.pixelSize || 0).toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-pixel-size" min="0.2" max="2.0" step="0.1"
+               v-model.number="s.hw.strips[s.hw.activeStrip].pixelSize" @input="syncHw">
+      </div>
+      <div class="field" v-if="s.hw.strips[s.hw.activeStrip]">
+        <label for="hw-glow-size">Glow size <b>{{ (s.hw.strips[s.hw.activeStrip]?.glowSize || 0).toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-glow-size" min="0.1" max="5.0" step="0.1"
+               v-model.number="s.hw.strips[s.hw.activeStrip].glowSize" @input="syncHw">
+      </div>
+      <div class="field" v-if="s.hw.strips[s.hw.activeStrip]">
+        <label for="hw-intensity">Brightness <b>{{ (s.hw.strips[s.hw.activeStrip]?.intensity || 0).toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-intensity" min="0.1" max="3.0" step="0.1" v-model.number="s.hw.strips[s.hw.activeStrip].intensity" @input="syncHw">
+      </div>
+    </section>
+  </aside>
+
+  <main class="stage-column">
+    <!-- Active Animation & Compositor Status Bar -->
+    <section class="cockpit-bar">
+      <div class="cockpit-item highlight scene-box">
+        <div class="cockpit-label-row">
+          <span class="cockpit-label">Current Scene</span>
+          <span class="scene-meta-pill"
+                v-if="s.mode === 'live' && currentSceneMeta"
+                :title="'Associated Mood: ' + currentSceneMeta.mood + ' | Role: ' + currentSceneMeta.role + ' | Target Intensity: ' + Math.round(currentSceneMeta.intensity * 100) + '%'">
+            {{ currentSceneMeta.mood }} · {{ currentSceneMeta.role }}
+          </span>
+          <button v-if="s.mode === 'live'"
+                  type="button"
+                  class="scene-freeze-btn"
+                  :class="{ frozen: s.live.sceneFrozen }"
+                  @click="toggleSceneFreeze"
+                  :title="s.live.sceneFrozen ? 'Scene is locked. Click to resume auto music transitions.' : 'Freeze to current scene to test animation & layers in isolation.'">
+            {{ s.live.sceneFrozen ? '🔒 Frozen' : '🔓 Auto' }}
+          </button>
+        </div>
+        <div class="cockpit-scene-control" v-if="s.mode === 'live'">
+          <select class="cockpit-scene-select"
+                  :class="{ frozen: s.live.sceneFrozen }"
+                  :value="s.live.sceneFrozen ? s.live.selectedSceneIndex : -1"
+                  @change="onSceneSelect($event)"
+                  title="Choose an animation to freeze (grouped by mood), or Auto for dynamic music engine">
+            <option :value="-1">Auto ({{ s.live.scene }})</option>
+            <optgroup v-for="grp in groupedSceneCatalog" :key="grp.label" :label="grp.label">
+              <option v-for="sc in grp.scenes" :key="sc.index" :value="sc.index">
+                {{ sc.name }} — {{ sc.mood }} ({{ sc.role }})
+              </option>
+            </optgroup>
+          </select>
+        </div>
+        <b class="cockpit-value" v-else>{{ s.recording.scene }}</b>
+      </div>
+      <div class="cockpit-item mood-item">
+        <span class="cockpit-label" title="The structural moment the analyser reports (tease, buildup, drop, descent, weird, silent) or steady. Scenes are picked from the music coordinates, not from a loudness ladder.">Structure</span>
+        <div class="cockpit-tags">
+          <span class="badge mood">{{ structureLabel }}</span>
+        </div>
+      </div>
+      <div class="cockpit-item layers-box" v-if="s.mode === 'live'">
+        <span class="cockpit-label">Active Layers ({{ s.live.layers.length }})</span>
+        <div class="cockpit-layers" v-if="s.live.layers.length > 0">
+          <span v-for="(l, idx) in s.live.layers" :key="idx" class="badge layer" :title="'Active for ' + (l.elapsedMs / 1000).toFixed(1) + 's'">
+            {{ l.name }} <small>({{ (l.elapsedMs / 1000).toFixed(1) }}s)</small>
+          </span>
+        </div>
+        <span class="cockpit-empty" v-else>No overlay layers</span>
+      </div>
+      <div class="cockpit-item time-box" v-if="s.mode === 'live'">
+        <span class="cockpit-label">Scene Time</span>
+        <span class="cockpit-time">
+          <b>{{ s.live.sceneElapsed }}</b> / min {{ s.live.sceneMin }}
+        </span>
+      </div>
+      <div class="cockpit-item audio-quick" v-if="s.mode === 'live'">
+        <span class="cockpit-label">Audio Level</span>
+        <div class="quick-level">
+          <span class="meter"><span class="meter-fill" :style="{ width: Math.min(100, s.live.level * 100) + '%' }"></span></span>
+          <span class="lamp" :class="{ on: s.live.beat }"></span>
+          <b>{{ s.live.bpm > 0 ? Math.round(s.live.bpm) + ' BPM' : '—' }}</b>
+        </div>
+      </div>
+    </section>
+
+    <div class="stage">
+      <canvas id="view" aria-label="LED strip output"></canvas>
+      <div class="stage-overlay">
+        <p class="stage-hint">Drag to redraw strip &middot; hover pixel to inspect</p>
+      </div>
+    </div>
+
+    <div id="error" class="error" hidden></div>
+
+    <section class="bench-footer">
+      <header class="bench-head">
+        <h2>Bench strip</h2>
+        <div class="legend">
+          <span><b>tick</b> every 10 px</span>
+          <span><b>bar</b> per-pixel luma</span>
+        </div>
+        <span class="topbar-spacer"></span>
+        <div class="legend"><span id="t-power">&mdash;</span></div>
+      </header>
+      <canvas id="bench" class="bench" aria-label="Pixel indices and values"></canvas>
+      <div class="footer-readout-slot">
+        <div class="inspector" v-if="s.hw.inspect">
+          <span>index <b>{{ s.hw.inspect.index }}</b></span>
+          <span>strip <b>{{ s.hw.inspect.strip }}</b></span>
+          <span>rgb <b>{{ s.hw.inspect.hex }}</b>
+            <i class="inspector-dot" :style="{ background: s.hw.inspect.hex }"></i></span>
+          <span>at <b>{{ s.hw.inspect.mm }} mm</b></span>
+        </div>
+      </div>
+      <div class="footer-readout-slot">
+        <div class="fit-readout" v-if="s.hw.fit">
+          <span>strip <b>{{ s.hw.fit.stripM.toFixed(2) }} m</b></span>
+          <span>path <b>{{ s.hw.fit.pathM.toFixed(2) }} m</b></span>
+          <span :class="{ over: s.hw.fit.overM > 0.02 }">
+            {{ s.hw.fit.overM > 0 ? 'short by' : 'spare' }}
+            <b>{{ Math.abs(s.hw.fit.overM).toFixed(2) }} m</b>
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <section class="transport" v-show="s.mode === 'recording'">
+      <div class="controls">
+        <button class="primary" type="button" @click="togglePlay">
+          {{ s.recording.playing ? 'Pause' : 'Play' }}
+        </button>
+        <input type="range" min="0" :max="s.recording.maxScrub" :value="s.recording.scrub" step="1"
+               @input="scrubTo" aria-label="Scrub through the recording">
+      </div>
+      <div class="scenarios">
+        <span class="hud-label">Recording</span>
+        <div class="button-row">
+          <button v-for="(btn, idx) in s.recording.buttons" :key="idx"
+                  :aria-pressed="btn.active" @click="playScenario(idx)">
+            {{ btn.name }}
+          </button>
+        </div>
+        <p class="note">{{ s.recording.note }}</p>
+      </div>
+    </section>
+  </main>
+
+  <aside class="diagnostics">
+    <div v-show="s.mode === 'recording'">
+      <h2>Recording</h2>
+      <div class="hud">
+        <div class="hud-cell">
+          <span class="hud-label">Scene</span>
+          <span class="hud-value">{{ s.recording.scene }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Mood</span>
+          <span class="hud-value">{{ s.recording.mood }}</span>
+        </div>
+        <div class="hud-cell">
+          <span class="hud-label">Time</span>
+          <span class="hud-value">{{ s.recording.time }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div v-show="s.mode === 'live'" class="diagnostics-live-view">
+      <div class="hud-top-actions">
+        <h2>Audio & Logic Telemetry</h2>
+        <div class="controls">
+          <button class="primary" type="button" :aria-pressed="s.live.source === 'mic'" @click="useMic">Microphone</button>
+          <button type="button" :aria-pressed="s.live.source === 'demo'" @click="useDemo">Demo Track</button>
+          <button type="button" :aria-pressed="s.live.source === 'synth'" @click="useSynth">Synth Tone</button>
+          <button type="button" class="btn-diag" @click="copyDiagnostics($event)" title="Copy token-efficient compact diagnostics summary (<250 tokens) to clipboard">📋 Copy Diagnostics</button>
+        </div>
+      </div>
+
+      <!-- Demo & Custom Audio Track Player Controls -->
+      <div class="audio-player-bar" v-if="s.live.source === 'demo'">
+        <div class="audio-player-left">
+          <button type="button" class="btn-audio-icon" @click="toggleAudioPlay" :title="s.live.audioPlaying ? 'Pause Audio' : 'Play Audio'">
+            <span>{{ s.live.audioPlaying ? '⏸ Pause' : '▶ Play' }}</span>
+          </button>
+          <button type="button" class="btn-audio-icon" @click="toggleAudioMute" :title="s.live.audioMuted ? 'Unmute Sound' : 'Mute Sound (visuals continue)'">
+            <span>{{ s.live.audioMuted ? '🔇 Muted' : '🔊 Sound On' }}</span>
+          </button>
+          <select class="audio-track-select" v-model="s.live.demoTrack" @change="changeDemoTrack" aria-label="Demo Audio Track">
+            <option value="edm">EDM Beat (128 BPM)</option>
+            <option value="jazz">Jazzy Percussion</option>
+            <option v-if="s.live.hasCustomAudio" value="custom">File: {{ s.live.audioFileName }}</option>
+          </select>
+        </div>
+        <div class="audio-player-right">
+          <label class="btn-file-upload" title="Load any song (MP3, WAV, OGG, FLAC) to drive visualizer">
+            <span>📁 Load Audio File...</span>
+            <input type="file" accept="audio/*" @change="onAudioFileSelected" hidden>
+          </label>
+        </div>
+      </div>
+
+      <!-- Logic & Audio Primary Grid: Always visible without scrolling -->
+      <div class="telemetry-deck">
+        <div class="deck-card" title="LEVEL &amp; ENERGY TELEMETRY&#10;&#10;• Level: Gain-invariant loudness (0..1) from 512-sample RMS envelope vs 20s rolling peak and noise floor.&#10;• Volume: Raw PCM RMS amplitude: sqrt(sum(s²)/N).&#10;• Peak: Maximum absolute sample value in block: max(|s|).&#10;• Energy: Sum of 255 FFT magnitude bins: sum(|X[k]|).">
+          <div class="card-head">
+            <span class="card-title">Level & Energy</span>
+            <b class="card-num">{{ (s.live.level * 100).toFixed(1) }}%</b>
+          </div>
+          <span class="meter"><span class="meter-fill" :style="{ width: Math.min(100, s.live.level * 100) + '%' }"></span></span>
+          <div class="card-stats">
+            <span>vol: <b>{{ s.live.volume.toFixed(4) }}</b></span>
+            <span>peak: <b>{{ s.live.peak.toFixed(4) }}</b></span>
+            <span>noise: <b>{{ s.live.noiseFloor.toFixed(4) }}</b></span>
+            <span>energy: <b>{{ Math.round(s.live.energy) }}</b></span>
+          </div>
+        </div>
+
+        <div class="deck-card" title="TEMPO &amp; BEAT TELEMETRY&#10;&#10;• BPM &amp; Autocorrelation: Lag-based periodicity tracking over 192-block onset novelty history (60-198 BPM) weighted with a 120 BPM prior to suppress octave-skipping.&#10;• Beat Phase: Continuous 0..100% cyclical phase accumulator locked via PLL nudging on detected downbeats.&#10;• Confidence: Autocorrelation peak salience / SNR (0..100%).&#10;• Dynamics: Ratio of recent dynamic range: (peak - floor) / peak.&#10;• Noise Floor: Adaptive minimum RMS follower over last 10s.&#10;• Gate: Schmitt trigger (open > 2.0x floor, shut < 1.5x floor).">
+          <div class="card-head">
+            <span class="card-title">Tempo & Beat</span>
+            <div class="beat-pill">
+              <span class="lamp" :class="{ on: s.live.beat }"></span>
+              <b>{{ s.live.bpm > 0 ? Math.round(s.live.bpm) + ' BPM' : 'No Beat' }}</b>
+            </div>
+          </div>
+          <div class="phase-meter-wrap" title="Beat Phase: 0..100% progress toward next downbeat">
+            <span class="meter">
+              <span class="meter-fill" :style="{ width: Math.min(100, Math.max(0, (s.live.beatPhase || 0) * 100)) + '%', background: (s.live.beatConfidence || 0) > 0.4 ? '#4ade80' : '#38bdf8' }"></span>
+            </span>
+          </div>
+          <div class="card-stats">
+            <span>phase: <b>{{ ((s.live.beatPhase || 0) * 100).toFixed(0) }}%</b></span>
+            <span>conf: <b>{{ ((s.live.beatConfidence || 0) * 100).toFixed(0) }}%</b></span>
+            <span>dynamics: <b>{{ (s.live.dynamics * 100).toFixed(0) }}%</b></span>
+            <span>gate: <b>{{ s.live.presence ? 'OPEN' : 'SHUT' }}</b></span>
+          </div>
+        </div>
+
+        <div class="deck-card bands-card" title="FREQUENCY DRIVES TELEMETRY&#10;&#10;• Bass / Mid / Treble Drives: Low (&lt;200Hz), Mid (200-2000Hz), and High (&gt;2000Hz) FFT band energy normalized against each band's individual 20s rolling peak envelope (0..1).&#10;• Centroid: Energy-weighted center-of-mass frequency bin: sum(k * mag[k]) / sum(mag[k]).">
+          <div class="card-head">
+            <span class="card-title">Frequency Drives</span>
+            <span class="centroid-tag">centroid: {{ s.live.centroid.toFixed(0) }}</span>
+          </div>
+          <div class="band-bars">
+            <div class="band-bar">
+              <span class="band-name">Bass</span>
+              <span class="meter vertical"><span class="meter-fill" :style="{ height: Math.min(100, s.live.bassLevel * 100) + '%' }"></span></span>
+              <span class="band-val">{{ (s.live.bassLevel * 100).toFixed(0) }}%</span>
+            </div>
+            <div class="band-bar">
+              <span class="band-name">Mid</span>
+              <span class="meter vertical"><span class="meter-fill" :style="{ height: Math.min(100, s.live.midLevel * 100) + '%' }"></span></span>
+              <span class="band-val">{{ (s.live.midLevel * 100).toFixed(0) }}%</span>
+            </div>
+            <div class="band-bar">
+              <span class="band-name">Treble</span>
+              <span class="meter vertical"><span class="meter-fill" :style="{ height: Math.min(100, s.live.trebleLevel * 100) + '%' }"></span></span>
+              <span class="band-val">{{ (s.live.trebleLevel * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="deck-card coords-card" title="8-dimensional music coordinates. Each coordinate is a normalized signal derived from the audio analysis pipeline; hover or focus a coordinate for its data source, formula, and musical meaning.">
+          <div class="card-head">
+            <span class="card-title">Music Coordinates (8 dimensions)</span>
+            <span class="timing-tag" title="Elapsed audio time represented by this analysis block and its sample-clock frame number.">
+              sample interval: {{ (s.live.dtSeconds * 1000).toFixed(1) }} ms &middot; frame {{ s.live.sampleFrame }}
+            </span>
+          </div>
+          <div class="coords-grid">
+            <div class="coord-item" v-for="(c, name) in s.live.coords" :key="name"
+                 :title="coordTooltip(name)" :aria-label="coordTooltip(name)" tabindex="0">
+              <div class="coord-label">
+                <span class="c-name">{{ coordLabel(name) }}</span>
+                <span class="c-trend" :class="{ up: c.trend > 0.05, down: c.trend < -0.05 }"
+                      :title="c.trend > 0.05 ? 'Rising' : c.trend < -0.05 ? 'Falling' : 'Steady'"
+                      :aria-label="c.trend > 0.05 ? 'Rising' : c.trend < -0.05 ? 'Falling' : 'Steady'">
+                  {{ c.trend > 0.05 ? '↑' : c.trend < -0.05 ? '↓' : '→' }}
+                </span>
+              </div>
+              <span class="meter">
+                <span class="meter-fill" :style="{ width: Math.min(100, Math.max(0, c.value * 100)) + '%', opacity: 0.3 + 0.7 * c.conf }"></span>
+              </span>
+              <span class="coord-val">{{ (c.value * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
+          <div class="card-stats">
+            <span :class="{ 'highlight-event': s.live.buildup > 0 }" title="Buildup (Integrated Trend): Positive trend displacement in energy and activity over a 3-5s rolling window. Base data: multi-second EMA slope.">buildup: <b>{{ (s.live.buildup * 100).toFixed(0) }}%</b> <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.buildup" class="time-since">({{ secondsSince(s.live.lastSeenTimes.buildup) }})</small></span>
+            <span :class="{ 'highlight-event': s.live.descent > 0 }" title="Descent (Integrated Trend): Negative trend displacement in energy and level over a 3-5s rolling window. Base data: multi-second EMA slope.">descent: <b>{{ (s.live.descent * 100).toFixed(0) }}%</b> <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.descent" class="time-since">({{ secondsSince(s.live.lastSeenTimes.descent) }})</small></span>
+            <span title="Spectral Flatness (Wiener entropy): geometric mean divided by arithmetic mean of the FFT magnitudes. 0 is tonal; 1 is noise-like.">spectral flatness: <b>{{ (s.live.spectralFlatness * 100).toFixed(0) }}%</b></span>
+            <span v-if="s.live.anomaly > 0" class="event-badge anomaly" title="Coordinate Anomaly: Count of coordinates exhibiting abnormal divergence, zero confidence, or abrupt discontinuity (0..3).">ANOMALY {{ s.live.anomaly.toFixed(0) }}/3</span>
+            <span class="event-badge drop" :class="{ on: s.live.dropDetected || (s.live.eventHold && s.live.eventHold.drop > Date.now()) }" title="Drop Detected: Triggered when bass drive spikes >80% immediately following a buildup or silence drop-out. Latch holds for 2.5s.">DROP <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.drop" class="badge-time-ago">({{ secondsSince(s.live.lastSeenTimes.drop) }})</small></span>
+            <span class="event-badge tease" :class="{ on: s.live.teaseDetected || (s.live.eventHold && s.live.eventHold.tease > Date.now()) }" title="Tease Detected: High activity and energy with dropped bass (&lt;25%), indicating a breakdown or tension section. Latch holds for 2.5s.">TEASE <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.tease" class="badge-time-ago">({{ secondsSince(s.live.lastSeenTimes.tease) }})</small></span>
+          </div>
+        </div>
+
+        <div class="deck-card events-card" v-if="s.live.events && s.live.events.length > 0" title="LIVE EVENT STREAM&#10;Timestamped state transitions: Drops, Teases, Buildups, Descents, Mood Changes, Scene Transitions, and Silence Gate toggles.">
+          <div class="card-head">
+            <span class="card-title">Live Event Stream</span>
+            <div class="event-stream-actions">
+              <button type="button" class="btn-micro" :class="{ active: !s.live.hideGateEvents }"
+                      @click="s.live.hideGateEvents = !s.live.hideGateEvents"
+                      :title="s.live.hideGateEvents ? 'Click to show silence gate events' : 'Click to hide silence gate events'">
+                {{ s.live.hideGateEvents ? 'Gate: Hidden' : 'Gate: Shown' }}
+              </button>
+              <button type="button" class="btn-micro" @click="clearEvents" title="Clear event history">
+                Clear
+              </button>
+              <button type="button" class="btn-micro" @click="copyDiagnostics($event)" title="Copy compact diagnostics (<250 tokens) to clipboard">
+                Copy
+              </button>
+              <span class="timing-tag">{{ visibleEvents.length }} / {{ s.live.events.length }}</span>
+            </div>
+          </div>
+          <div class="event-stream">
+            <div class="event-stream-row" v-for="(ev, idx) in visibleEvents" :key="idx" :class="'ev-' + ev.type">
+              <span class="ev-time" :title="ev.rawTimeMs ? secondsSince(ev.rawTimeMs) : ''">{{ ev.time }} <small v-if="ev.rawTimeMs" class="ev-ago">({{ secondsSince(ev.rawTimeMs) }})</small></span>
+              <span class="ev-badge">{{ ev.label }}</span>
+              <span class="ev-detail" v-if="ev.detail">{{ ev.detail }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <canvas id="spectrum" class="spectrum" aria-label="Frequency spectrum of the analysis window"></canvas>
+      <p class="note">{{ s.live.note }}</p>
+
+      <div id="live-state"></div>
+    </div>
+  </aside>
+</div>
+
+<script defer src="live/glitchglimmer.js"></script>
+<script type="module" src="main.js"></script>
+</body>
+</html>

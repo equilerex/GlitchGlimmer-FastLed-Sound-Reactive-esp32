@@ -14,6 +14,10 @@ process boundary. The PlatformIO build can succeed while `program.exe` still
 fails to start if Git Bash or another MinGW installation wins `PATH`; frame
 generation needs the same compiler `bin` directory at runtime as the linker.
 
+The timestamped `web/live/build.json` belongs only to the local WASM watch loop;
+`tools/build-dist.js` excludes it from committed `dist/` so pre-push checks stay
+deterministic when no source output changed.
+
 ## Context
 
 ESP32 sound-reactive LED firmware. PlatformIO, board `ttgo-t1`, FastLED on pins 25/33, TFT_eSPI on 18/19/5/16/23, INMP441 I2S mic on 26/27/32. `src/` is also the audio analysis and the animation library, and three entry points drive it: `src/main.ino` on the board, `src/sim_main.cpp` as the host harness, `src/wasm_main.cpp` in the browser.

@@ -6,6 +6,8 @@
 executable to generate the recording frames, builds the pinned WebAssembly
 module, and copies the complete result into committed `dist/`. It does not use
 `npm run native`, because that command also executes the harness test mode.
+The local `web/live/build.json` watch stamp is intentionally excluded from
+`dist/`, so an unchanged demo does not dirty the tree on every push.
 
 The native wrapper looks for PlatformIO as `pio`, then as
 `python -m platformio`, and finally as `py -m platformio`. If all three are
