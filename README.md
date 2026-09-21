@@ -1,5 +1,17 @@
 # GlitchGlimmer
 
+### Demo build prerequisite
+
+`npm run build:dist` builds the native PlatformIO harness first, uses that
+executable to generate the recording frames, builds the pinned WebAssembly
+module, and copies the complete result into committed `dist/`. It does not use
+`npm run native`, because that command also executes the harness test mode.
+
+The native wrapper looks for PlatformIO as `pio`, then as
+`python -m platformio`, and finally as `py -m platformio`. If all three are
+missing, install it with `python -m pip install platformio`. The pre-push hook
+runs this build and rejects pushes when `dist/` changes.
+
 Sound-reactive LED firmware for an ESP32. An I2S microphone feeds an FFT, the
 spectrum drives a mood classifier, and the mood picks a scene. Each scene is a
 base animation plus reactive layers that fade in over it. Two LED strips run

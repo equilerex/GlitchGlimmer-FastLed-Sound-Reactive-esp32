@@ -53,11 +53,30 @@ if (bin) {
 const args = process.argv.slice(2);
 if (args.length === 0) args.push('run', '-e', 'native', '-t', 'exec');
 
-const result = spawnSync('pio', args, {
-  cwd: path.resolve(__dirname, '..'),
-  env,
-  stdio: 'inherit',
-  shell: process.platform === 'win32',
+const cwd = path.resolve(__dirname, '..');
+const shell = process.platform === 'win32';
+const candidates = process.platform === 'win32'
+  ? [['pio', []], ['python', ['-m', 'platformio']], ['py', ['-m', 'platformio']]]
+  : [['pio', []], ['python3', ['-m', 'platformio']], ['python', ['-m', 'platformio']]];
+
+let platformio = null;
+for (const [command, prefix] of candidates) {
+  const probe = spawnSync(command, [...prefix, '--version'], {
+    cwd, env, stdio: 'ignore', shell,
+  });
+  if (probe.status === 0) {
+    platformio = [command, prefix];
+    break;
+  }
+}
+if (!platformio) {
+  console.error('PlatformIO was not found. Install it with `python -m pip install platformio`, then retry.');
+  process.exit(1);
+}
+
+const [command, prefix] = platformio;
+const result = spawnSync(command, [...prefix, ...args], {
+  cwd, env, stdio: 'inherit', shell,
 });
 
 if (result.error) {

@@ -1,6 +1,14 @@
 # TODO
 <!-- Live working set. `jookoi-paper-trail flush` archives it and resets it. See AGENTS.md. -->
 
+## Demo build tooling note — 2026-09-21
+
+`tools/run-native.js` must not assume the `pio` launcher is on `PATH`. It probes
+`pio`, `python -m platformio`, and `py -m platformio` in that order on Windows
+(with the Python 3 variants on POSIX). This matters for IDE-triggered pre-push
+hooks, where PlatformIO may be installed in Python while its script directory
+is absent from the hook's shell `PATH`.
+
 ## Context
 
 ESP32 sound-reactive LED firmware. PlatformIO, board `ttgo-t1`, FastLED on pins 25/33, TFT_eSPI on 18/19/5/16/23, INMP441 I2S mic on 26/27/32. `src/` is also the audio analysis and the animation library, and three entry points drive it: `src/main.ino` on the board, `src/sim_main.cpp` as the host harness, `src/wasm_main.cpp` in the browser.
