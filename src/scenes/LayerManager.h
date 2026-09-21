@@ -46,8 +46,7 @@ public:
     const char* getLayerName(int index) const;
     unsigned long getLayerElapsedMs(int index) const;
 
-    template<typename... Args>
-    void addLayerByType(LayerType t, Args&&... args);  // instantiates layer by enum
+    void addLayerByType(LayerType t, unsigned long duration = 0);  // instantiates layer by enum with optional duration
 
     void applySceneLayers(const SceneDefinition& sd);  // add layers for a scene
 

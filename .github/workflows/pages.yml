@@ -1,8 +1,9 @@
 name: pages
 
-# Builds the frame recordings and the WebAssembly module from the firmware, then
-# publishes web/. Both are generated rather than committed, so this workflow is
-# the only place the site's data comes from and neither can drift from src/.
+# Publishes the committed demo bundle. Generation happens locally through
+# `npm run build:dist`; the pre-push hook refuses to push stale generated output.
+# Keeping build tools out of this deployment job makes Pages fast and makes a
+# clone usable without first reproducing the entire native/WASM toolchain.
 #
 # Enable once in the repository settings: Settings -> Pages -> Source ->
 # GitHub Actions.
@@ -27,33 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - run: pip install platformio
-
-      - name: Build the host harness
-        run: pio run -e native
-
-      - name: Record frames
-        run: .pio/build/native/program --dump-frames web/data
-
-      # The live view fetches live/glitchglimmer.js at load time, so without this
-      # step the published site serves a page whose live view 404s. Pinned to the
-      # version the module is developed against. See .github/workflows/ci.yml.
-      - uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: 6.0.9
-
-      - name: Build the WebAssembly module
-        run: tools/build-wasm.sh
-
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: web
+          path: dist
 
   deploy:
     needs: build

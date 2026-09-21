@@ -8,6 +8,8 @@
     "frames": "node tools/dump-frames.js",
     "native": "node tools/run-native.js",
     "wasm": "node tools/run-wasm.js",
+    "build:dist": "node tools/build-dist.js",
+    "setup:hooks": "node tools/install-hooks.js",
     "setup": "node tools/setup.js",
     "setup:native": "node tools/setup-native.js",
     "setup:wasm": "node tools/setup-emscripten.js",

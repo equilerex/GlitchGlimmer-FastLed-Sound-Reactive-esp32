@@ -193,12 +193,8 @@ void LayerManager::applySceneLayers(const SceneDefinition& sd) {
     }
 }
 
-// Template implementation for addLayerByType
-// This function needs to be included in the .cpp file to be available to calling code
-
-// Must include implementations of the template function for each LayerType
-template<typename... Args>
-void LayerManager::addLayerByType(LayerType t, Args&&... args) {
+// Implementation for addLayerByType with optional duration
+void LayerManager::addLayerByType(LayerType t, unsigned long duration) {
     VisualLayer* layer = nullptr;
     
     // Factory function to create the appropriate layer based on type
@@ -272,9 +268,6 @@ void LayerManager::addLayerByType(LayerType t, Args&&... args) {
     }
     
     if (layer) {
-        addLayer(layer, t);
+        addLayer(layer, t, duration);
     }
 }
-
-// Explicit template instantiations for the types used in the codebase
-template void LayerManager::addLayerByType<>(LayerType t);

@@ -93,10 +93,10 @@ public:
         // Wrapped rather than left to grow. At roughly 9 units a second this
         // passes float's exact-integer range in a few days of continuous running,
         // after which the increments stop landing.
-        // Driven by level, not loudness, for the same gain reason as the
-        // brightness above: loudness is volume * 100, so on this input it advances
-        // by about 0.008 a frame and the hue effectively stood still.
-        hueOffset += audio.pixelLevel() * 0.3f;
+        // Driven by level, modulated by tempo and activity if available.
+        const float tempoFactor = audio.music.initialized ? (0.5f + 0.5f * audio.music.tempo.value) : 1.0f;
+        const float activityFactor = audio.music.initialized ? (0.5f + 0.5f * audio.music.activity.value) : 1.0f;
+        hueOffset += audio.pixelLevel() * 0.3f * tempoFactor * activityFactor;
         if (hueOffset >= 255.0f || hueOffset < 0.0f) hueOffset = fmodf(hueOffset, 255.0f);
     }
 

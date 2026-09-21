@@ -18,6 +18,9 @@ struct SceneDefinition {
     // Alien Breath whatever the rest of the catalog grew into.
     std::vector<MoodType> structuralMoods;
     String name;
+    MoodType mood = MOOD_COUNT;
+    uint8_t role = 0;
+    float intensity = 0.5f;
 
     bool isTaggedFor(MoodType mood) const {
         return std::find(structuralMoods.begin(), structuralMoods.end(), mood) != structuralMoods.end();
@@ -48,6 +51,7 @@ public:
     float sceneDistance(const SceneState& current, const SceneDefinition& scene,
                         const MusicState& music) const;
     const SceneDefinition& get(size_t index) const;
+    int findIndex(const SceneDefinition* scene) const;
     size_t count() const;
     const std::vector<SceneDefinition>& getAll() const;
 };

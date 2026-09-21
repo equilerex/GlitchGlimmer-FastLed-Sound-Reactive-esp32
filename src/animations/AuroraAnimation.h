@@ -28,8 +28,18 @@ public:
 
     void update(CRGB* leds, int n, const AudioFeatures& f) override {
         if (n <= 0) return;
-        EVERY_N_MILLISECONDS(50) { ++t; }
-        const uint8_t bright = uint8_t(255.0f * f.pixelLevel());
+
+        // Modulate drift speed with tempo and presence if available
+        const float tempo = f.music.initialized ? f.music.tempo.value : (f.bpm > 0.0f ? f.bpm / 130.0f : 0.5f);
+        const float presence = f.music.initialized ? f.music.presence.value : f.gateGain;
+        const uint16_t stepInterval = uint16_t(60.0f - constrain(tempo * 30.0f, 0.0f, 40.0f));
+
+        EVERY_N_MILLISECONDS_I(timingObj, 50) {
+            timingObj.setPeriod(stepInterval);
+            ++t;
+        }
+
+        const uint8_t bright = uint8_t(255.0f * f.pixelLevel() * (0.6f + 0.4f * presence));
         for (int i = 0; i < n; ++i) {
             const uint8_t noise = inoise8(uint16_t(i * 20), t);
             leds[i] = ColorFromPalette(pal, noise, bright, LINEARBLEND);

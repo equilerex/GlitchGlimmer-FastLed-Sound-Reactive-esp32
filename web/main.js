@@ -45,9 +45,52 @@ const app = createApp({
     zoomPercent() {
       const zoom = Number.isFinite(this.s.hw.zoom) ? this.s.hw.zoom : 1;
       return Math.round((zoom - 1) * 100);
+    },
+    currentSceneMeta() {
+      if (this.s.mode !== 'live' || !this.s.live.sceneCatalog) return null;
+      const idx = this.s.live.selectedSceneIndex;
+      if (idx >= 0 && idx < this.s.live.sceneCatalog.length) {
+        return this.s.live.sceneCatalog[idx];
+      }
+      const curName = this.s.live.scene;
+      return this.s.live.sceneCatalog.find((sc) => sc.name === curName) || null;
+    },
+    groupedSceneCatalog() {
+      const catalog = this.s.live.sceneCatalog || [];
+      const structural = [];
+      const energetic = [];
+      const calm = [];
+
+      for (const sc of catalog) {
+        const m = (sc.mood || '').toUpperCase();
+        if (['DROP', 'BUILDUP', 'TEASE', 'DESCENT', 'WEEEEIRD', 'WEIRD'].includes(m)) {
+          structural.push(sc);
+        } else if (['INTENSE', 'ENERGETIC', 'DANCY'].includes(m)) {
+          energetic.push(sc);
+        } else {
+          calm.push(sc);
+        }
+      }
+      return [
+        { label: '💥 Structural Moments', scenes: structural },
+        { label: '🔥 High Energy & Groove', scenes: energetic },
+        { label: '🌿 Ambient & Chill', scenes: calm },
+      ];
     }
   },
   methods: {
+    secondsSince(targetMs) {
+      if (!targetMs || targetMs === 0) return '';
+      const cur = (this.s.live.sampleTimeMs > 0) ? this.s.live.sampleTimeMs : performance.now();
+      const diff = Math.max(0, (cur - targetMs) / 1000);
+      if (diff < 1) return 'just now';
+      if (diff < 60) return diff.toFixed(0) + 's ago';
+      return (diff / 60).toFixed(1) + 'm ago';
+    },
+    copyDiagnostics(event) {
+      const btn = event ? event.currentTarget : null;
+      live.copyDiagnostics(btn);
+    },
     clearEvents() {
       this.s.live.events = [];
     },
@@ -114,6 +157,17 @@ const app = createApp({
     updateTuning(index, value) {
       live.updateTuning(index, parseFloat(value));
     },
+    toggleSceneFreeze() {
+      live.toggleSceneFreeze();
+    },
+    onSceneSelect(event) {
+      const val = parseInt(event.target.value, 10);
+      if (val < 0) {
+        live.unlockScene();
+      } else {
+        live.lockScene(val);
+      }
+    },
 
     toggleHwDrawer() {
       this.s.hwDrawerOpen = !this.s.hwDrawerOpen;
@@ -150,6 +204,9 @@ const app = createApp({
       strip.pixelSize = profile.visual.pixelSize;
       strip.glowSize = profile.visual.glowSize;
       strip.intensity = profile.visual.intensity;
+      if (typeof profile.visual.ev === 'number') {
+        this.s.hw.ev = profile.visual.ev;
+      }
       this.syncHw();
     },
     setDensity(event) {

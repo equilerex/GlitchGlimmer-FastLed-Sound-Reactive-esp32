@@ -139,14 +139,16 @@ private:
     // and the climb is measured from the level at the moment the displacement
     // began, so a plateau wobbling across the threshold is not a climb. No
     // cooldown, see BUILDUP_HOLD_MS.
-    bool          buildupActive    = false;
-    unsigned long buildupHoldSince = 0;
-    float         buildupFromLevel = 0.0f;
+    bool          buildupActive         = false;
+    unsigned long buildupHoldSince      = 0;
+    unsigned long buildupLastExceededMs = 0;
+    float         buildupFromLevel      = 0.0f;
 
     // DESCENT. The mirror, with DESCENT_FALL in place of BUILDUP_CLIMB.
-    bool          descentActive    = false;
-    unsigned long descentHoldSince = 0;
-    float         descentFromLevel = 0.0f;
+    bool          descentActive         = false;
+    unsigned long descentHoldSince      = 0;
+    unsigned long descentLastExceededMs = 0;
+    float         descentFromLevel      = 0.0f;
 
     // DROP's preceding quiet. A drop follows a breakdown, so the passage has to
     // have been quiet for DROP_ARM_MS before a slam counts, and at most one drop

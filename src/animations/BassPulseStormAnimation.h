@@ -23,7 +23,10 @@ public:
         //
         // Curved, because at the level this microphone reports the drive came out
         // 0.13 and the whole strip sat at 69 of 255 through a track.
-        const float drive = f.hsvLevel() * 0.6f + f.bassLevel * 0.4f;
+        const float weight = f.music.initialized ? f.music.weight.value : f.bassLevel;
+        // beatPhase pulse accentuating the bass impact
+        const float phasePulse = 1.0f - f.beatPhase;
+        const float drive = f.hsvLevel() * 0.4f + weight * 0.4f + phasePulse * f.beatConfidence * 0.2f;
         uint8_t brightness = constrain(40 + drive * 215.0f, 40, 255);
         fill_solid(leds, count, CHSV(hue, 255, brightness));
     }

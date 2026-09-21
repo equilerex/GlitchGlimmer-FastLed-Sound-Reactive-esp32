@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// Serve web/ over HTTP for the browser visualiser.
+// Serve the committed demo bundle over HTTP for the browser visualiser.
 //
 //     npm start
 //     node tools/serve-web.js 8080
@@ -19,7 +19,10 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const ROOT = path.join(__dirname, '..', 'web');
+const repoRoot = path.join(__dirname, '..');
+const ROOT = fs.existsSync(path.join(repoRoot, 'dist', 'index.html'))
+  ? path.join(repoRoot, 'dist')
+  : path.join(repoRoot, 'web');
 const port = Number(process.argv[2] || process.env.PORT || 8000);
 
 const TYPES = {
@@ -45,10 +48,10 @@ const TYPES = {
 function notFound(res, target) {
   const body = `Not found: ${target}\n\n` +
     (target.endsWith('.wasm') || target.includes('/live/')
-      ? 'The live view needs web/live/glitchglimmer.wasm, which is generated.\n' +
-        'Run tools/build-wasm.sh first.\n'
-      : 'The frame player needs web/data/, which is generated.\n' +
-        'Run `.pio/build/native/program --dump-frames web/data` first.\n');
+      ? `The live view needs ${path.basename(ROOT)}/live/glitchglimmer.wasm.\n` +
+        'Run npm run build:dist first.\n'
+      : `The frame player needs ${path.basename(ROOT)}/data/.\n` +
+        'Run npm run build:dist first.\n');
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end(body);
 }
@@ -115,5 +118,5 @@ server.on('error', (err) => {
 
 server.listen(port, '127.0.0.1', () => {
   console.log(`GlitchGlimmer visualiser on http://127.0.0.1:${port}`);
-  console.log('Recording mode reads web/data/, live mode reads web/live/.');
+  console.log(`Serving ${path.basename(ROOT)}/ (recording data and live module included).`);
 });

@@ -43,12 +43,12 @@ This document describes how the browser visualizer and the debugger/editor UI co
 
 | File | Purpose | Key Exports & Data Structures |
 |---|---|---|
-| `src/wasm_main.cpp` | WebAssembly interface compiled via `tools/build-wasm.sh` | `gg_init`, `gg_step`, `gg_feature(index)`, `gg_scene_name`, `gg_mood_name`, `gg_layer_count`, `gg_active_layer_type`, `gg_leds0`, `gg_leds1` |
+| `src/wasm_main.cpp` | WebAssembly interface compiled via `tools/build-wasm.sh` | `gg_init`, `gg_step`, `gg_feature(index)`, `gg_scene_name`, `gg_scene_count`, `gg_scene_name_by_index`, `gg_scene_mood_by_index`, `gg_scene_role_by_index`, `gg_scene_intensity_by_index`, `gg_lock_scene`, `gg_unlock_scene`, `gg_locked_scene`, `gg_current_scene_index`, `gg_mood_name`, `gg_layer_count`, `gg_active_layer_type`, `gg_leds0`, `gg_leds1` |
 | `web/main.js` | Vue 3 root application | Connects Vue state with `hwStore`, handles mode switches (`live` vs `recording`), drawer visibility, and binding views |
 | `web/state.js` | Single reactive source of truth for UI | `state.hw` (strip configurations, presets), `state.live` (scene, mood, audio levels, layers), `state.recording` |
 | `web/live.js` | Web Audio loop & WebAssembly bridge | Manages `AudioContext`, submits mic/demo audio buffers into WASM, reads back telemetry every frame into `state.live`, manages capture recording |
 | `web/render.js` | Top-level render abstraction | Dispatches to `StripView` (stage visualizer) and `Spectrum` canvas |
-| `web/viz/StripView.js` | Photometric LED simulator | Canvas 2D multi-pass renderer: Substrate -> Glow/Halo -> Spill -> Core LEDs -> Film grain. Manages drag-to-redraw paths and visible LED guides on canvas |
+| `web/viz/StripView.js` | Photometric LED simulator | Canvas 2D multi-pass renderer: Substrate -> Environment/Diffuse (room glow size) -> Glow/Halo -> Spill -> Core LEDs -> Film grain. Manages drag-to-redraw paths and visible LED guides on canvas |
 | `web/viz/path.js` | Catmull-Rom spline calculations | Samples preset and freehand paths, places discrete LEDs along path arc length, and provides default calibration poses |
 | `web/viz/profiles.js` | LED hardware definitions | WS2812B (30/60/144 per meter), COB 480/m, fairy lights, bullet nodes. Pitch, die size, sigma diffusion parameters |
 | `web/viz/hwStore.js` | Hardware settings persistence | Loads and stores visualizer configuration into `localStorage` (`gg.hw.v2`), binds StripView and BenchStrip to reactive state |

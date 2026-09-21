@@ -13,7 +13,7 @@ const smd = (density, note) => ({
   // Every WS2812B strip is the same 10 mm ribbon carrying the same 5050
   // package. Only the cadence differs, so nothing here varies with density.
   body: SMD_BODY,
-  visual: { pixelSize: 1.0, glowSize: 1.0, intensity: 1.0 },
+  visual: { pixelSize: 1.0, glowSize: 1.5, intensity: 2.0 },
   note,
 });
 const fcob = (density, w, pcbW, note) => ({
@@ -21,14 +21,14 @@ const fcob = (density, w, pcbW, note) => ({
   pitch: 1000 / density, die: 6.0, sigma: 3.0, casing: 'cob', burst: 0,
   body: { fill: 'phosphor', len: 1000 / density, wid: w, blend: 0.22, dot: 0,
           pcb: { w: pcbW, color: '#eeece7', pads: true } },
-  visual: { pixelSize: 1.0, glowSize: 1.0, intensity: 1.0 },
+  visual: { pixelSize: 1.0, glowSize: 1.2, intensity: 1.3, ev: -0.6 },
   note,
 });
 const pebble = (mm, note) => ({
   id: `peb${mm}`, name: `Pebble ${mm / 10} cm`,
   pitch: mm, die: 5.0, sigma: 4.0, casing: 'pip', burst: 0,
   body: { fill: 'bead', len: 9, wid: 6, pcb: { w: 2.4, color: '#050506', pads: false } },
-  visual: { pixelSize: 1.0, glowSize: 0.8, intensity: 0.9 },
+  visual: { pixelSize: 1.0, glowSize: 2.0, intensity: 2.0 },
   note,
 });
 
@@ -41,7 +41,7 @@ export const PROFILES = [
     id: 'sil', name: 'IP65 silicone 60/m',
     pitch: 1000 / 60, die: 5.0, sigma: 11.0, casing: 'sleeve', burst: 0,
     body: { ...SMD_BODY, sleeve: 12 },
-    visual: { pixelSize: 1.0, glowSize: 1.5, intensity: 1.0 },
+    visual: { pixelSize: 1.0, glowSize: 1.5, intensity: 2.0 },
     note: 'A 60/m strip inside a milky sleeve. Much softer, still not seamless.',
   },
   {
@@ -49,7 +49,7 @@ export const PROFILES = [
     pitch: 1000 / 480, die: 1.8, sigma: 3.4, casing: 'cob', burst: 0,
     body: { fill: 'phosphor', len: 1000 / 480, wid: 3.4, blend: 0, dot: 1000 / 480,
             pcb: { w: 8, color: '#e8e6e0', pads: false } },
-    visual: { pixelSize: 0.8, glowSize: 0.7, intensity: 0.9 },
+    visual: { pixelSize: 0.8, glowSize: 1.2, intensity: 1.3, ev: -0.6 },
     note: 'Diffusion wider than the pitch, so the pixels fuse into one bar.',
   },
   fcob(160, 4.0, 8, 'Flip-chip COB, 5 V, one pixel per LED. Seamless at any distance.'),
@@ -72,7 +72,7 @@ export const PROFILES = [
     id: 'fairy', name: 'Fairy pip 20/m',
     pitch: 1000 / 20, die: 2.0, sigma: 3.0, casing: 'pip', burst: 1.0,
     body: { fill: 'bead', len: 4, wid: 4, pcb: { w: 0.8, color: '#5a4a3a', pads: false } },
-    visual: { pixelSize: 1.0, glowSize: 2.0, intensity: 1.1 },
+    visual: { pixelSize: 1.0, glowSize: 2.0, intensity: 2.0 },
     note: 'A tiny die in clear epoxy, so it scatters into a starburst.',
   },
 ];

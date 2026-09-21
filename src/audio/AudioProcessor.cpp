@@ -203,13 +203,15 @@ void AudioProcessor::clearStructure() {
     slowSeeded       = false;
     structuralLastMs = 0;
 
-    buildupActive    = false;
-    buildupHoldSince = 0;
-    buildupFromLevel = 0.0f;
+    buildupActive         = false;
+    buildupHoldSince      = 0;
+    buildupLastExceededMs = 0;
+    buildupFromLevel      = 0.0f;
 
-    descentActive    = false;
-    descentHoldSince = 0;
-    descentFromLevel = 0.0f;
+    descentActive         = false;
+    descentHoldSince      = 0;
+    descentLastExceededMs = 0;
+    descentFromLevel      = 0.0f;
 
     quietSince = 0;
     quietHeld  = false;
@@ -776,7 +778,13 @@ void AudioProcessor::updateMusicState(AudioFeatures& features, float spectralFlu
         ? constrain(spectralFlux / fluxReference, 0.0f, 1.0f)
         : 0.0f;
     const float gateConfidence = constrain(features.gateGain, 0.0f, 1.0f);
-    intensityTracker.update(features.level, gateConfidence, dt);
+    const float rawIntensity = constrain(
+        0.40f * features.level +
+        0.30f * activity +
+        0.20f * features.bassLevel +
+        0.10f * features.dynamics,
+        0.0f, 1.0f);
+    intensityTracker.update(rawIntensity, gateConfidence, dt);
     activityTracker.update(activity, gateConfidence, dt);
     brightnessTracker.update(constrain(features.spectrumCentroid / float(NUM_SAMPLES / 2), 0.0f, 1.0f), gateConfidence, dt);
     weightTracker.update(features.bassLevel, gateConfidence, dt);
@@ -856,32 +864,44 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // No cooldown on either. See BUILDUP_HOLD_MS for why, and note that the
     // follower supplies the property a cooldown would have been protecting: a
     // movement that stops ends its own displacement as the mean catches up.
+    const unsigned long kStructureHangoverMs = 350;
+
     if (displacement >= BUILDUP_LEVEL) {
+        buildupLastExceededMs = now;
         if (buildupHoldSince == 0) {
             buildupHoldSince = now;
             buildupFromLevel = level;
+        } else if (level < buildupFromLevel) {
+            buildupFromLevel = level;
         }
         if (now - buildupHoldSince >= BUILDUP_HOLD_MS &&
-            level - buildupFromLevel >= BUILDUP_CLIMB) {
+            (level - buildupFromLevel >= BUILDUP_CLIMB || displacement >= BUILDUP_LEVEL * 1.5f)) {
             buildupActive = true;
         }
     } else {
-        buildupHoldSince = 0;
-        buildupActive    = false;
+        if (now - buildupLastExceededMs >= kStructureHangoverMs) {
+            buildupHoldSince = 0;
+            buildupActive    = false;
+        }
     }
 
     if (displacement <= -DESCENT_LEVEL) {
+        descentLastExceededMs = now;
         if (descentHoldSince == 0) {
             descentHoldSince = now;
             descentFromLevel = level;
+        } else if (level > descentFromLevel) {
+            descentFromLevel = level;
         }
         if (now - descentHoldSince >= DESCENT_HOLD_MS &&
-            descentFromLevel - level >= DESCENT_FALL) {
+            (descentFromLevel - level >= DESCENT_FALL || -displacement >= DESCENT_LEVEL * 1.5f)) {
             descentActive = true;
         }
     } else {
-        descentHoldSince = 0;
-        descentActive    = false;
+        if (now - descentLastExceededMs >= kStructureHangoverMs) {
+            descentHoldSince = 0;
+            descentActive    = false;
+        }
     }
 
     // Reported as a displacement so a reader can see how hard the movement is, and

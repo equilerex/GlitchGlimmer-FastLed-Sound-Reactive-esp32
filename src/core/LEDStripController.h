@@ -212,6 +212,7 @@ public:
             for (int i = 0; i < stripCount; ++i) {
                 strips[i].setAnimation(scene.baseAnimation, audio);
                 strips[i].setScene(scene);                        // rebuild only on change
+                sceneDirector.maybeInjectReactiveLayer(strips[i].layers(), audio, millis());
                 strips[i].update(audio, audioHistory.getHistory());
             }
         }
@@ -246,6 +247,31 @@ public:
     // The live director is this one, not any other instance -- only this object
     // holds the SceneState that makes the director do anything.
     inline String getCurrentSceneName() const { return sceneDirector.getCurrentSceneName(); }
+    inline void lockScene(int index) { sceneDirector.lockScene(index); }
+    inline void unlockScene() { sceneDirector.unlockScene(); }
+    inline int getLockedSceneIndex() const { return sceneDirector.getLockedSceneIndex(); }
+    inline int getCurrentSceneIndex() const { return sceneDirector.getCurrentSceneIndex(); }
+    inline int getSceneCount() const { return static_cast<int>(sceneRegistry.count()); }
+    inline const char* getSceneNameByIndex(int index) const {
+        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return "";
+        return sceneRegistry.get(index).name.c_str();
+    }
+    inline const char* getSceneMoodByIndex(int index) const {
+        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return "";
+        return moodToString(sceneRegistry.get(index).mood);
+    }
+    inline const char* getSceneRoleByIndex(int index) const {
+        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return "";
+        switch (sceneRegistry.get(index).role) {
+            case 1: return "Rhythm";
+            case 2: return "Event";
+            default: return "Bed";
+        }
+    }
+    inline float getSceneIntensityByIndex(int index) const {
+        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return 0.0f;
+        return sceneRegistry.get(index).intensity;
+    }
 
     inline int layerCount(int strip) const {
         return (strip >= 0 && strip < stripCount) ? strips[strip].layerMgr.activeCount() : -1;

@@ -16,6 +16,7 @@ import { profileById, stripLengthMm, fuses } from './profiles.js';
 import {
   samplePath, placePixels, defaultPose,
 } from './path.js';
+import { DEFAULT_STRIP_CONFIGS } from './hwStore.js';
 import { paintSurface } from './surface.js';
 import {
   paintPcb, paintBodies, paintSleeve, glowSpots,
@@ -55,8 +56,20 @@ function panPath(path, panX, panY) {
 }
 
 function defaultStrip(index) {
-  // shape is null because these poses are not any SHAPES preset. A rail showing
-  // a preset as selected while the strip sits somewhere else would be lying.
+  const preset = DEFAULT_STRIP_CONFIGS[index];
+  if (preset) {
+    return {
+      profile: preset.profile,
+      lengthM: preset.lengthM,
+      pitchMm: preset.pitchMm,
+      pitchManual: preset.pitchManual,
+      pixelSize: preset.pixelSize,
+      glowSize: preset.glowSize,
+      intensity: preset.intensity,
+      shape: preset.shape,
+      pts: preset.pts.map((p) => p.slice()),
+    };
+  }
   return { profile: 'ws60', shape: null, pts: defaultPose(index) };
 }
 
@@ -87,6 +100,7 @@ export class StripView {
       pixelSize: 1,
       glowSize: 1,
       intensity: 1,
+      roomGlow: 2.5,
       strips: counts.map((_, i) => defaultStrip(i)),
     };
 
@@ -582,11 +596,13 @@ export class StripView {
   compositeEnvironment() {
     const spill = this.config.spill;
     if (spill <= 0.01) return;
+    const roomGlow = Number.isFinite(this.config.roomGlow) ? Math.max(0.1, this.config.roomGlow) : 2.5;
     if (!this._env) this._env = new Map();
     const ctx = this.ctx;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    for (const [div, alpha] of ENV_LAYERS) {
+    for (const [divBase, alpha] of ENV_LAYERS) {
+      const div = Math.max(4, Math.round(divBase * roomGlow));
       const w = Math.max(4, Math.ceil(this.width / div));
       const h = Math.max(4, Math.ceil(this.height / div));
       let e = this._env.get(div);
@@ -601,7 +617,7 @@ export class StripView {
       const ectx = e.getContext('2d');
       ectx.clearRect(0, 0, w, h);
       ectx.imageSmoothingQuality = 'high';
-      ectx.filter = 'blur(1.2px)';
+      ectx.filter = `blur(${Math.max(0.5, 1.2 * Math.min(roomGlow, 3))}px)`;
       ectx.drawImage(this.glow, 0, 0, w, h);
       ctx.imageSmoothingQuality = 'high';
       ctx.globalAlpha = Math.min(1, spill * alpha);
@@ -613,11 +629,12 @@ export class StripView {
   compositeSpill(geom) {
     const spill = this.config.spill;
     if (spill <= 0.01) return;
+    const roomGlow = Number.isFinite(this.config.roomGlow) ? Math.max(0.1, this.config.roomGlow) : 2.5;
     const ctx = this.ctx;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     ctx.globalAlpha = Math.min(1, spill * (this.config.look === 'realistic' ? 0.7 : 0.55));
-    ctx.filter = `blur(${Math.round(Math.max(geom.sigmaPx * 6, 16))}px)`;
+    ctx.filter = `blur(${Math.round(Math.max(geom.sigmaPx * 6 * roomGlow, 16 * roomGlow))}px)`;
     ctx.drawImage(this.glow, 0, 0, this.width, this.height);
     ctx.restore();
   }

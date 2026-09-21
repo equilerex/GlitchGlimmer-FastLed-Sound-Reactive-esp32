@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+
+echo "Building demo bundle before push..."
+npm run build:dist
+
+if [ -n "$(git status --short -- dist)" ]; then
+  echo >&2
+  echo "dist/ changed while building." >&2
+  echo "Commit the refreshed bundle, then push again." >&2
+  exit 1
+fi

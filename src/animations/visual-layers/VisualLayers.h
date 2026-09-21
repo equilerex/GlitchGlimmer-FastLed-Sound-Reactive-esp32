@@ -84,23 +84,29 @@ public:
 // === Layer 6: NoiseFloor Mist ===
 class NoiseFloorMistLayer : public VisualLayer {
     uint8_t baseHue = 160;
+    float levelAtten = 1.0f;
 
 public:
+    NoiseFloorMistLayer() {
+        opacity = 0.35f;
+    }
+
     void update(const AudioFeatures& audio, const AudioHistory&) override {
         // As a fraction of the highest the floor may reach, not as 80 hue units per
         // unit of floor. The floor is bounded by NOISE_FLOOR_MAX, so a fixed 80
         // units per unit left the whole term inside one hue unit and this mist was
         // the same colour on every frame of every scene.
         baseHue = uint8_t(160.0f + audio.noiseFloor / NOISE_FLOOR_MAX * 60.0f);
+        // Mist recedes when real signal is present, providing a gentle ambient floor
+        // during quiet passages without washing out active animations.
+        levelAtten = (1.0f - audio.level) * audio.gateGain;
     }
 
     void render(CRGB* leds, int count) override {
+        uint8_t val = uint8_t(72.0f * levelAtten);
+        if (val == 0) return;
         for (int i = 0; i < count; ++i) {
-            // 72 and not 20. FastLED squares CHSV's val on the way out, so a val of
-            // 20 emits a duty of 20 * 20 / 255, which is 1.6 of 255, and this mist
-            // contributed nothing on any frame of any scene. 72 is the val whose
-            // square is 20, which is the emission the 20 was written as.
-            leds[i] += CHSV(baseHue, 100, 72);
+            leds[i] += CHSV(baseHue, 100, val);
         }
     }
 
@@ -145,19 +151,30 @@ public:
 
 class TriwaveBeatLayer : public VisualLayer {
     bool direction = true;
+    float drive = 0.0f;
+    float phaseOffset = 0.0f;
 
 public:
+    TriwaveBeatLayer() {
+        opacity = 0.5f;
+    }
+
     void update(const AudioFeatures& now, const AudioHistory&) override {
         if (now.beatDetected) direction = !direction;
+        // Modulated by rhythmic presence rather than running at constant full blast.
+        // Beat confidence and level control how much light is added.
+        drive = now.hsvLevel() * (0.3f + 0.7f * now.beatConfidence) * now.gateGain;
+        phaseOffset = now.beatPhase;
     }
 
     void render(CRGB* leds, int count) override {
+        if (drive < 0.01f) return;
         for (int i = 0; i < count; i++) {
             float pos = (float)i / count;
             float tri = direction
-                ? abs(fmod(pos * 2.0, 1.0f) * 2.0f - 1.0f)
-                : abs(fmod((1.0f - pos) * 2.0, 1.0f) * 2.0f - 1.0f);
-            uint8_t brightness = tri * 255;
+                ? abs(fmod((pos + phaseOffset) * 2.0f, 1.0f) * 2.0f - 1.0f)
+                : abs(fmod((1.0f - pos + phaseOffset) * 2.0f, 1.0f) * 2.0f - 1.0f);
+            uint8_t brightness = uint8_t(tri * drive * 255.0f);
             leds[i] += CHSV(200, 255, brightness);
         }
     }
@@ -409,9 +426,15 @@ public:
 };
 class MoodMemoryArcLayer : public VisualLayer {
     float avgMood = 0;
+    float gateGain = 1.0f;
 
 public:
+    MoodMemoryArcLayer() {
+        opacity = 0.4f;
+    }
+
     void update(const AudioFeatures& now, const AudioHistory& history) override {
+        gateGain = now.gateGain;
         if (history.size() < 10) return;
         float moodSum = 0;
         for (int i = 0; i < 10; ++i) {
@@ -424,9 +447,11 @@ public:
     }
 
     void render(CRGB* leds, int count) override {
+        if (gateGain < 0.05f) return;
         uint8_t hue = map(avgMood * 100, 0, 100, 0, 255);
+        uint8_t brightness = uint8_t(80.0f * gateGain);
         for (int i = count / 4; i < count * 3 / 4; ++i) {
-            leds[i] += CHSV(hue, 180, 80);
+            leds[i] += CHSV(hue, 180, brightness);
         }
     }
 

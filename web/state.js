@@ -1,4 +1,5 @@
 import { reactive } from 'vue';
+import { DEFAULT_STRIP_CONFIGS } from './viz/hwStore.js';
 
 export const COORD_INFO = {
   intensity: {
@@ -69,11 +70,15 @@ export const state = reactive({
     panY: 0,
     ev: 0,
     spill: 1,
+    roomGlow: 2.5,
     grain: 0.14,
     pixelSize: 1.0,
     glowSize: 1.0,
     intensity: 1.0,
-    strips: [],
+    strips: DEFAULT_STRIP_CONFIGS.map((s) => ({
+      ...s,
+      pts: s.pts.map((p) => p.slice()),
+    })),
     fit: null,
     inspect: null,
     drawMs: 0,
@@ -81,6 +86,9 @@ export const state = reactive({
 
   live: {
     scene: '—',
+    sceneFrozen: false,
+    selectedSceneIndex: -1,
+    sceneCatalog: [], // [{ index, name }]
     mood: '—',
     predicted: '—',
     sceneElapsed: '0.0s',
@@ -141,6 +149,13 @@ export const state = reactive({
     events: [],
     hideGateEvents: false,
     eventHold: {
+      drop: 0,
+      tease: 0,
+      buildup: 0,
+      descent: 0,
+      anomaly: 0,
+    },
+    lastSeenTimes: {
       drop: 0,
       tease: 0,
       buildup: 0,

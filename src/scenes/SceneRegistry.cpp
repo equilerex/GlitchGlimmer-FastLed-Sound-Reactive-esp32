@@ -56,18 +56,15 @@ float targetIntensity(MoodType mood) {
 //
 // Every scene used to carry the same two layers, so two scenes at different
 // intensities composited the same way and the only thing between them was the base
-// animation underneath. The band decides which accent suits it: a slow drone under
-// the quiet end, a steady pulse and a streak through the groove, a full base with
-// impact layers at the peak.
+// animation underneath. The band decides which accent suits it: quiet scenes are
+// kept clean so the base animation can breathe, while moderate to high intensity
+// bands composite active accents, leaving room for reactive injections.
 //
-// Cost is bounded by kMaxLayers in addLayer, which refuses past the fourth. The
-// loudest band lists exactly four.
+// Cost is bounded by kMaxLayers in addLayer, which refuses past the fourth.
 std::vector<LayerType> layersForIntensity(float intensity) {
-    if (intensity < 0.30f) return { LayerType::BACKGROUND, LayerType::MOOD_ARC };
-    if (intensity < 0.50f) return { LayerType::BACKGROUND, LayerType::TRIWAVE_BEAT };
-    if (intensity < 0.75f) return { LayerType::BACKGROUND, LayerType::OVERLAY, LayerType::REACTIVE };
-    if (intensity < 0.90f) return { LayerType::BASE, LayerType::REACTIVE, LayerType::HIGHLIGHT };
-    return { LayerType::BASE, LayerType::REACTIVE, LayerType::HIGHLIGHT, LayerType::ENERGY };
+    if (intensity < 0.40f) return {};
+    if (intensity < 0.75f) return { LayerType::BACKGROUND };
+    return { LayerType::BACKGROUND, LayerType::HIGHLIGHT };
 }
 
 void SceneRegistry::registerDefaultScenes() {
@@ -91,6 +88,9 @@ void SceneRegistry::registerDefaultScenes() {
             scene.structuralMoods.push_back(entry.mood);
         }
         scene.name = String(entry.name);
+        scene.mood = entry.mood;
+        scene.role = animationProfile(entry.type).role;
+        scene.intensity = entry.intensity;
         scenes.push_back(scene);
     }
 }
@@ -209,6 +209,14 @@ const SceneDefinition& SceneRegistry::pickSceneByMusic(const SceneState& current
 
 const SceneDefinition& SceneRegistry::get(size_t index) const {
     return scenes[index % scenes.size()];
+}
+
+int SceneRegistry::findIndex(const SceneDefinition* scene) const {
+    if (!scene) return -1;
+    for (size_t i = 0; i < scenes.size(); ++i) {
+        if (&scenes[i] == scene) return static_cast<int>(i);
+    }
+    return -1;
 }
 
 size_t SceneRegistry::count() const {

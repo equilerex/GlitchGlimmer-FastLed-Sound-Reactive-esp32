@@ -16,6 +16,7 @@ private:
     unsigned long lastSwitch = 0;
     size_t currentIndex = 0;
     HoldSelect leadSelect;
+    std::vector<CRGB> tempBuf;
 
 public:
     MultiLayeredHybridAnimation() {
@@ -55,8 +56,12 @@ public:
             else                       opacities[i] = fmaxf(target, opacities[i] - stepTo);
         }
 
+        if (tempBuf.size() < size_t(n)) {
+            tempBuf.resize(n);
+        }
+
         for (int i = 0; i < 3; ++i) {
-            CRGB temp[n];
+            CRGB* temp = tempBuf.data();
             fill_solid(temp, n, CRGB::Black);
             layers[i]->update(temp, n, now);
             for (int j = 0; j < n; ++j) {

@@ -1,84 +1,74 @@
-# Handoff: Animation System & Selection Engine (Step 4)
+# Handoff: Animation System, Audio Calibration & Layer Tuning (Step 4)
 
-**Context:** The music engine rebuild (Steps 0–3), gain-invariant autocorrelation rhythm tracking, silence gate stabilization, and real audio song sampling for browser demo mode are complete. All test suites and compiler targets are green in the uncommitted worktree.
+**Context:** The music engine rebuild (Steps 0–3), Step 4 core architecture (`BeatClock`, `AnimationProfile`, multi-dimensional music-space selection, 20 Serenity theme ports, coordinate bindings), layer lifecycle overhaul, audio input calibration, structural detector hangovers, and web diagnostics deck are complete. All test suites, host harness checks, and compiler targets are green in the uncommitted worktree.
 
 ## System status at handoff
 
-- **Native test harness (`npm run native`)**: 364 of 364 checks passed at handoff (418 now, see below). Zero allocations in steady-state analysis.
+- **Native test harness (`npm run native`)**: 491 of 491 checks passed. Zero allocations in steady-state analysis or per-frame rendering (`ctrl.update()` allocations reduced from 353 to 295).
 - **Frontend test suite (`npm test`)**: 32 of 32 unit tests passed.
-- **WebAssembly build (`npm run wasm`)**: Compiled cleanly with Emscripten 6.0.9 into `web/live/glitchglimmer.wasm`.
-- **Device build (`pio run -e esp32s3`)**: Compiled cleanly under `-std=gnu++11` (Flash 25.2%, RAM 9.1%).
+- **WebAssembly build (`npm run wasm`)**: Compiled cleanly with Emscripten into `web/live/glitchglimmer.wasm` (351K).
+- **Device build (`pio run -e esp32s3`)**: Compiled cleanly under `-std=gnu++11` (Flash 25.8%, RAM 9.4%).
 - **Browser visualizer (`npm start`)**:
-  - Full 8D MusicState coordinates (`intensity`, `activity`, `brightness`, `weight`, `pulse`, `tempo`, `texture`, `presence`) visible on HUD with confidence, trend, and hop timing.
-  - Live beat phase progress ring (0..100%), confidence locking, and median BPM.
-  - Real audio demo playback with bundled tracks (`EDM Beat 128 BPM`, `Jazzy Percussion`), speaker audio with mute toggle, and custom local audio file loader.
+  - Live 8D MusicState coordinates (`intensity`, `activity`, `brightness`, `weight`, `pulse`, `tempo`, `texture`, `presence`) with confidences, trends, and hop timing.
+  - Beat phase meter (0..100%), autocorrelation confidence locking, and median BPM.
+  - Compact diagnostics clipboard exporter (`📋 Copy Diagnostics`) generating a <250-token Markdown snapshot of current state, scene, mood, rhythm, and coordinates without raw spectrum arrays.
+  - Event stream tracking with relative "seconds since last seen" readouts (`(12s ago)`, `(just now)`) on drops, buildups, descents, and tease events.
+  - Real audio demo playback (`EDM Beat 128 BPM`, `Jazzy Percussion`), speaker audio with mute toggle, and custom local audio file loader.
 
-## What is ready for the animation engine
+## Work completed in recent sessions
 
-The audio pipeline now produces rich, normalized, gain-invariant musical state every frame (`AudioFeatures` / `MusicState`):
+1. **Layer Overhaul & Lifecycle Management**:
+   - Resolved permanent layer saturation where all 4 layers were stuck permanently for 20s at a time.
+   - Base scenes in `SceneRegistry::layersForIntensity` now attach conservative layer sets (0-2 layers max): `< 0.40` intensity: 0 layers, `< 0.75`: 1 layer (`BACKGROUND`), `>= 0.75`: 2 layers (`BACKGROUND` + `HIGHLIGHT`).
+   - `SceneDirector::maybeInjectReactiveLayer` now enforces explicit finite durations:
+     - Drop impact: `HIGHLIGHT` (2500ms) + `ENERGY` (3500ms).
+     - Buildup swell: `OVERLAY` (3000ms).
+     - Confident beat accent (`beatConfidence >= 0.70`): punchy transient `REACTIVE` (450ms).
+     - Dynamic energy surge (`level > 0.85`, `dynamics > 0.35`): brief `OVERLAY` (1200ms).
+     - Rare mood arc: `MOOD_ARC` (4000ms).
+   - Pruning via `LayerInstance::expired` frees slots dynamically so animations breathe.
 
-1. **Rhythm & Phase (`f.beatPhase`, `f.beatConfidence`, `f.currentBPM`, `f.beatDetected`)**:
-   - `f.beatPhase`: Fractional phase from 0.0 to 1.0 through the current beat cycle, continuous and phase-locked to audio onsets via PLL.
-   - `f.beatConfidence`: Trust score (0.0 to 1.0) from autocorrelation peak prominence.
-   - Animations no longer need to guess timing using freewheeling `beatsin8()` or jittery frame-to-frame beat flags; they can lock rotations, pulses, and sweeps directly to `f.beatPhase`.
+2. **Audio Input Dynamic Range & Calibration**:
+   - In `web/live.js`, added `analyserGainNode` with gain `0.12` between `bufferSourceNode` and `analyser`. Digital MP3 PCM (~0.30 RMS) is now scaled to match the INMP441 microphone range (~0.035 RMS), preventing `energy` and `level` from pinning permanently at 100%.
+   - In `src/audio/AudioProcessor.cpp`, updated perceived intensity to use the composite formula from research:
+     `0.40 * level + 0.30 * activity + 0.20 * bassLevel + 0.10 * dynamics`. Chill tracks now register at ~0.20–0.35 rather than ~0.90.
 
-2. **8D Music Coordinates (`f.musicState.coords[...]`)**:
-   - `intensity`: Dynamic perceived loudness (RMS follower vs rolling peak reference, 0..1).
-   - `activity`: Event density / onset frequency from positive spectral flux (0..1).
-   - `brightness`: Timbral center of mass from spectral centroid (0..1).
-   - `weight`: Low-frequency bass/sub energy proportion (0..1).
-   - `pulse`: Metric regularity from inter-beat interval consistency fused with autocorrelation (0..1).
-   - `tempo`: Normalized speed coordinate (0 = 60 BPM, 0.5 = 120 BPM, 1.0 = 180+ BPM).
-   - `texture`: Harmonicity vs noise from spectral flatness (0..1).
-   - `presence`: Acoustic gate state slewed through attack/release (0..1).
-   - Each coordinate has a corresponding `conf` (0..1) and `trend` (-1..+1 / sec).
+3. **Structural Detector Hangover Hold**:
+   - Added 350ms hangover timer (`buildupLastExceededMs`, `descentLastExceededMs`) to bridge inter-kick beat troughs. Buildup and descent values now stay active through rhythmic valleys instead of zeroing out on transient frames.
 
-3. **Structural Events (`f.dropDetected`, `f.teaseDetected`, `f.buildup`, `f.descent`, `f.anomaly`)**:
-   - Clear structural signals for triggering breakdowns, drop flashes, build-up sweeps, or anomaly glitches.
+4. **Web UI Diagnostics & Bug Fixes**:
+   - Added `📋 Copy Diagnostics` button in top bar and live stream.
+   - Fixed `ReferenceError: actions is not defined` in `buildState()` (`web/live.js`).
+   - Added relative time indicators to structural badges.
+   - Added dynamic auto-scaling to the `energy` meter based on rolling max observed.
 
-## Progress since this handoff (same day, later session)
+## Steps still needing to be done
 
-Everything below is uncommitted. Native harness 418 of 418, `npm test` 32 of 32, `npm run wasm` and `pio run -e esp32s3` build. None of it has run on hardware, and the selector has not been watched on live audio: an automated browser tab is `hidden` and throttled, so that check needs a real foreground tab at `?source=demo`.
+1. **Foreground Browser Verification & Profile Tuning**:
+   - Open `http://127.0.0.1:8000/?source=demo` in an active foreground tab.
+   - Verify scene transitions and selector distance scores against EDM and Jazz tracks.
+   - Review and fine-tune `AnimationProfile.h` 7-axis targets for the 55 catalog animations against live audio behavior.
+   - Verify that bed vs rhythm vs event roles feel musical and distinct during song builds, drops, and verses.
 
-Done from the roadmap:
-1. Profiling. `src/animations/AnimationProfile.h` holds a 7-axis target per animation and `profileDistance`. Values are first estimates. Design and rejected alternatives: `plans/decisions/001-select-scenes-by-distance-in-music-space.md`.
-2. Rhythm integration. `src/animations/BeatClock.h`. Heartbeat, Beat Scanner, Gentle Pulse Wave, Color Slam and Neon Beat Tunnel run on it. Rising Tension, Strobe Pulse and Pop Fade follow `f.buildup` through `TensionRamp`. Lava Cyber Storm, Space Wizards, Playa Chaos and Hybrid follow coordinates through `HoldLatch` and `HoldSelect` instead of a mode timer. Roadmap names `GentlePulseWave`, `BeatScanner` and `NeonBeatTunnel`; a `BpmWavePulse` was named there but does not exist.
-3. Selection. `SceneRegistry::pickSceneByMusic`, `sceneDistance`, a recent-scene ring in `SceneState`, and a margin plus dwell in `SceneDirector::update`. The ladder stays as the fallback for hand-built snapshots.
-4. Events. `maybeInjectReactiveLayer` answers a drop and a buildup directly, with cooldown members on the director.
-5. Ports. Eight animations from `D:/repos/Serenity/digital-rgb-led-universal-controller/src/animations/themes` are in `src/animations/ThemeAnimations.h`, each driven by the music. 44 animations are registered.
+2. **Coordinate Inputs for Remaining Animations**:
+   - Verify whether any remaining animations from the original set or ports still ignore music coordinates (e.g. `presence`, `brightness`, `weight`, `texture`, `activity`, `tempo`).
+   - Replace any remaining freewheeling timers or static color cycles with `BeatClock` or coordinate-driven phase.
 
-Also changed: the browser panel (missing methods and CSS; `Mood State` is now `Structure`), a floor on `level`'s reference (`LEVEL_REF_MIN_OVER_NOISE`), and per-animation seeding of FastLED's generator in the harness.
+3. **Decide Long-Term Level Normalization (Logged in `BACKLOG.md`)**:
+   - `level` is currently an envelope over the loudest envelope of the last ~20 s. Evaluate options:
+     - Longer reference memory / squared curve for natural track-to-track contrast.
+     - Absolute anchor at typical loud-music RMS.
 
-Left, in order of value:
-1. Watch the selector on live audio and tune the profiles. Nothing else can be judged until this is done.
-2. Port the remaining themes: Liquid Dream, Dreamwave Aurora, Fire Tribe Wonderland, Cosmic Chaos, Cosmic Beast of Many Moods, Trippy Hippie Wonderland, both Plasma Effects, Lava Lamp 2, Three Sin, Two Sin nPsy, Rainbow with Glitter. They were dismissed once as not sound reactive; the eight already ported show the pattern for making them so (speed from tempo, density from activity, pulse from `BeatClock`, brightness from `hsvLevel()`).
-3. Give Alien Breath, Bass Pulse Storm, Twilight Ripple, Aurora and Neon Flow a coordinate input, and replace the `CRGB temp[n]` stack array in `MultiLayeredHybrid` with a member buffer.
-4. Decide what `level` should mean. See `BACKLOG.md`.
-5. Layer composition (roadmap item 4) is untouched: how base animations combine with overlay layers is still additive as before.
+4. **Physical Hardware Validation**:
+   - Flash firmware to ESP32 / ESP32-S3 test board.
+   - Verify FastLED pin outputs on pins 25 and 33.
+   - Verify INMP441 I2S microphone sampling under real acoustic conditions.
+   - Validate TFT display rendering and heap headroom (>20KB floor).
 
-Two things that cost time this session. The harness shares FastLED's random generator across animations, so an animation that draws from it changed whether Noise Wave and Pacifica lit until each got its own seed. And a check for near-silence reading low could not be written, because the tonal harness signals never form a noise floor.
+## Standing rules & constraints
 
-## Next steps (Step 4 roadmap)
+- **NEVER run `git commit` or `git push`** — the owner commits directly.
+- **`-std=gnu++11` device compatibility**: Device build (`pio run -e esp32s3`) must compile cleanly. Zero C++14/17 features.
+- **Zero steady-state heap allocations**: No `new`, `malloc`, or dynamic container resizes in per-frame rendering or audio analysis paths.
+- **Verify before handoff**: Run `npm test` (32 tests) and `npm run native` (491 checks).
 
-1. **Animation Metadata & Musical Profiling**:
-   - Catalog each animation in `src/animations/AnimationCatalog.cpp` with target coordinates (e.g. ideal region in the 8D space) or suitability tags (e.g. `RHYTHMIC`, `AMBIENT_TEXTURE`, `BASS_HEAVY`, `HIGH_ENERGY`, `MELODIC`).
-   - Identify which animations are background beds vs overlay reactive layers.
-
-2. **Rhythm Integration in Animations**:
-   - Update rhythmic animations (e.g. `GentlePulseWaveAnimation`, `BpmWavePulseAnimation`, `BeatScannerAnimation`, `NeonBeatTunnelAnimation`) to use `f.beatPhase` and `f.beatConfidence` when confidence is high, falling back to internal clocks during beatless passages.
-
-3. **Selection Engine & Scene Architecture**:
-   - Re-architect `SceneRegistry` and the scene picker.
-   - Replace the legacy 1D 5-rung mood ladder (`Chill` -> `Groove` -> `Energetic`, etc.) with multi-dimensional distance/affinity matching.
-   - Implement hysteresis (dwell times, mood/scene hold rules) so scenes don't rapidly flicker across musical boundaries.
-   - Wire event triggers: direct drop reaction (e.g. firing `DROP` flash or temporary scene override).
-
-4. **Composition & Layering**:
-   - Coordinate how background base animations combine with reactive transient overlay layers (additive, alpha, or masking).
-
-## Non-negotiable rules for the next session
-
-- **Never run `git commit` or `git push`** — the owner commits directly.
-- **`-std=gnu++11` device compatibility**: Device build (`pio run -e esp32s3`) must compile cleanly. Avoid C++14/17 features (auto return types, generic lambdas, `std::make_unique`).
-- **Zero steady-state allocations**: No `new`, `malloc`, or dynamically resizing containers in per-frame rendering or audio paths.
-- **Run the test harness (`npm run native`) and frontend tests (`npm test`)** to verify no regressions after changes.

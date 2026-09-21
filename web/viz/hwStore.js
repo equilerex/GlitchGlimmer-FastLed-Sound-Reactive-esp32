@@ -18,6 +18,41 @@ const STORAGE_KEY = 'gg.hw.v2';
 const SAVE_DEBOUNCE_MS = 1200;
 let saveTimer = null;
 
+export const DEFAULT_STRIP_CONFIGS = [
+  {
+    profile: 'ws60',
+    lengthM: 0.21666666666666667,
+    pitchMm: 16.666666666666668,
+    pitchManual: false,
+    pixelSize: 1,
+    glowSize: 2,
+    intensity: 2,
+    shape: null,
+    pts: [
+      [0.06, 0.45],
+      [0.32, 0.45],
+      [0.68, 0.45],
+      [0.94, 0.45],
+    ],
+  },
+  {
+    profile: 'ws60',
+    lengthM: 0.16666666666666669,
+    pitchMm: 16.666666666666668,
+    pitchManual: false,
+    pixelSize: 1,
+    glowSize: 2,
+    intensity: 2,
+    shape: null,
+    pts: [
+      [0.06, 0.62],
+      [0.32, 0.62],
+      [0.68, 0.62],
+      [0.94, 0.62],
+    ],
+  },
+];
+
 export function defaultHw(counts) {
   const DEFAULT = profileById(DEFAULT_PROFILE_ID);
   return {
@@ -33,22 +68,39 @@ export function defaultHw(counts) {
     spill: 1,
     grain: 0.14,
     pixelSize: 1.0,
-    glowSize: 1.0,
-    intensity: 1.0,
+    glowSize: 2.0,
+    intensity: 2.0,
+    roomGlow: 2.5,
     // defaultPose, not SHAPES. A SHAPES entry spans the whole stage; these two
     // poses have to leave room for each other. Task 4 fixed exactly this bug
     // once already, which is why the poses live in path.js.
-    strips: counts.map((count, i) => ({
-      profile: DEFAULT.id,
-      lengthM: Math.max(0.1, count * DEFAULT.pitch / 1000),
-      pitchMm: DEFAULT.pitch,
-      pitchManual: false,
-      pixelSize: DEFAULT.visual.pixelSize,
-      glowSize: DEFAULT.visual.glowSize,
-      intensity: DEFAULT.visual.intensity,
-      shape: null,
-      pts: defaultPose(i),
-    })),
+    strips: counts.map((count, i) => {
+      const preset = DEFAULT_STRIP_CONFIGS[i];
+      if (preset) {
+        return {
+          profile: preset.profile,
+          lengthM: preset.lengthM,
+          pitchMm: preset.pitchMm,
+          pitchManual: preset.pitchManual,
+          pixelSize: preset.pixelSize,
+          glowSize: preset.glowSize,
+          intensity: preset.intensity,
+          shape: preset.shape,
+          pts: preset.pts.map((p) => p.slice()),
+        };
+      }
+      return {
+        profile: DEFAULT.id,
+        lengthM: Math.max(0.1, count * DEFAULT.pitch / 1000),
+        pitchMm: DEFAULT.pitch,
+        pitchManual: false,
+        pixelSize: DEFAULT.visual.pixelSize,
+        glowSize: DEFAULT.visual.glowSize,
+        intensity: DEFAULT.visual.intensity,
+        shape: null,
+        pts: defaultPose(i),
+      };
+    }),
     fit: null,
     inspect: null,
     drawMs: 0,
@@ -71,7 +123,7 @@ export function loadHw(counts) {
   // be the thing that stops the page loading.
   try {
     if (stored.surface === 'rod') stored.surface = 'room';
-    for (const key of ['surface', 'stageWidthM', 'zoom', 'panX', 'panY', 'ev', 'spill', 'grain',
+    for (const key of ['surface', 'scale', 'stageWidthM', 'zoom', 'panX', 'panY', 'ev', 'spill', 'roomGlow', 'grain',
                        'pixelSize', 'glowSize', 'intensity']) {
       if (typeof stored[key] === typeof base[key]) base[key] = stored[key];
     }
@@ -136,7 +188,7 @@ function writeHw(hw) {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
       surface: hw.surface, look: hw.look, scale: hw.scale, stageWidthM: hw.stageWidthM, zoom: hw.zoom,
       panX: hw.panX, panY: hw.panY,
-      ev: hw.ev, spill: hw.spill, grain: hw.grain,
+      ev: hw.ev, spill: hw.spill, roomGlow: hw.roomGlow, grain: hw.grain,
       pixelSize: hw.pixelSize, glowSize: hw.glowSize, intensity: hw.intensity,
       strips: hw.strips.map((s) => ({
         profile: s.profile, lengthM: s.lengthM, pitchMm: s.pitchMm,

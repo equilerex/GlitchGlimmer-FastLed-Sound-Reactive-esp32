@@ -45,6 +45,7 @@ let currentAudioBuffer = null;
 let customAudioBuffer = null;
 let bufferSourceNode = null;
 let audioGainNode = null;
+let analyserGainNode = null;
 let isAudioMuted = false;
 let isAudioPlaying = true;
 let currentTrackId = 'edm';
@@ -146,6 +147,21 @@ async function loadWasm() {
     scratch: new Uint8Array((counts[0] + counts[1]) * 3),
   };
   wasm = module;
+  if (module._gg_scene_count && module._gg_scene_name_by_index) {
+    const count = module._gg_scene_count();
+    const catalog = [];
+    for (let i = 0; i < count; ++i) {
+      const namePtr = module._gg_scene_name_by_index(i);
+      const name = namePtr ? module.UTF8ToString(namePtr) : `Scene ${i}`;
+      const moodPtr = module._gg_scene_mood_by_index ? module._gg_scene_mood_by_index(i) : 0;
+      const mood = moodPtr ? module.UTF8ToString(moodPtr) : '';
+      const rolePtr = module._gg_scene_role_by_index ? module._gg_scene_role_by_index(i) : 0;
+      const role = rolePtr ? module.UTF8ToString(rolePtr) : '';
+      const intensity = module._gg_scene_intensity_by_index ? module._gg_scene_intensity_by_index(i) : 0;
+      catalog.push({ index: i, name, mood, role, intensity });
+    }
+    state.live.sceneCatalog = catalog;
+  }
   applyTuning();
 }
 
@@ -182,6 +198,13 @@ function ensureAudioContext() {
     audioGainNode = audioContext.createGain();
     audioGainNode.gain.value = isAudioMuted ? 0 : 0.7;
     audioGainNode.connect(audioContext.destination);
+  }
+  if (!analyserGainNode) {
+    analyserGainNode = audioContext.createGain();
+    // Mastered digital audio (~0.30 RMS) is 10-20x louder than an INMP441 mic (~0.02-0.03 RMS).
+    // Attenuate to realistic mic range so level and energy meters stay dynamic and do not saturate at 100%.
+    analyserGainNode.gain.value = 0.12;
+    analyserGainNode.connect(analyser);
   }
   return audioContext;
 }
@@ -243,8 +266,12 @@ export function playAudioBuffer() {
   bufferSourceNode.buffer = currentAudioBuffer;
   bufferSourceNode.loop = true;
 
-  // Analyser node receives audio for FFT and LED reactivity
-  bufferSourceNode.connect(analyser);
+  // Analyser receives gain-scaled audio so full-scale digital audio matches INMP441 mic calibration
+  if (analyserGainNode) {
+    bufferSourceNode.connect(analyserGainNode);
+  } else {
+    bufferSourceNode.connect(analyser);
+  }
 
   // Gain node routes audio to destination (speakers) so user can hear the beat
   bufferSourceNode.connect(audioGainNode);
@@ -452,6 +479,8 @@ function readFeatures() {
     lit:      wasm._gg_lit_count(0),
     litSum:   Math.round(wasm._gg_lit_sum(0)),
     scene: wasm.UTF8ToString(wasm._gg_scene_name()),
+    sceneIndex: wasm._gg_current_scene_index ? wasm._gg_current_scene_index() : -1,
+    lockedScene: wasm._gg_locked_scene ? wasm._gg_locked_scene() : -1,
     mood:  wasm.UTF8ToString(wasm._gg_mood_name()),
     predicted: wasm.UTF8ToString(wasm._gg_mood_predicted_name()),
   };
@@ -474,15 +503,32 @@ let lastSeen = {
 
 function pushLiveEvent(type, label, detail) {
   if (!state.live.events) state.live.events = [];
-  const timeStr = (state.live.sampleTimeMs > 0)
-    ? (state.live.sampleTimeMs / 1000).toFixed(1) + 's'
-    : (performance.now() / 1000).toFixed(1) + 's';
-  state.live.events.unshift({ time: timeStr, type, label, detail });
+  const rawTimeMs = (state.live.sampleTimeMs > 0)
+    ? state.live.sampleTimeMs
+    : performance.now();
+  const timeStr = (rawTimeMs / 1000).toFixed(1) + 's';
+  state.live.events.unshift({ time: timeStr, rawTimeMs, type, label, detail });
   if (state.live.events.length > 100) state.live.events.pop();
 }
 
 function updateHud(f) {
+  if (!state.live.lastSeenTimes) {
+    state.live.lastSeenTimes = { drop: 0, tease: 0, buildup: 0, descent: 0, anomaly: 0 };
+  }
+  const curTime = (f.sampleTimeMs > 0) ? f.sampleTimeMs : performance.now();
+  if (f.dropDetected > 0) state.live.lastSeenTimes.drop = curTime;
+  if (f.teaseDetected > 0) state.live.lastSeenTimes.tease = curTime;
+  if (f.buildup > 0) state.live.lastSeenTimes.buildup = curTime;
+  if (f.descent > 0) state.live.lastSeenTimes.descent = curTime;
+  if (f.anomaly > 0) state.live.lastSeenTimes.anomaly = curTime;
+
   state.live.scene = f.scene;
+  state.live.sceneFrozen = (f.lockedScene !== undefined && f.lockedScene >= 0);
+  if (state.live.sceneFrozen) {
+    state.live.selectedSceneIndex = f.lockedScene;
+  } else if (f.sceneIndex !== undefined && f.sceneIndex >= 0) {
+    state.live.selectedSceneIndex = f.sceneIndex;
+  }
   state.live.mood = f.mood;
   state.live.predicted = f.predicted;
   state.live.bpm = f.bpm;
@@ -967,7 +1013,7 @@ function appendRow(parent, row) {
   if (row.max === undefined) {
     el.append(name, document.createElement('span'), num);
     parent.append(el);
-    cells.set(row.name, { num });
+    cells.set(row.name, { num, nameEl: name });
   } else {
     const meter = document.createElement('span');
     meter.className = 'meter';
@@ -998,11 +1044,73 @@ function appendRow(parent, row) {
 
     el.append(name, meter, num);
     parent.append(el);
-    cells.set(row.name, { fill, num, meter, moving });
+    cells.set(row.name, { fill, num, meter, moving, nameEl: name });
   }
 
   if (row.note) {
     el.title = row.note;
+  }
+}
+
+function formatAgo(timestampMs, sampleTimeMs) {
+  if (!timestampMs || timestampMs === 0) return 'never';
+  const cur = (sampleTimeMs > 0) ? sampleTimeMs : performance.now();
+  const diff = Math.max(0, (cur - timestampMs) / 1000);
+  if (diff < 1) return 'just now';
+  if (diff < 60) return `${diff.toFixed(1)}s ago`;
+  return `${(diff / 60).toFixed(1)}m ago`;
+}
+
+// Generates a compact, token-efficient diagnostics report in Markdown (<250 tokens)
+// containing complete logic, rhythm, coordinates, structure, and events without raw spectrum bins.
+export async function copyDiagnostics(button) {
+  const l = state.live;
+  const timeSec = (l.sampleTimeMs > 0) ? (l.sampleTimeMs / 1000).toFixed(1) : (performance.now() / 1000).toFixed(1);
+  const fps = l.dtSeconds > 0 ? Math.round(1 / l.dtSeconds) : '—';
+  const dtMs = (l.dtSeconds * 1000).toFixed(1);
+  
+  const layersStr = (l.layers && l.layers.length > 0)
+    ? l.layers.map(layer => `${layer.name} (${(layer.elapsedMs / 1000).toFixed(1)}s)`).join(', ')
+    : 'none';
+
+  const coordsStr = l.coords ? [
+    `  - Intensity: ${(l.coords.intensity.value * 100).toFixed(0)}% (conf ${(l.coords.intensity.conf * 100).toFixed(0)}%, trend ${l.coords.intensity.trend >= 0 ? '+' : ''}${l.coords.intensity.trend.toFixed(2)})`,
+    `  - Activity: ${(l.coords.activity.value * 100).toFixed(0)}% (conf ${(l.coords.activity.conf * 100).toFixed(0)}%, trend ${l.coords.activity.trend >= 0 ? '+' : ''}${l.coords.activity.trend.toFixed(2)})`,
+    `  - Brightness: ${(l.coords.brightness.value * 100).toFixed(0)}% (conf ${(l.coords.brightness.conf * 100).toFixed(0)}%, trend ${l.coords.brightness.trend >= 0 ? '+' : ''}${l.coords.brightness.trend.toFixed(2)})`,
+    `  - Weight: ${(l.coords.weight.value * 100).toFixed(0)}% (conf ${(l.coords.weight.conf * 100).toFixed(0)}%, trend ${l.coords.weight.trend >= 0 ? '+' : ''}${l.coords.weight.trend.toFixed(2)})`,
+    `  - Pulse: ${(l.coords.pulse.value * 100).toFixed(0)}% (conf ${(l.coords.pulse.conf * 100).toFixed(0)}%, trend ${l.coords.pulse.trend >= 0 ? '+' : ''}${l.coords.pulse.trend.toFixed(2)})`,
+    `  - Tempo: ${(l.coords.tempo.value * 100).toFixed(0)}% (conf ${(l.coords.tempo.conf * 100).toFixed(0)}%, trend ${l.coords.tempo.trend >= 0 ? '+' : ''}${l.coords.tempo.trend.toFixed(2)})`,
+    `  - Texture: ${(l.coords.texture.value * 100).toFixed(0)}% (conf ${(l.coords.texture.conf * 100).toFixed(0)}%, trend ${l.coords.texture.trend >= 0 ? '+' : ''}${l.coords.texture.trend.toFixed(2)})`,
+    `  - Presence: ${(l.coords.presence.value * 100).toFixed(0)}% (conf ${(l.coords.presence.conf * 100).toFixed(0)}%, trend ${l.coords.presence.trend >= 0 ? '+' : ''}${l.coords.presence.trend.toFixed(2)})`
+  ].join('\n') : '';
+
+  const recentEvents = (l.events && l.events.length > 0)
+    ? l.events.slice(0, 6).map(ev => `  - ${ev.time}: ${ev.label}${ev.detail ? ` (${ev.detail})` : ''}`).join('\n')
+    : '  - none';
+
+  const lines = [
+    `### GlitchGlimmer Telemetry Diagnostics`,
+    `- **Clock**: Source: ${l.source}${l.demoTrack ? ` (${l.demoTrack})` : ''} | Time: ${timeSec}s | Frame: ${l.sampleFrame} | dt: ${dtMs}ms (${fps} FPS)`,
+    `- **Scene**: ${l.scene} [${l.sceneFrozen ? 'FROZEN' : 'AUTO'}] (elapsed ${l.sceneElapsed} / min ${l.sceneMin} / ideal ${l.sceneIdeal}) | Layers (${l.layers ? l.layers.length : 0}): ${layersStr}`,
+    `- **Mood**: ${l.mood} | Predicted: ${l.predicted}`,
+    `- **Audio Levels**: Vol: ${l.volume.toFixed(4)} | Peak: ${l.peak.toFixed(4)} | NoiseFloor: ${l.noiseFloor.toFixed(4)} | Gate: ${l.presence ? 'OPEN' : 'SHUT'} (gain ${l.gateGain.toFixed(2)}) | Energy: ${Math.round(l.energy)} | Level: ${(l.level * 100).toFixed(0)}% | Dynamics: ${(l.dynamics * 100).toFixed(0)}%`,
+    `- **Rhythm**: BPM: ${l.bpm > 0 ? Math.round(l.bpm) : '—'} | Beat: ${l.beat ? 1 : 0} | Phase: ${((l.beatPhase || 0) * 100).toFixed(0)}% | Confidence: ${((l.beatConfidence || 0) * 100).toFixed(0)}%`,
+    `- **Bands**: Bass: ${(l.bass * 100).toFixed(0)}% (drive ${(l.bassLevel * 100).toFixed(0)}%) | Mid: ${(l.mid * 100).toFixed(0)}% (drive ${(l.midLevel * 100).toFixed(0)}%) | Treble: ${(l.treble * 100).toFixed(0)}% (drive ${(l.trebleLevel * 100).toFixed(0)}%) | Centroid: ${l.centroid.toFixed(0)} | Flatness: ${(l.spectralFlatness * 100).toFixed(0)}%`,
+    `- **8D Coordinates**:`,
+    coordsStr,
+    `- **Structure**: Buildup: ${l.buildup.toFixed(3)} (${formatAgo(l.lastSeenTimes?.buildup)}) | Descent: ${l.descent.toFixed(3)} (${formatAgo(l.lastSeenTimes?.descent)}) | Drop: ${l.dropDetected ? 1 : 0} (${formatAgo(l.lastSeenTimes?.drop)}) | Tease: ${l.teaseDetected ? 1 : 0} (${formatAgo(l.lastSeenTimes?.tease)}) | Anomaly: ${l.anomaly.toFixed(0)}`,
+    `- **Recent Events**:`,
+    recentEvents
+  ];
+
+  const text = lines.join('\n');
+  console.log('[gg] diagnostics:\n' + text);
+  try {
+    await navigator.clipboard.writeText(text);
+    if (button) flashButton(button, 'Copied!');
+  } catch (err) {
+    console.warn('[gg] clipboard write failed', err);
+    if (button) flashButton(button, 'See console');
   }
 }
 
@@ -1280,7 +1388,12 @@ function resetTuning() {
 function buildState() {
   const host = document.getElementById('live-state');
   const actions = document.createElement('div');
-  actions.className = 'button-row';
+  actions.className = 'state-actions';
+  const copyDiagBtn = document.createElement('button');
+  copyDiagBtn.type = 'button';
+  copyDiagBtn.textContent = 'Copy diagnostics';
+  copyDiagBtn.title = 'Copy compact Markdown diagnostics (<250 tokens) to clipboard';
+  copyDiagBtn.addEventListener('click', () => copyDiagnostics(copyDiagBtn));
   const copyButton = document.createElement('button');
   copyButton.type = 'button';
   copyButton.textContent = 'Copy snapshot';
@@ -1289,7 +1402,7 @@ function buildState() {
   recordButton.type = 'button';
   recordButton.textContent = 'Record';
   recordButton.addEventListener('click', () => toggleRecording(recordButton));
-  actions.append(copyButton, recordButton);
+  actions.append(copyDiagBtn, copyButton, recordButton);
   const actionNote = document.createElement('p');
   actionNote.className = 'state-note';
   actionNote.textContent =
@@ -1413,6 +1526,8 @@ function buildState() {
   stateBuilt = true;
 }
 
+let maxEnergySeen = 3000;
+
 function paintState(f) {
   if (!stateBuilt) return;
 
@@ -1423,8 +1538,28 @@ function paintState(f) {
       const v = f[row.key];
       if (typeof v !== 'number') { cell.num.textContent = '—'; continue; }
       cell.num.textContent = v.toFixed(row.digits ?? 2);
+      if (row.key === 'energy' && v > maxEnergySeen) {
+        maxEnergySeen = v;
+      }
       if (cell.fill) {
-        cell.fill.style.width = Math.max(0, Math.min(100, (v / row.max) * 100)).toFixed(2) + '%';
+        const max = (row.key === 'energy') ? Math.max(row.max, maxEnergySeen) : row.max;
+        cell.fill.style.width = Math.max(0, Math.min(100, (v / max) * 100)).toFixed(2) + '%';
+      }
+
+      if (cell.nameEl && group.title === 'Structure') {
+        let ts = 0;
+        if (row.key === 'buildup') ts = state.live.lastSeenTimes?.buildup;
+        else if (row.key === 'descent') ts = state.live.lastSeenTimes?.descent;
+        else if (row.key === 'dropDetected') ts = state.live.lastSeenTimes?.drop;
+        else if (row.key === 'teaseDetected') ts = state.live.lastSeenTimes?.tease;
+        else if (row.key === 'anomaly') ts = state.live.lastSeenTimes?.anomaly;
+        
+        if (ts && ts > 0) {
+          const agoStr = formatAgo(ts, f.sampleTimeMs);
+          cell.nameEl.textContent = `${row.name} (${agoStr})`;
+        } else {
+          cell.nameEl.textContent = row.name;
+        }
       }
     }
   }
@@ -1725,5 +1860,35 @@ export function init() {
 
   if (trace.enabled) {
     console.log('[gg] trace on. window.ggTrace.dump("mood"), .dwellStats(), .summary()');
+  }
+}
+
+export function lockScene(index) {
+  if (!wasm) return;
+  const idx = typeof index === 'number' ? index : parseInt(index, 10);
+  if (idx >= 0) {
+    if (wasm._gg_lock_scene) wasm._gg_lock_scene(idx);
+    state.live.sceneFrozen = true;
+    state.live.selectedSceneIndex = idx;
+    if (wasm._gg_scene_name) state.live.scene = wasm.UTF8ToString(wasm._gg_scene_name());
+  } else {
+    unlockScene();
+  }
+}
+
+export function unlockScene() {
+  if (!wasm) return;
+  if (wasm._gg_unlock_scene) wasm._gg_unlock_scene();
+  state.live.sceneFrozen = false;
+  state.live.selectedSceneIndex = wasm._gg_current_scene_index ? wasm._gg_current_scene_index() : -1;
+  if (wasm._gg_scene_name) state.live.scene = wasm.UTF8ToString(wasm._gg_scene_name());
+}
+
+export function toggleSceneFreeze() {
+  if (state.live.sceneFrozen) {
+    unlockScene();
+  } else {
+    const cur = wasm && wasm._gg_current_scene_index ? wasm._gg_current_scene_index() : 0;
+    lockScene(cur >= 0 ? cur : 0);
   }
 }

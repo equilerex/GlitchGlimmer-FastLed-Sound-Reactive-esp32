@@ -96,10 +96,14 @@ device pays. Allocation counts from the harness exclude it.
 run the firmware's own code, so what you see cannot drift from what the device
 would do.
 
+`dist/` is the complete, committed demo bundle. It contains the static page,
+recorded frames, and the WebAssembly module, so a fresh clone can run the demo
+without first installing PlatformIO or Emscripten.
+
 | View | Driven by | Needs |
 |---|---|---|
-| Recording | Frames the harness writes with `--dump-frames` | `web/data/`, generated |
-| Live microphone | `src/` compiled to WebAssembly and stepped once per frame | `web/live/glitchglimmer.wasm`, generated, plus a microphone |
+| Recording | Frames the harness writes with `--dump-frames` | `dist/data/`, committed bundle |
+| Live microphone | `src/` compiled to WebAssembly and stepped once per frame | `dist/live/glitchglimmer.wasm`, committed bundle, plus a microphone |
 
 The recording view replays a fixed audio timeline and runs no FFT. The live view
 hands the microphone's samples to `AudioProcessor` unchanged, so the FFT, the
@@ -116,17 +120,28 @@ Node is the only requirement, and there is nothing to install.
 npm start
 ```
 
-Then open `http://127.0.0.1:8000`. A specific moment can be linked directly with
+Then open `http://127.0.0.1:8000`. The server uses committed `dist/` when it is
+available. A specific moment can be linked directly with
 `?scenario=device&frame=500&paused=1`. Pass a port with `npm start -- 8080`.
 
-### Recording view
+### Rebuilding the demo bundle
 
-The frames are generated rather than committed, so the harness has to write them
-first.
+The generated bundle is committed and Pages deploys it directly. Contributors
+with the project toolchains can refresh it with:
 
 ```
-npm run frames -- --build    # pio run -e native, then --dump-frames web/data
+npm run build:dist
 ```
+
+This command first builds the native PlatformIO harness (`pio run -e native`),
+then runs that executable to write `web/data/`, builds the pinned Emscripten
+module into `web/live/`, and finally copies the complete page to `dist/`.
+It does not call `npm run native` because that command also executes the
+harness's test mode; frame generation needs to invoke the executable with its
+`--dump-frames` arguments instead.
+
+The tracked `.githooks/pre-push` hook runs this command before every push and
+stops the push if `dist/` changed. Install it once with `npm run setup:hooks`.
 
 ### Live view
 
@@ -157,12 +172,10 @@ the module is indistinguishable from a rebuild that did not take.
 `python -m http.server 8000 --directory web` also works, and will serve you a
 stale module after a rebuild, because it answers conditional requests.
 
-`.github/workflows/pages.yml` is written to build them on every push to `main`
-and publish `web/`, but it cannot do that yet: Pages is not switched on in this
-repository's settings, so `actions/configure-pages` fails and the workflow shows
-red on every push. Turning it on (Settings, Pages, Source, GitHub Actions) is
-the only thing standing between that workflow and a published copy of the page.
-Until then the local steps above are the way to look at it.
+`.github/workflows/pages.yml` publishes committed `dist/` on every push to
+`main`. It does not rebuild the native harness or WebAssembly; the pre-push hook
+keeps the bundle synchronized before it can be pushed. Pages must be enabled in
+Settings → Pages → Source → GitHub Actions.
 
 ## Layout
 

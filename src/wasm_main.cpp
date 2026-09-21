@@ -183,6 +183,51 @@ EMSCRIPTEN_KEEPALIVE
 const char* gg_scene_name(void) { return g_sceneName.c_str(); }
 
 EMSCRIPTEN_KEEPALIVE
+int gg_scene_count(void) { return g_ctrl.getSceneCount(); }
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_scene_name_by_index(int index) {
+    return g_ctrl.getSceneNameByIndex(index);
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_scene_mood_by_index(int index) {
+    return g_ctrl.getSceneMoodByIndex(index);
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_scene_role_by_index(int index) {
+    return g_ctrl.getSceneRoleByIndex(index);
+}
+
+EMSCRIPTEN_KEEPALIVE
+float gg_scene_intensity_by_index(int index) {
+    return g_ctrl.getSceneIntensityByIndex(index);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gg_lock_scene(int index) {
+    g_ctrl.lockScene(index);
+    g_sceneName = g_ctrl.getCurrentSceneName();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gg_unlock_scene(void) {
+    g_ctrl.unlockScene();
+    g_sceneName = g_ctrl.getCurrentSceneName();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int gg_locked_scene(void) {
+    return g_ctrl.getLockedSceneIndex();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int gg_current_scene_index(void) {
+    return g_ctrl.getCurrentSceneIndex();
+}
+
+EMSCRIPTEN_KEEPALIVE
 const char* gg_mood_name(void) { return g_moodName.c_str(); }
 
 // The feature values the HUD shows. Exposed as one call rather than a field per

@@ -136,6 +136,10 @@
         <input type="range" id="hw-spill" min="0" max="2.2" step="0.05" v-model.number="s.hw.spill" @input="syncHw">
       </div>
       <div class="field">
+        <label for="hw-room-glow">Room glow size <b>{{ (s.hw.roomGlow || 2.5).toFixed(1) }}&times;</b></label>
+        <input type="range" id="hw-room-glow" min="0.5" max="5.0" step="0.1" v-model.number="s.hw.roomGlow" @input="syncHw">
+      </div>
+      <div class="field">
         <label for="hw-grain">Sensor grain <b>{{ (s.hw.grain * 100).toFixed(0) }}%</b></label>
         <input type="range" id="hw-grain" min="0" max="0.6" step="0.01" v-model.number="s.hw.grain" @input="syncHw">
       </div>
@@ -164,9 +168,38 @@
   <main class="stage-column">
     <!-- Active Animation & Compositor Status Bar -->
     <section class="cockpit-bar">
-      <div class="cockpit-item highlight">
-        <span class="cockpit-label">Current Scene</span>
-        <b class="cockpit-value">{{ s.mode === 'live' ? s.live.scene : s.recording.scene }}</b>
+      <div class="cockpit-item highlight scene-box">
+        <div class="cockpit-label-row">
+          <span class="cockpit-label">Current Scene</span>
+          <span class="scene-meta-pill"
+                v-if="s.mode === 'live' && currentSceneMeta"
+                :title="'Associated Mood: ' + currentSceneMeta.mood + ' | Role: ' + currentSceneMeta.role + ' | Target Intensity: ' + Math.round(currentSceneMeta.intensity * 100) + '%'">
+            {{ currentSceneMeta.mood }} · {{ currentSceneMeta.role }}
+          </span>
+          <button v-if="s.mode === 'live'"
+                  type="button"
+                  class="scene-freeze-btn"
+                  :class="{ frozen: s.live.sceneFrozen }"
+                  @click="toggleSceneFreeze"
+                  :title="s.live.sceneFrozen ? 'Scene is locked. Click to resume auto music transitions.' : 'Freeze to current scene to test animation & layers in isolation.'">
+            {{ s.live.sceneFrozen ? '🔒 Frozen' : '🔓 Auto' }}
+          </button>
+        </div>
+        <div class="cockpit-scene-control" v-if="s.mode === 'live'">
+          <select class="cockpit-scene-select"
+                  :class="{ frozen: s.live.sceneFrozen }"
+                  :value="s.live.sceneFrozen ? s.live.selectedSceneIndex : -1"
+                  @change="onSceneSelect($event)"
+                  title="Choose an animation to freeze (grouped by mood), or Auto for dynamic music engine">
+            <option :value="-1">Auto ({{ s.live.scene }})</option>
+            <optgroup v-for="grp in groupedSceneCatalog" :key="grp.label" :label="grp.label">
+              <option v-for="sc in grp.scenes" :key="sc.index" :value="sc.index">
+                {{ sc.name }} — {{ sc.mood }} ({{ sc.role }})
+              </option>
+            </optgroup>
+          </select>
+        </div>
+        <b class="cockpit-value" v-else>{{ s.recording.scene }}</b>
       </div>
       <div class="cockpit-item mood-item">
         <span class="cockpit-label" title="The structural moment the analyser reports (tease, buildup, drop, descent, weird, silent) or steady. Scenes are picked from the music coordinates, not from a loudness ladder.">Structure</span>
@@ -287,6 +320,7 @@
           <button class="primary" type="button" :aria-pressed="s.live.source === 'mic'" @click="useMic">Microphone</button>
           <button type="button" :aria-pressed="s.live.source === 'demo'" @click="useDemo">Demo Track</button>
           <button type="button" :aria-pressed="s.live.source === 'synth'" @click="useSynth">Synth Tone</button>
+          <button type="button" class="btn-diag" @click="copyDiagnostics($event)" title="Copy token-efficient compact diagnostics summary (<250 tokens) to clipboard">📋 Copy Diagnostics</button>
         </div>
       </div>
 
@@ -399,12 +433,12 @@
             </div>
           </div>
           <div class="card-stats">
-            <span :class="{ 'highlight-event': s.live.buildup > 0 }" title="Buildup (Integrated Trend): Positive trend displacement in energy and activity over a 3-5s rolling window. Base data: multi-second EMA slope.">buildup: <b>{{ (s.live.buildup * 100).toFixed(0) }}%</b></span>
-            <span :class="{ 'highlight-event': s.live.descent > 0 }" title="Descent (Integrated Trend): Negative trend displacement in energy and level over a 3-5s rolling window. Base data: multi-second EMA slope.">descent: <b>{{ (s.live.descent * 100).toFixed(0) }}%</b></span>
+            <span :class="{ 'highlight-event': s.live.buildup > 0 }" title="Buildup (Integrated Trend): Positive trend displacement in energy and activity over a 3-5s rolling window. Base data: multi-second EMA slope.">buildup: <b>{{ (s.live.buildup * 100).toFixed(0) }}%</b> <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.buildup" class="time-since">({{ secondsSince(s.live.lastSeenTimes.buildup) }})</small></span>
+            <span :class="{ 'highlight-event': s.live.descent > 0 }" title="Descent (Integrated Trend): Negative trend displacement in energy and level over a 3-5s rolling window. Base data: multi-second EMA slope.">descent: <b>{{ (s.live.descent * 100).toFixed(0) }}%</b> <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.descent" class="time-since">({{ secondsSince(s.live.lastSeenTimes.descent) }})</small></span>
             <span title="Spectral Flatness (Wiener entropy): geometric mean divided by arithmetic mean of the FFT magnitudes. 0 is tonal; 1 is noise-like.">spectral flatness: <b>{{ (s.live.spectralFlatness * 100).toFixed(0) }}%</b></span>
             <span v-if="s.live.anomaly > 0" class="event-badge anomaly" title="Coordinate Anomaly: Count of coordinates exhibiting abnormal divergence, zero confidence, or abrupt discontinuity (0..3).">ANOMALY {{ s.live.anomaly.toFixed(0) }}/3</span>
-            <span class="event-badge drop" :class="{ on: s.live.dropDetected || (s.live.eventHold && s.live.eventHold.drop > Date.now()) }" title="Drop Detected: Triggered when bass drive spikes >80% immediately following a buildup or silence drop-out. Latch holds for 2.5s.">DROP</span>
-            <span class="event-badge tease" :class="{ on: s.live.teaseDetected || (s.live.eventHold && s.live.eventHold.tease > Date.now()) }" title="Tease Detected: High activity and energy with dropped bass (&lt;25%), indicating a breakdown or tension section. Latch holds for 2.5s.">TEASE</span>
+            <span class="event-badge drop" :class="{ on: s.live.dropDetected || (s.live.eventHold && s.live.eventHold.drop > Date.now()) }" title="Drop Detected: Triggered when bass drive spikes >80% immediately following a buildup or silence drop-out. Latch holds for 2.5s.">DROP <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.drop" class="badge-time-ago">({{ secondsSince(s.live.lastSeenTimes.drop) }})</small></span>
+            <span class="event-badge tease" :class="{ on: s.live.teaseDetected || (s.live.eventHold && s.live.eventHold.tease > Date.now()) }" title="Tease Detected: High activity and energy with dropped bass (&lt;25%), indicating a breakdown or tension section. Latch holds for 2.5s.">TEASE <small v-if="s.live.lastSeenTimes && s.live.lastSeenTimes.tease" class="badge-time-ago">({{ secondsSince(s.live.lastSeenTimes.tease) }})</small></span>
           </div>
         </div>
 
@@ -420,12 +454,15 @@
               <button type="button" class="btn-micro" @click="clearEvents" title="Clear event history">
                 Clear
               </button>
+              <button type="button" class="btn-micro" @click="copyDiagnostics($event)" title="Copy compact diagnostics (<250 tokens) to clipboard">
+                Copy
+              </button>
               <span class="timing-tag">{{ visibleEvents.length }} / {{ s.live.events.length }}</span>
             </div>
           </div>
           <div class="event-stream">
             <div class="event-stream-row" v-for="(ev, idx) in visibleEvents" :key="idx" :class="'ev-' + ev.type">
-              <span class="ev-time">{{ ev.time }}</span>
+              <span class="ev-time" :title="ev.rawTimeMs ? secondsSince(ev.rawTimeMs) : ''">{{ ev.time }} <small v-if="ev.rawTimeMs" class="ev-ago">({{ secondsSince(ev.rawTimeMs) }})</small></span>
               <span class="ev-badge">{{ ev.label }}</span>
               <span class="ev-detail" v-if="ev.detail">{{ ev.detail }}</span>
             </div>

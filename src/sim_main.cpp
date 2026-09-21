@@ -115,12 +115,17 @@ void operator delete[](void* p, size_t) noexcept { ::operator delete(p); }
 // -----------------------------------------------------------------------------
 //  Arduino core definitions (declared in sim/stubs/Arduino.h)
 // -----------------------------------------------------------------------------
+std::atomic<unsigned long> g_tick{0};
+
 namespace {
 unsigned long g_now = 0;
 }
 
 unsigned long& simNow() { return g_now; }
-void simAdvance(unsigned long ms) { g_now += ms; }
+void simAdvance(unsigned long ms) {
+    g_now += ms;
+    g_tick.fetch_add(1, std::memory_order_relaxed);
+}
 
 extern "C" {
 uint32_t millis(void) { return static_cast<uint32_t>(g_now); }
@@ -407,7 +412,6 @@ namespace {
 //  does not move for a second, the harness names the phase that stopped it and
 //  aborts, which makes the non-zero exit code visible to `pio run -t exec`.
 // -----------------------------------------------------------------------------
-std::atomic<unsigned long> g_tick{0};
 std::atomic<const char*>   g_phase{"startup"};
 std::atomic<bool>          g_watchdogRun{true};
 
@@ -1975,6 +1979,7 @@ void checkAudioProcessor() {
     AudioProcessor procLevel;
     AudioFeatures loudLevel;
     for (int warm = 0; warm < 400; ++warm) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procLevel.submitSamples(samples.data(), samples.size());
         loudLevel = procLevel.analyzeAudio();
     }
@@ -1999,6 +2004,7 @@ void checkAudioProcessor() {
 
     AudioFeatures quarterLevel;
     for (int held = 0; held < 600; ++held) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procLevel.submitSamples(quieter.data(), quieter.size());
         quarterLevel = procLevel.analyzeAudio();
     }
@@ -2047,12 +2053,14 @@ void checkAudioProcessor() {
 
     AudioProcessor procSwitch;
     for (int warm = 0; warm < 400; ++warm) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procSwitch.submitSamples(samples.data(), samples.size());
         procSwitch.analyzeAudio();
     }
 
     AudioFeatures carried;
     for (int held = 0; held < 500; ++held) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procSwitch.submitSamples(faint.data(), faint.size());
         carried = procSwitch.analyzeAudio();
     }
@@ -2061,6 +2069,7 @@ void checkAudioProcessor() {
 
     AudioFeatures recovered;
     for (int held = 0; held < 500; ++held) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procSwitch.submitSamples(faint.data(), faint.size());
         recovered = procSwitch.analyzeAudio();
     }
@@ -2085,6 +2094,7 @@ void checkAudioProcessor() {
     AudioProcessor procBeat;
     float levelMin = 1.0f, levelMax = 0.0f;
     for (int block = 0; block < 400; ++block) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         const float amp = (block % 2 == 0) ? 0.4f : 0.2f;
         for (int i = 0; i < NUM_SAMPLES; ++i) {
             alternating[i] = amp * std::sin(kTwoPi * kToneHz * float(i) / float(SAMPLE_RATE));
@@ -2119,9 +2129,11 @@ void checkAudioProcessor() {
     // audio appear to have elapsed.
     const int kBlocksPer800Ms = int(0.800f * float(SAMPLE_RATE) / float(NUM_SAMPLES) + 0.5f);
     for (int beatFrame = 0; beatFrame < 12; ++beatFrame) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procBpm.submitSamples(samples.data(), samples.size());   // loud
         procBpm.analyzeAudio();
         for (int gap = 1; gap < kBlocksPer800Ms; ++gap) {
+            g_tick.fetch_add(1, std::memory_order_relaxed);
             procBpm.submitSamples(quiet.data(), quiet.size());   // the gap
             procBpm.analyzeAudio();
         }
@@ -2158,12 +2170,14 @@ void checkAudioProcessor() {
     const int kBlocksPer1600Ms = 2 * kBlocksPer800Ms;
     float bpmAtGap = 0.0f, bpmEnd = 0.0f;
     for (int i = 0; i < 10; ++i) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procSteady.submitSamples(samples.data(), samples.size());
         const float atBeat = procSteady.analyzeAudio().bpm;
         if (i == 5) bpmAtGap = atBeat;
         if (i == 9) bpmEnd = atBeat;
         const int interval = i == 5 ? kBlocksPer1600Ms : kBlocksPer800Ms;
         for (int gap = 1; gap < interval; ++gap) {
+            g_tick.fetch_add(1, std::memory_order_relaxed);
             procSteady.submitSamples(quiet.data(), quiet.size());
             procSteady.analyzeAudio();
         }
@@ -2344,6 +2358,31 @@ void checkAudioProcessor() {
            std::to_string(broadPresenceEnd) + " and level " +
            std::to_string(broadLevelEnd));
 
+    // --- Level floor and reference scaling (LEVEL_REF_MIN_OVER_NOISE) ---------
+    // Verify that LEVEL_REF_MIN_OVER_NOISE prevents level from exploding to near 1.0
+    // when a signal is barely above the noise floor. Without the 8x floor limit,
+    // levelRef decays down to room tone and tiny noise swings scale to full scale.
+    {
+        AudioProcessor procFloorTest;
+        std::vector<float> faintSignal(NUM_SAMPLES);
+        for (int i = 0; i < NUM_SAMPLES; ++i) {
+            faintSignal[i] = 0.0006f * std::sin(kTwoPi * 440.0f * float(i) / float(SAMPLE_RATE));
+        }
+        // Run long enough for noise floor and level reference to settle
+        for (int b = 0; b < 200; ++b) {
+            procFloorTest.submitSamples(faintSignal.data(), faintSignal.size());
+            procFloorTest.analyzeAudio();
+            simAdvance(12);
+        }
+        const AudioFeatures f = procFloorTest.analyzeAudio();
+        // With LEVEL_REF_MIN_OVER_NOISE = 8.0, faint tone sitting slightly above the floor
+        // cannot scale to full level (> 0.50). It should stay modest (< 0.40).
+        record("level floor prevents faint signal from scaling to full brightness",
+               f.level < 0.40f,
+               "faint tone at 0.0006 RMS reported level " + std::to_string(f.level) +
+               " with floor " + std::to_string(f.noiseFloor));
+    }
+
     // --- Mood flicker --------------------------------------------------------
     // The browser reported the mood value jumping several times a second, with or
     // without music. The classifier reads instantaneous values, so the input has to
@@ -2361,6 +2400,7 @@ void checkAudioProcessor() {
     AudioProcessor procSteadyDyn;
     AudioFeatures steadyDyn;
     for (int warm = 0; warm < 300; ++warm) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procSteadyDyn.submitSamples(samples.data(), samples.size());
         steadyDyn = procSteadyDyn.analyzeAudio();
     }
@@ -2372,11 +2412,13 @@ void checkAudioProcessor() {
 
     AudioProcessor procSpan;
     for (int warm = 0; warm < 300; ++warm) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procSpan.submitSamples(samples.data(), samples.size());
         procSpan.analyzeAudio();
     }
     AudioFeatures spanDyn;
     for (int held = 0; held < 300; ++held) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procSpan.submitSamples(quietTone.data(), quietTone.size());
         spanDyn = procSpan.analyzeAudio();
     }
@@ -2392,6 +2434,7 @@ void checkAudioProcessor() {
     // available instead of collapsing merely because more blocks arrive.
     AudioProcessor procDynTuning;
     for (int warm = 0; warm < 80; ++warm) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procDynTuning.submitSamples(samples.data(), samples.size());
         procDynTuning.analyzeAudio();
     }
@@ -2402,6 +2445,7 @@ void checkAudioProcessor() {
     // dynamics-edge decay setting; otherwise the lower edge is still following
     // the envelope and the check measures that release time instead.
     for (int held = 0; held < 300; ++held) {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
         procDynTuning.submitSamples(quietTone.data(), quietTone.size());
         tunedDyn = procDynTuning.analyzeAudio();
     }

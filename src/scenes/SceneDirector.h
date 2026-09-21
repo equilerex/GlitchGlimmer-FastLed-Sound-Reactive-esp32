@@ -46,6 +46,7 @@ private:
     // passage hovering between two looks does not flip between them.
     const SceneDefinition* challenger = nullptr;
     unsigned long          challengerSince = 0;
+    int                    lockedSceneIndex = -1;
 
     static constexpr float         kSwitchMargin = 0.12f;  // distance the challenger must win by
     static constexpr unsigned long kChallengeMs  = 1500;   // how long it must keep winning
@@ -95,6 +96,10 @@ public:
     /*-------------------- regular update --------------------*/
     inline void update() {
         if (!state) return;
+        if (lockedSceneIndex >= 0) {
+            challenger = nullptr;
+            return;
+        }
 
         // No mood.update() here, and no AudioFeatures argument to take one with.
         // `mood` is a reference to LEDStripController's own MoodHistory, and
@@ -171,34 +176,38 @@ public:
         // visuals should answer, so they bypass the probability gates below and
         // keep only a cooldown, so a drop that is reported for several frames adds
         // its layers once.
-        if (af.dropDetected && now - lastDrop > 3000) {
-            lm.addLayerByType(LayerType::HIGHLIGHT);
-            lm.addLayerByType(LayerType::ENERGY);
+        // Structural events first. They are rare and intentional.
+        if (af.dropDetected && now - lastDrop > 4000) {
+            lm.addLayerByType(LayerType::HIGHLIGHT, 2500); // 2.5s impact flash
+            lm.addLayerByType(LayerType::ENERGY, 3500);    // 3.5s energy surge
             lastDrop = now;
             return;
         }
-        if (af.buildup > 0.0f && now - lastBuild > 4000) {
-            lm.addLayerByType(LayerType::OVERLAY);
+        if (af.buildup > 0.0f && now - lastBuild > 5000) {
+            lm.addLayerByType(LayerType::OVERLAY, 3000);   // 3s buildup swell
             lastBuild = now;
             return;
         }
 
-        // A beat accent. Trusted when the tracker is locked, so a locked groove
-        // gets an accent on most beats and an unlocked one on fewer, rather than
-        // a fixed 70% either way.
-        if (af.beatDetected && now - lastBeat > 800) {
-            const int chance = af.beatConfidence >= 0.6f ? 80 : 40;
-            if (random(100) < chance) lm.addLayerByType(LayerType::REACTIVE);
+        // A beat accent. Trusted only when the tracker has a solid lock (>= 0.70 confidence),
+        // punchy transient 450ms pop that expires promptly.
+        if (af.beatDetected && af.beatConfidence >= 0.70f && now - lastBeat > 1500) {
+            if (random(100) < 50) {
+                lm.addLayerByType(LayerType::REACTIVE, 450);
+            }
             lastBeat = now;
         }
-        // level, not energy. energy is a raw FFT magnitude sum in the hundreds,
-        // so the old `> 0.6f` was true on every frame and this injected an
-        // OVERLAY layer on the 1500 ms timer regardless of the audio.
-        if (af.level > 0.6f && now - lastEnergy > 1500) {
-            if (random(100) < 40) lm.addLayerByType(LayerType::OVERLAY);
+        // High-energy dynamic surge: level > 0.85 with dynamic range > 0.35, brief 1200ms flare
+        if (af.level > 0.85f && af.dynamics > 0.35f && now - lastEnergy > 4000) {
+            if (random(100) < 40) {
+                lm.addLayerByType(LayerType::OVERLAY, 1200);
+            }
             lastEnergy = now;
         }
-        if (random(1000) < 3) lm.addLayerByType(LayerType::MOOD_ARC);
+        // Rare mood arc sweep across scene
+        if (random(1000) < 2 && now - lastBeat > 6000) {
+            lm.addLayerByType(LayerType::MOOD_ARC, 4000);
+        }
     }
 
     /*-------------------- convenience getters --------------------*/
@@ -212,6 +221,37 @@ public:
     inline void forceNextScene() {
         if (!state) return;
         switchTo(pick(structuralOf(mood.getCurrentMood())));
+    }
+
+    /*-------------------- scene lock / freeze --------------------*/
+    inline void lockScene(int index) {
+        if (index >= 0 && index < static_cast<int>(registry.count())) {
+            lockedSceneIndex = index;
+            switchTo(registry.get(index));
+        } else {
+            unlockScene();
+        }
+    }
+
+    inline void unlockScene() {
+        if (lockedSceneIndex >= 0 && state) {
+            state->sceneStartMillis = millis();
+        }
+        lockedSceneIndex = -1;
+        challenger = nullptr;
+    }
+
+    inline int getLockedSceneIndex() const {
+        return lockedSceneIndex;
+    }
+
+    inline bool isSceneLocked() const {
+        return lockedSceneIndex >= 0;
+    }
+
+    inline int getCurrentSceneIndex() const {
+        if (!state || !state->activeScene) return -1;
+        return registry.findIndex(state->activeScene);
     }
 
     /*-------------------- serial logging --------------------*/

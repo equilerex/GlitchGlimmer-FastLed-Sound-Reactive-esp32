@@ -12,10 +12,10 @@ Status: OPEN
 The five macros this item named are dealt with: NOISE_THRESHOLD, MAX_AUDIO_LEVEL, LOUDNESS_SMOOTHING and FFT_SMOOTHING are deleted, and GAIN_SMOOTHING is `0.85f` and is now the only statement of that number rather than a `0.92f` reading against the `0.85f` that ran. What remains is the same defect seven more times. CHANNEL_COUNT, BITS_PER_SAMPLE, FFT_BANDS, FFT_MAX_SCALE, BAR_HEIGHT_MAX, MIN_SWITCH_INTERVAL and ENABLE_WEB_UI have zero uses outside Config.h. They stay, by the owner's decision on 2026-09-18. None of the seven traces to a caller or to a commit that removed one, so deleting it would discard the only record of an intent that may still be wanted. Each goes only once what it was for has been worked out, which is why FFT_BANDS and BAR_HEIGHT_MAX (display work that may still be wanted) and ENABLE_WEB_UI (a switch rather than a measurement) are named here rather than removed. MIN_BEAT_INTERVAL is 250 and is used, at AudioProcessor.cpp:477. The beat gates inside the layers have the same problem and may simply never fire, since BassShockwaveLayer wants beat detected and bass above 0.8 against a fixed divisor of 100.0 that nothing calibrates.
 
 ## Injected layers would never expire
-
-Status: OPEN
-
-SceneDirector::maybeInjectReactiveLayer (SceneDirector.h:82) is never called, so its MAX_LAYERS cap is dead. If it is ever wired up, all three of its addLayerByType calls pass no duration, and LayerManager treats durMs == 0 as "live until cleared" — which only happens on scene change now, not on a timer. Accent layers would accumulate for the whole scene instead of decaying on their own. Give injected layers a real duration before enabling this path.
+ 
+Status: DROPPED
+ 
+Resolved 2026-09-21. `SceneDirector::maybeInjectReactiveLayer` has been wired into `LEDStripController::update(stripIndex, audio, now)`. Injected layers now pass finite durations: 2500ms for drop highlights, 3500ms for energy surges, 3000ms for buildup swells, 450ms for beat accents, and 1200ms for energy flares. Base scenes were pruned in `SceneRegistry::layersForIntensity` so low-intensity scenes have 0 layers and moderate scenes have 1-2 layers, leaving active slots for reactive layers to enter and expire cleanly.
 
 ## The heap gate has a floor that stops everything
 
