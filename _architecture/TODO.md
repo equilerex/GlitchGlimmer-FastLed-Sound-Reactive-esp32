@@ -1,6 +1,14 @@
 # TODO
 <!-- Live working set. `jookoi-paper-trail flush` archives it and resets it. See AGENTS.md. -->
 
+## README orientation — 2026-09-21
+
+README now leads with the person-facing purpose and the browser demo, followed
+by a short local-start path, hardware wiring, firmware build, test commands,
+committed `dist/` refresh flow, Pages deployment, and project layout. Keep the
+README approachable; detailed audio, compositor, and tuning rationale belongs
+in `ARCHITECTURE.md` and the linked context files.
+
 ## Demo build tooling note — 2026-09-21
 
 `tools/run-native.js` must not assume the `pio` launcher is on `PATH`. It probes
@@ -17,6 +25,17 @@ generation needs the same compiler `bin` directory at runtime as the linker.
 The timestamped `web/live/build.json` belongs only to the local WASM watch loop;
 `tools/build-dist.js` excludes it from committed `dist/` so pre-push checks stay
 deterministic when no source output changed.
+
+CI's device environment is `esp32s3`, matching `platformio.ini`; `ttgo-t1` was a
+stale workflow name and caused the firmware job to fail before compiling. Pages
+must be enabled once in repository settings with GitHub Actions as its source.
+The default `GITHUB_TOKEN` cannot use `configure-pages`'s automatic enablement;
+that path requires a separately provisioned token with administration/Pages
+permissions.
+
+CI invokes `tools/build-wasm.sh` as `bash tools/build-wasm.sh` rather than
+depending on the executable bit surviving checkout. The script's shebang is
+still useful for local shells, but the workflow must not assume file modes.
 
 ## Context
 
@@ -69,9 +88,11 @@ Open questions that are the owner's call rather than defects, and the visualiser
   executable through `tools/dump-frames.js`, builds WASM through the pinned SDK,
   and copies `web/` to `dist/`. The native build is not optional: frame data is
   produced by the harness executable.
-- `.githooks/pre-push` runs the refresh command and rejects the push if the
-  generated `dist/` differs afterward. Hooks are opt-in per clone; install with
-  `npm run setup:hooks`. The hook never creates or amends a commit silently.
+- `.githooks/pre-commit` runs the refresh command and stages generated `dist/`
+  into the commit. `.githooks/pre-push` only checks that the committed bundle
+  exists and is clean. Generation belongs before commit: a push hook cannot
+  safely mutate the commit that is already being pushed. Hooks are opt-in per
+  clone; install with `npm run setup:hooks`.
 - `.github/workflows/pages.yml` only uploads and deploys `dist/`. It no longer
   spends a hosted runner rebuilding native and WASM artifacts on every push.
 - The native host flags must remain portable. Do not add unconditional

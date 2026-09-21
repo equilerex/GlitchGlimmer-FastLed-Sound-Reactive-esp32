@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install platformio
-      - run: pio run -e ttgo-t1
+      - run: pio run -e esp32s3
 
   # The host harness drives the real controller, scene director and layer stack
   # over a clock it owns, and asserts on the result. It needs nothing but a
@@ -54,7 +54,7 @@ jobs:
       - uses: mymindstorm/setup-emsdk@v14
         with:
           version: 6.0.9
-      - run: tools/build-wasm.sh
+      - run: bash tools/build-wasm.sh
       - uses: actions/upload-artifact@v4
         with:
           name: glitchglimmer-wasm

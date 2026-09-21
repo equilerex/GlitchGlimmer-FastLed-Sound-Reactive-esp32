@@ -6,7 +6,9 @@ name: pages
 # clone usable without first reproducing the entire native/WASM toolchain.
 #
 # Enable once in the repository settings: Settings -> Pages -> Source ->
-# GitHub Actions.
+# GitHub Actions. `configure-pages` cannot create the site with the default
+# GITHUB_TOKEN; its `enablement: true` input requires a separate token with
+# repository administration/Pages permissions.
 
 on:
   push:
