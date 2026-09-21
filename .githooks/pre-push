@@ -1,12 +1,15 @@
 #!/usr/bin/env sh
 set -eu
 
-echo "Building demo bundle before push..."
-npm run build:dist
+if [ ! -f dist/index.html ]; then
+  echo >&2
+  echo "dist/ is missing. Run npm run build:dist and commit the bundle." >&2
+  exit 1
+fi
 
 if [ -n "$(git status --short -- dist)" ]; then
   echo >&2
-  echo "dist/ changed while building." >&2
-  echo "Commit the refreshed bundle, then push again." >&2
+  echo "dist/ has uncommitted changes." >&2
+  echo "Run npm run build:dist, commit the refreshed bundle, then push again." >&2
   exit 1
 fi

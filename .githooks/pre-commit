@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+set -eu
+
+echo "Building demo bundle before commit..."
+npm run build:dist
+git add -- dist
+
+echo "Staged refreshed dist/."

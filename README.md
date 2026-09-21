@@ -154,8 +154,11 @@ It does not call `npm run native` because that command also executes the
 harness's test mode; frame generation needs to invoke the executable with its
 `--dump-frames` arguments instead.
 
-The tracked `.githooks/pre-push` hook runs this command before every push and
-stops the push if `dist/` changed. Install it once with `npm run setup:hooks`.
+The tracked `.githooks/pre-commit` hook runs this command before every commit
+and stages the refreshed `dist/` automatically. The `.githooks/pre-push` hook
+only checks that the committed bundle exists and is clean; it does not rebuild
+or mutate a commit that is already being pushed. Install both hooks once with
+`npm run setup:hooks`.
 
 ### Live view
 
