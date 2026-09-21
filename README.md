@@ -10,6 +10,8 @@ scenes.
 The project also includes a browser demo. You can explore the animations and
 their responses before connecting any hardware.
 
+LIVE DEMO: [https://equilerex.github.io/GlitchGlimmer-FastLed-Sound-Reactive-esp32/](https://equilerex.github.io/GlitchGlimmer-FastLed-Sound-Reactive-esp32/)
+
 ![GlitchGlimmer browser visualizer](docs/preview.png)
 
 ## Try the visualizer
@@ -23,7 +25,7 @@ Requirements: Node.js 24 LTS or newer.
 npm start
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). or [live demo](https://equilerex.github.io/GlitchGlimmer-FastLed-Sound-Reactive-esp32/)
 
 The demo has two modes:
 
