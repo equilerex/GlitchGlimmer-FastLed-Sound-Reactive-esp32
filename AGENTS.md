@@ -22,7 +22,13 @@ ESP32 firmware built with PlatformIO, board `ttgo-t1`. FastLED drives two LED st
 
 ## Running it
 
-The page needs a served origin, not `file://`. Node is the only thing needed and there is nothing to install.
+The page needs a served origin, not `file://`. Set up the project-owned host
+toolchains once; the setup command installs native WinLibs through WinGet on
+Windows and the pinned Emscripten SDK into ignored `.tools/`:
+
+```
+npm run setup
+```
 
 ```
 npm start                        # serve web/ on 127.0.0.1:8000
@@ -33,14 +39,31 @@ The recording view needs the harness to have written `web/data/`, which is gener
 
 ```
 npm run frames -- --build        # build the harness, then record into web/data/
+npm run native                   # build and execute the native harness
 ```
 
-The live view needs the WebAssembly module, which needs Emscripten on `PATH`. Sourcing `emsdk_env.sh` is the part a script cannot do for you.
+The live view needs the WebAssembly module. The repository pins Emscripten and the
+Node launcher activates it in the child process, so no global `PATH` setup is
+required. The first run downloads the SDK into ignored `.tools/emsdk/`:
 
 ```
-source /path/to/emsdk/emsdk_env.sh
+npm run setup:wasm
 npm run wasm -- --watch          # rebuild on save, for the edit-look loop
 ```
+
+Set `GG_WASM_JOBS=2` if the compiler host cannot handle the default parallel
+compile count.
+
+`EMSDK` may point at an existing installation instead. A machine-local path such
+as `D:\emsdk` is only a fallback; it is not part of the repository contract.
+
+The native harness is a MinGW executable. `npm run setup` provisions the
+toolchain and `npm run native` supplies its `bin` directory to PlatformIO, so
+Windows can locate the matching runtime DLLs, including `libstdc++-6.dll`.
+Direct `pio run` is an advanced command; use the npm command for a fresh clone.
+
+If using Git Bash, `npm run native` also prevents Git's `/mingw64/bin` runtime
+from winning over the selected WinLibs runtime. Do not repair Git's global PATH.
 
 ## Do not
 

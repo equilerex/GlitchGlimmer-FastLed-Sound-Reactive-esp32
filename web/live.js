@@ -33,12 +33,26 @@ let leds = null;
 let spectrum = null;
 let running = false;
 let rafId = 0;
-let source = 'mic';         // 'demo' or 'mic', and mic unless someone asks
+let source = 'mic';         // 'mic', 'demo', or 'synth'
 let audioContext = null;
 let analyser = null;
 let stream = null;
+let micNode = null;
 let micOpened = false;      // the stream is open, so the microphone is what is wanted
 let noteText = null;        // set when the automatic microphone attempt could not start
+
+let currentAudioBuffer = null;
+let customAudioBuffer = null;
+let bufferSourceNode = null;
+let audioGainNode = null;
+let isAudioMuted = false;
+let isAudioPlaying = true;
+let currentTrackId = 'edm';
+
+const DEMO_URLS = {
+  edm: 'audio/demo.mp3',
+  jazz: 'audio/jazz.mp3',
+};
 
 const demo = { time: 0, bassPhase: 0, midPhase: 0, noise: 1 };
 
@@ -151,7 +165,31 @@ export function softwareStripCapacity(strip) {
   return engine ? engine.capacities[strip] : 0;
 }
 
+function ensureAudioContext() {
+  if (!audioContext || audioContext.state === 'closed') {
+    try {
+      audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+    } catch (err) {
+      audioContext = new AudioContext();
+    }
+  }
+  if (!analyser) {
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = engine ? engine.sampleCount : 512;
+    analyser.smoothingTimeConstant = 0;
+  }
+  if (!audioGainNode) {
+    audioGainNode = audioContext.createGain();
+    audioGainNode.gain.value = isAudioMuted ? 0 : 0.7;
+    audioGainNode.connect(audioContext.destination);
+  }
+  return audioContext;
+}
+
 async function openMic() {
+  closeMic();
+  stopAudioBuffer();
+
   stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       // All three off. Auto gain control in particular flattens exactly the
@@ -163,35 +201,136 @@ async function openMic() {
     },
   });
 
-  try {
-    audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-  } catch (err) {
-    audioContext = new AudioContext();
-  }
-  // Not awaited. A context created before any user gesture starts suspended, and
-  // resume() does not settle until a gesture arrives, so awaiting it would stall
-  // start() and the first paint behind a promise that may never resolve. The
-  // state is checked by the caller instead, and a statechange listener finishes
-  // the switch when the browser gets its gesture.
-  audioContext.resume().catch(() => {});
+  const ctx = ensureAudioContext();
+  ctx.resume().catch(() => {});
 
-  const node = audioContext.createMediaStreamSource(stream);
-  analyser = audioContext.createAnalyser();
-  // One analysis block is one NUM_SAMPLES, so the page writes the microphone's
-  // samples straight into the buffer the firmware's FFT reads.
-  analyser.fftSize = engine.sampleCount;
-  analyser.smoothingTimeConstant = 0;      // the firmware does its own smoothing
-  node.connect(analyser);
+  micNode = ctx.createMediaStreamSource(stream);
+  micNode.connect(analyser);
   micOpened = true;
 }
 
 function closeMic() {
-  if (stream) for (const track of stream.getTracks()) track.stop();
-  if (audioContext) audioContext.close();
-  stream = null;
-  audioContext = null;
-  analyser = null;
+  if (stream) {
+    for (const track of stream.getTracks()) track.stop();
+    stream = null;
+  }
+  if (micNode) {
+    try { micNode.disconnect(); } catch (e) {}
+    micNode = null;
+  }
   micOpened = false;
+}
+
+export function stopAudioBuffer() {
+  if (bufferSourceNode) {
+    try {
+      bufferSourceNode.stop();
+      bufferSourceNode.disconnect();
+    } catch (e) {}
+    bufferSourceNode = null;
+  }
+}
+
+export function playAudioBuffer() {
+  if (!currentAudioBuffer) return;
+  const ctx = ensureAudioContext();
+  if (ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+  stopAudioBuffer();
+
+  bufferSourceNode = ctx.createBufferSource();
+  bufferSourceNode.buffer = currentAudioBuffer;
+  bufferSourceNode.loop = true;
+
+  // Analyser node receives audio for FFT and LED reactivity
+  bufferSourceNode.connect(analyser);
+
+  // Gain node routes audio to destination (speakers) so user can hear the beat
+  bufferSourceNode.connect(audioGainNode);
+
+  bufferSourceNode.start(0);
+  isAudioPlaying = true;
+  state.live.audioPlaying = true;
+}
+
+export function pauseAudioBuffer() {
+  stopAudioBuffer();
+  isAudioPlaying = false;
+  state.live.audioPlaying = false;
+}
+
+export function toggleAudioPlay() {
+  if (isAudioPlaying) {
+    pauseAudioBuffer();
+  } else {
+    isAudioPlaying = true;
+    if (source !== 'demo') {
+      setSource('demo');
+    } else {
+      playAudioBuffer();
+    }
+  }
+}
+
+export function toggleAudioMute() {
+  isAudioMuted = !isAudioMuted;
+  state.live.audioMuted = isAudioMuted;
+  if (audioGainNode) {
+    audioGainNode.gain.value = isAudioMuted ? 0 : 0.7;
+  }
+}
+
+export async function loadDemoTrack(trackId) {
+  currentTrackId = trackId;
+  state.live.demoTrack = trackId;
+  const url = DEMO_URLS[trackId];
+  if (!url) return;
+
+  const ctx = ensureAudioContext();
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const arrayBuf = await res.arrayBuffer();
+    currentAudioBuffer = await ctx.decodeAudioData(arrayBuf);
+    if (source === 'demo' && isAudioPlaying) {
+      playAudioBuffer();
+    }
+  } catch (err) {
+    console.warn('[gg] failed to load demo track:', err);
+  }
+}
+
+export async function loadAudioFile(file) {
+  const ctx = ensureAudioContext();
+  try {
+    const arrayBuf = await file.arrayBuffer();
+    customAudioBuffer = await ctx.decodeAudioData(arrayBuf);
+    currentAudioBuffer = customAudioBuffer;
+    currentTrackId = 'custom';
+    state.live.demoTrack = 'custom';
+    state.live.hasCustomAudio = true;
+    state.live.audioFileName = file.name;
+    await setSource('demo');
+  } catch (err) {
+    console.warn('[gg] failed to decode audio file:', err);
+    alert('Could not decode audio file: ' + err.message);
+  }
+}
+
+export function selectDemoTrack(trackId) {
+  if (trackId === 'custom') {
+    if (customAudioBuffer) {
+      currentAudioBuffer = customAudioBuffer;
+      currentTrackId = 'custom';
+      state.live.demoTrack = 'custom';
+      if (source === 'demo' && isAudioPlaying) {
+        playAudioBuffer();
+      }
+    }
+    return;
+  }
+  loadDemoTrack(trackId);
 }
 
 // A synthetic stand-in for music, so the view does something without a microphone
@@ -257,6 +396,44 @@ function readFeatures() {
     bassLevel:   wasm._gg_feature(13),
     midLevel:    wasm._gg_feature(14),
     trebleLevel: wasm._gg_feature(15),
+    buildup: wasm._gg_feature(16),
+    descent: wasm._gg_feature(17),
+    dropDetected: wasm._gg_feature(18),
+    teaseDetected: wasm._gg_feature(19),
+    anomaly: wasm._gg_feature(20),
+    gateGain: wasm._gg_feature(21),
+    spectralFlatness: wasm._gg_feature(22),
+    // MusicState coordinates (value, confidence, trend)
+    coordIntensity: wasm._gg_feature(23),
+    coordIntensityConf: wasm._gg_feature(24),
+    coordIntensityTrend: wasm._gg_feature(25),
+    coordActivity: wasm._gg_feature(26),
+    coordActivityConf: wasm._gg_feature(27),
+    coordActivityTrend: wasm._gg_feature(28),
+    coordBrightness: wasm._gg_feature(29),
+    coordBrightnessConf: wasm._gg_feature(30),
+    coordBrightnessTrend: wasm._gg_feature(31),
+    coordWeight: wasm._gg_feature(32),
+    coordWeightConf: wasm._gg_feature(33),
+    coordWeightTrend: wasm._gg_feature(34),
+    coordPulse: wasm._gg_feature(35),
+    coordPulseConf: wasm._gg_feature(36),
+    coordPulseTrend: wasm._gg_feature(37),
+    coordTempo: wasm._gg_feature(38),
+    coordTempoConf: wasm._gg_feature(39),
+    coordTempoTrend: wasm._gg_feature(40),
+    coordTexture: wasm._gg_feature(41),
+    coordTextureConf: wasm._gg_feature(42),
+    coordTextureTrend: wasm._gg_feature(43),
+    coordPresence: wasm._gg_feature(44),
+    coordPresenceConf: wasm._gg_feature(45),
+    coordPresenceTrend: wasm._gg_feature(46),
+    dtSeconds: wasm._gg_dt_seconds ? wasm._gg_dt_seconds() : wasm._gg_feature(47),
+    dtMs: (wasm._gg_dt_seconds ? wasm._gg_dt_seconds() : wasm._gg_feature(47)) * 1000,
+    sampleTimeMs: wasm._gg_sample_time_ms ? wasm._gg_sample_time_ms() : wasm._gg_feature(48),
+    sampleFrame: wasm._gg_sample_frame ? wasm._gg_sample_frame() : wasm._gg_feature(49),
+    beatPhase: wasm._gg_beat_phase ? wasm._gg_beat_phase() : wasm._gg_feature(50),
+    beatConfidence: wasm._gg_beat_confidence ? wasm._gg_beat_confidence() : wasm._gg_feature(51),
     average:  wasm._gg_average(),
     centroid: wasm._gg_spectrum_centroid(),
     band:     wasm._gg_dominant_band(),
@@ -282,12 +459,36 @@ function readFeatures() {
 
 import { state } from './state.js';
 
+let lastSeen = {
+  mood: '',
+  scene: '',
+  drop: false,
+  tease: false,
+  buildup: false,
+  descent: false,
+  presenceConfirmed: undefined,
+  presenceCandidate: undefined,
+  presenceCandidateSince: 0,
+  lastGateEventTime: 0,
+};
+
+function pushLiveEvent(type, label, detail) {
+  if (!state.live.events) state.live.events = [];
+  const timeStr = (state.live.sampleTimeMs > 0)
+    ? (state.live.sampleTimeMs / 1000).toFixed(1) + 's'
+    : (performance.now() / 1000).toFixed(1) + 's';
+  state.live.events.unshift({ time: timeStr, type, label, detail });
+  if (state.live.events.length > 100) state.live.events.pop();
+}
+
 function updateHud(f) {
   state.live.scene = f.scene;
   state.live.mood = f.mood;
   state.live.predicted = f.predicted;
   state.live.bpm = f.bpm;
   state.live.beat = f.beat > 0;
+  state.live.beatPhase = f.beatPhase !== undefined ? f.beatPhase : 0;
+  state.live.beatConfidence = f.beatConfidence !== undefined ? f.beatConfidence : 0;
   state.live.level = f.level;
   state.live.loudness = f.loudness;
   state.live.volume = f.volume;
@@ -313,6 +514,90 @@ function updateHud(f) {
   state.live.sceneChanges = f.sceneChanges;
   state.live.moodChanges = f.moodChanges;
 
+  if (state.live.coords) {
+    state.live.coords.intensity = { value: f.coordIntensity, conf: f.coordIntensityConf, trend: f.coordIntensityTrend };
+    state.live.coords.activity = { value: f.coordActivity, conf: f.coordActivityConf, trend: f.coordActivityTrend };
+    state.live.coords.brightness = { value: f.coordBrightness, conf: f.coordBrightnessConf, trend: f.coordBrightnessTrend };
+    state.live.coords.weight = { value: f.coordWeight, conf: f.coordWeightConf, trend: f.coordWeightTrend };
+    state.live.coords.pulse = { value: f.coordPulse, conf: f.coordPulseConf, trend: f.coordPulseTrend };
+    state.live.coords.tempo = { value: f.coordTempo, conf: f.coordTempoConf, trend: f.coordTempoTrend };
+    state.live.coords.texture = { value: f.coordTexture, conf: f.coordTextureConf, trend: f.coordTextureTrend };
+    state.live.coords.presence = { value: f.coordPresence, conf: f.coordPresenceConf, trend: f.coordPresenceTrend };
+  }
+  state.live.sampleFrame = f.sampleFrame;
+  state.live.sampleTimeMs = f.sampleTimeMs;
+  state.live.dtSeconds = f.dtSeconds;
+  state.live.buildup = f.buildup;
+  state.live.descent = f.descent;
+  state.live.dropDetected = f.dropDetected > 0;
+  state.live.teaseDetected = f.teaseDetected > 0;
+  state.live.anomaly = f.anomaly;
+  state.live.gateGain = f.gateGain;
+  state.live.spectralFlatness = f.spectralFlatness;
+
+  const now = Date.now();
+  if (state.live.eventHold) {
+    if (f.dropDetected > 0) {
+      state.live.eventHold.drop = now + 2500;
+      if (!lastSeen.drop) {
+        pushLiveEvent('drop', 'DROP DETECTED', `bass: ${(f.bassLevel * 100).toFixed(0)}%, level: ${(f.level * 100).toFixed(0)}%`);
+      }
+    }
+    lastSeen.drop = f.dropDetected > 0;
+
+    if (f.teaseDetected > 0) {
+      state.live.eventHold.tease = now + 2500;
+      if (!lastSeen.tease) {
+        pushLiveEvent('tease', 'TEASE DETECTED', `breakdown / tension`);
+      }
+    }
+    lastSeen.tease = f.teaseDetected > 0;
+
+    const isBuildup = f.buildup > 0;
+    if (isBuildup && !lastSeen.buildup) {
+      pushLiveEvent('buildup', 'BUILDUP ACTIVE', `displacement: +${f.buildup.toFixed(3)}`);
+    }
+    lastSeen.buildup = isBuildup;
+
+    const isDescent = f.descent > 0;
+    if (isDescent && !lastSeen.descent) {
+      pushLiveEvent('descent', 'DESCENT ACTIVE', `displacement: -${f.descent.toFixed(3)}`);
+    }
+    lastSeen.descent = isDescent;
+
+    if (lastSeen.mood && f.mood !== lastSeen.mood) {
+      pushLiveEvent('mood', `MOOD → ${f.mood}`, `pred: ${f.predicted}`);
+    }
+    lastSeen.mood = f.mood;
+
+    if (lastSeen.scene && f.scene !== lastSeen.scene) {
+      pushLiveEvent('scene', `SCENE → ${f.scene}`, '');
+    }
+    lastSeen.scene = f.scene;
+
+    const hasPresence = f.presence > 0;
+    if (lastSeen.presenceConfirmed === undefined) {
+      lastSeen.presenceConfirmed = hasPresence;
+      lastSeen.presenceCandidate = hasPresence;
+      lastSeen.presenceCandidateSince = now;
+    } else if (hasPresence !== lastSeen.presenceConfirmed) {
+      if (hasPresence !== lastSeen.presenceCandidate) {
+        lastSeen.presenceCandidate = hasPresence;
+        lastSeen.presenceCandidateSince = now;
+      } else {
+        const requiredDwell = hasPresence ? 300 : 1500;
+        if ((now - lastSeen.presenceCandidateSince >= requiredDwell) && (now - lastSeen.lastGateEventTime >= 2000)) {
+          lastSeen.presenceConfirmed = hasPresence;
+          lastSeen.lastGateEventTime = now;
+          pushLiveEvent('gate', hasPresence ? 'GATE OPENED' : 'GATE CLOSED', `noise: ${f.noiseFloor.toFixed(4)}, gain: ${f.gateGain.toFixed(2)}`);
+        }
+      }
+    } else {
+      lastSeen.presenceCandidate = hasPresence;
+      lastSeen.presenceCandidateSince = now;
+    }
+  }
+
   paintState(f);
 }
 
@@ -334,83 +619,325 @@ const STATE_GROUPS = [
     rows: [
       { name: 'level', key: 'level', max: 1, digits: 2,
         marks: [0.3, 0.4, 0.6, 0.8],
-        note: 'The loudness the classifier actually tests, as a fraction of the ' +
-              'loudest block in the last few seconds. It is 0..1 at any ' +
-              'microphone gain, so the four markers land where the thresholds ' +
-              'are.' },
+        note: 'Loudness tested by the mood classifier (0..1).\n\n' +
+              '• Base data: 512-sample time-domain block RMS amplitude envelope.\n' +
+              '• Calculation: Dual EMA follower against a 20s rolling peak envelope and adaptive room noise floor: clamp((RMS - floor) / (peak - floor), 0, 1).\n' +
+              '• Meaning: Gain-invariant volume. The four markers (0.3, 0.4, 0.6, 0.8) indicate mood classification threshold boundaries.' },
       { name: 'energy', key: 'energy', max: 3000, digits: 0,
-        note: 'The sum of 255 FFT magnitudes, so hundreds is a quiet room and ' +
-              'thousands a loud one on a high-gain input. Nothing compares ' +
-              'against it any more: the thresholds all read level.' },
+        note: 'Raw spectral energy sum.\n\n' +
+              '• Base data: 256-bin FFT spectrum calculated from 512 samples.\n' +
+              '• Calculation: Direct unscaled sum of 255 FFT magnitude bins: sum(|X[k]|).\n' +
+              '• Meaning: Absolute energy that scales with analog mic gain (~100s in quiet rooms, ~1000s in loud music).' },
       { name: 'dynamics', key: 'dynamics', max: 1, digits: 2, marks: [], movingMarks: true,
-        note: 'Marked at the classifier’s own cut points, which are 30% and 70% of ' +
-              'the range it has measured recently. They move, so a fixed pair here ' +
-              'would show a comparison the firmware is not making. Hidden while the ' +
-              'measured range is too narrow to split.' },
-      { name: 'bpm', key: 'bpm', max: 600, digits: 0, marks: [80, 100] },
-      // No bars on these three. They are absolute amplitudes of the samples that
-      // arrived, and this microphone delivers about 0.006 RMS and 0.017 peak, so a
-      // bar against a maximum of 0.5 or 1 draws at one percent and reads as a
-      // broken meter when the measurement is correct. There is no maximum they
-      // could be scaled against here, because 1.0 means a full-scale input and
-      // nothing in a room reaches it. The number is the whole reading.
-      //
-      // The gain-invariant readings are the ones to compare between sources:
-      // level above, and the band drives. Those are fractions of a recent
-      // reference and read the same on any input. These three do not, and are not
-      // supposed to: a quieter room has a smaller volume, and that is the point.
-      { name: 'volume', key: 'volume', digits: 4 },
-      { name: 'peak', key: 'peak', digits: 4 },
+        note: 'Dynamic range score (0..1).\n\n' +
+              '• Base data: Sliding historical window of recent level readings.\n' +
+              '• Calculation: (max(level) - min(level)) / max(level).\n' +
+              '• Meaning: Distinguishes compressed, wall-of-sound audio from expressive, high-contrast passages. Moving markers indicate classifier cut points at 30% and 70% of measured range.' },
+      { name: 'bpm', key: 'bpm', max: 600, digits: 0, marks: [80, 100],
+        note: 'Estimated musical tempo.\n\n' +
+              '• Base data: Detected beat onset timestamps from level and bass flux threshold crossings.\n' +
+              '• Calculation: Derived from median inter-beat interval: 60000 / median(interval_ms).\n' +
+              '• Meaning: Track BPM. Markers at 80 and 100 BPM split low, mid, and fast tempo moods.' },
+      { name: 'volume', key: 'volume', digits: 4,
+        note: 'Raw physical RMS sample amplitude.\n\n' +
+              '• Base data: 512 raw PCM input samples.\n' +
+              '• Calculation: Root Mean Square: sqrt(sum(sample^2) / 512).\n' +
+              '• Meaning: Unscaled physical signal amplitude (~0.006 RMS in quiet room). Dependent on mic hardware gain.' },
+      { name: 'peak', key: 'peak', digits: 4,
+        note: 'Raw physical peak sample amplitude.\n\n' +
+              '• Base data: 512 raw PCM input samples.\n' +
+              '• Calculation: Maximum absolute sample value: max(|sample|).\n' +
+              '• Meaning: Instantaneous peak amplitude (~0.017 peak in quiet room). Indicates headroom and clipping.' },
       { name: 'average', key: 'average', digits: 4,
-        note: 'Absolute sample amplitude, so these scale with microphone gain. ' +
-              'Nothing in the render path reads them any more: the animations ' +
-              'drive from level and the band drives, which are fractions of a ' +
-              'recent reference and read the same on any input.' },
+        note: 'Mean absolute deviation of audio samples.\n\n' +
+              '• Base data: 512 raw PCM input samples.\n' +
+              '• Calculation: sum(|sample|) / 512.\n' +
+              '• Meaning: Absolute sample amplitude. Visualizer drives from gain-invariant level and band drives instead.' },
     ],
   },
   {
     title: 'Silence gate',
     rows: [
       { name: 'noise floor', key: 'noiseFloor', max: 0.05, digits: 4,
-        note: 'A slow follower of the quietest recent block. The gate opens above ' +
-              'twice it and closes below one and a half times it, so both ' +
-              'thresholds move with the room instead of sitting at a fixed level.' },
-      { name: 'signal present', key: 'presence', max: 1, digits: 0 },
+        note: 'Adaptive ambient noise floor tracker.\n\n' +
+              '• Base data: 512-sample block RMS values.\n' +
+              '• Calculation: Asymmetric slow leaky follower tracking the quietest blocks over a 10s window.\n' +
+              '• Meaning: Baseline room noise level. Thresholds adapt to ambient room acoustics.' },
+      { name: 'signal present', key: 'presence', max: 1, digits: 0,
+        note: 'Binary silence gate state.\n\n' +
+              '• Base data: Block RMS volume vs adaptive noise floor.\n' +
+              '• Calculation: Schmitt trigger with hysteresis: 1 when RMS > 2.0 * noiseFloor, dropping to 0 when RMS < 1.5 * noiseFloor.\n' +
+              '• Meaning: 1 = deliberate sound or music present; 0 = quiet room silence.' },
+      { name: 'gate gain', key: 'gateGain', max: 1, digits: 3,
+        note: 'Silence gate smoothing gain multiplier.\n\n' +
+              '• Base data: Signal present binary trigger state.\n' +
+              '• Calculation: Linear slew rate ramp (tau ~50ms attack, ~200ms decay) between 0.0 and 1.0.\n' +
+              '• Meaning: Smoothly attenuates animation levels to prevent erratic flicker during room silence.' },
     ],
   },
   {
     title: 'Bands',
     rows: [
-      { name: 'bass', key: 'bass', max: 1, digits: 3 },
-      { name: 'mid', key: 'mid', max: 1, digits: 3 },
-      { name: 'treble', key: 'treble', max: 1, digits: 3 },
-      // The three the animations read. Each is that band against its own recent
-      // peak, so 1.0 means "as much of this band as the room has had lately" and
-      // says nothing about loudness. They sit far above the shares beside them and
-      // are the number to look at when a strip is dim.
-      { name: 'bass drive', key: 'bassLevel', max: 1, digits: 3 },
-      { name: 'mid drive', key: 'midLevel', max: 1, digits: 3 },
-      { name: 'treble drive', key: 'trebleLevel', max: 1, digits: 3 },
-      { name: 'spectrum centroid', key: 'centroid', digits: 1 },
-      { name: 'dominant band', key: 'band', digits: 0 },
+      { name: 'bass', key: 'bass', max: 1, digits: 3,
+        note: 'Bass band energy share (0..1).\n\n' +
+              '• Base data: 256-bin FFT spectrum from 512 samples.\n' +
+              '• Calculation: Sum of bins below 200 Hz divided by total spectrum energy.\n' +
+              '• Meaning: Fraction of current audio energy located in sub and bass frequencies.' },
+      { name: 'mid', key: 'mid', max: 1, digits: 3,
+        note: 'Midrange band energy share (0..1).\n\n' +
+              '• Base data: 256-bin FFT spectrum from 512 samples.\n' +
+              '• Calculation: Sum of bins between 200 Hz and 2000 Hz divided by total spectrum energy.\n' +
+              '• Meaning: Fraction of current audio energy located in vocal and instrument midrange.' },
+      { name: 'treble', key: 'treble', max: 1, digits: 3,
+        note: 'Treble band energy share (0..1).\n\n' +
+              '• Base data: 256-bin FFT spectrum from 512 samples.\n' +
+              '• Calculation: Sum of bins above 2000 Hz divided by total spectrum energy.\n' +
+              '• Meaning: Fraction of current audio energy located in high treble, cymbals, and harmonics.' },
+      { name: 'bass drive', key: 'bassLevel', max: 1, digits: 3,
+        note: 'Gain-invariant bass animation driver (0..1).\n\n' +
+              '• Base data: Bass band energy sum (< 200 Hz).\n' +
+              '• Calculation: Normalized against its own 20s rolling bass peak envelope: bass / bassPeak.\n' +
+              '• Meaning: "As much bass as the music has had lately." Primary driver for kick drum pulses and low-end LED response.' },
+      { name: 'mid drive', key: 'midLevel', max: 1, digits: 3,
+        note: 'Gain-invariant mid animation driver (0..1).\n\n' +
+              '• Base data: Mid band energy sum (200 - 2000 Hz).\n' +
+              '• Calculation: Normalized against its own 20s rolling mid peak envelope: mid / midPeak.\n' +
+              '• Meaning: Drives melody, synth body, and vocal lighting elements.' },
+      { name: 'treble drive', key: 'trebleLevel', max: 1, digits: 3,
+        note: 'Gain-invariant treble animation driver (0..1).\n\n' +
+              '• Base data: Treble band energy sum (> 2000 Hz).\n' +
+              '• Calculation: Normalized against its own 20s rolling treble peak envelope: treble / treblePeak.\n' +
+              '• Meaning: Primary driver for high-frequency sparkles, glitter, and crisp percussion.' },
+      { name: 'spectrum centroid', key: 'centroid', digits: 1,
+        note: 'Spectral center of mass (brightness).\n\n' +
+              '• Base data: 256-bin FFT magnitudes.\n' +
+              '• Calculation: Energy-weighted bin average: sum(k * mag[k]) / sum(mag[k]).\n' +
+              '• Meaning: Average perceived frequency. Low bins indicate dark, bass-heavy audio; high bins indicate bright, airy sound.' },
+      { name: 'dominant band', key: 'band', digits: 0,
+        note: 'Dominant spectral peak bin.\n\n' +
+              '• Base data: 256-bin FFT magnitudes.\n' +
+              '• Calculation: Bin index containing the maximum magnitude peak across the entire spectrum.\n' +
+              '• Meaning: Fundamental frequency or strongest tonal resonance.' },
+      { name: 'spectral flatness', key: 'spectralFlatness', max: 1, digits: 3,
+        note: 'Wiener entropy / spectral flatness (0..1).\n\n' +
+              '• Base data: 256-bin FFT magnitudes.\n' +
+              '• Calculation: Geometric mean divided by arithmetic mean: exp(mean(ln(mag + eps))) / (mean(mag) + eps).\n' +
+              '• Meaning: 0.0 = pure harmonic tone or sine wave; 1.0 = white noise, distortion, or snare splash.' },
+    ],
+  },
+  {
+    title: 'Structure',
+    rows: [
+      { name: 'buildup', key: 'buildup', max: 1, digits: 3,
+        note: 'Buildup progression score (0..1).\n\n' +
+              '• Base data: Multi-second trends in energy, activity, and high-frequency centroid.\n' +
+              '• Calculation: Integrated positive trend displacement slope over a 3-5s rolling window.\n' +
+              '• Meaning: Rising musical tension, pre-drop risers, and drum roll acceleration.' },
+      { name: 'descent', key: 'descent', max: 1, digits: 3,
+        note: 'Descent / outro fade score (0..1).\n\n' +
+              '• Base data: Multi-second trends in energy and level.\n' +
+              '• Calculation: Integrated negative trend displacement slope over a 3-5s rolling window.\n' +
+              '• Meaning: Song outro, breakdown energy drain, or quiet transitional passage.' },
+      { name: 'drop detected', key: 'dropDetected', max: 1, digits: 0,
+        note: 'Musical drop event flag (0 or 1).\n\n' +
+              '• Base data: Bass drive surge and silence gate recovery.\n' +
+              '• Calculation: Single-frame edge triggered when bass drive spikes >0.8 immediately following a buildup or silence drop-out (held for 2.5s in UI).\n' +
+              '• Meaning: Sudden release of tension / heavy kick arrival.' },
+      { name: 'tease detected', key: 'teaseDetected', max: 1, digits: 0,
+        note: 'Musical tease / fake drop flag (0 or 1).\n\n' +
+              '• Base data: High energy/activity paired with absent bass.\n' +
+              '• Calculation: Triggered when activity/energy remains high (>0.6) while bass drops below 0.25.\n' +
+              '• Meaning: Breakdown or tension section where the beat does not drop.' },
+      { name: 'anomaly', key: 'anomaly', max: 3, digits: 0,
+        note: 'Coordinate anomaly counter (0..3).\n\n' +
+              '• Base data: 8D coordinate values and confidence metrics.\n' +
+              '• Calculation: Count of coordinates exhibiting extreme rate-of-change or zero confidence.\n' +
+              '• Meaning: Detects sudden audio discontinuities or tracking failure.' },
+    ],
+  },
+  {
+    title: 'Music Coordinates (8D State)',
+    rows: [
+      { name: 'intensity', key: 'coordIntensity', max: 1, digits: 3,
+        note: 'Loudness Coordinate (0..1).\n\n' +
+              '• Base data: 512-sample time-domain block RMS envelope.\n' +
+              '• Calculation: Dual EMA follower (fast tau 0.3s, slow tau 3.0s) tracking level = clamp((RMS - floor)/(peak - floor), 0, 1) * gateGain.\n' +
+              '• Meaning: Gain-invariant perceived volume.' },
+      { name: 'intensity conf', key: 'coordIntensityConf', max: 1, digits: 2,
+        note: 'Intensity Tracker Confidence (0..1).\n\n' +
+              '• Base data: Silence gate state and SNR.\n' +
+              '• Calculation: 1.0 when gate is settled open; decays toward 0 during silence or ambiguous low levels.\n' +
+              '• Meaning: Reliability of loudness measurement.' },
+      { name: 'intensity trend', key: 'coordIntensityTrend', digits: 3,
+        note: 'Intensity Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of slow intensity EMA follower.\n' +
+              '• Calculation: (currIntensity - prevIntensity) / dtSeconds.\n' +
+              '• Meaning: Positive = crescendo / rising volume; negative = decrescendo / fading volume.' },
+      { name: 'activity', key: 'coordActivity', max: 1, digits: 3,
+        note: 'Activity Coordinate (0..1).\n\n' +
+              '• Base data: 256-bin FFT magnitude spectra from consecutive blocks.\n' +
+              '• Calculation: Half-wave rectified spectral flux sum(max(0, mag[k] - prevMag[k])) normalized against 20s rolling peak flux. Fast tau 0.5s, slow tau 5.0s.\n' +
+              '• Meaning: Rhythm density and onset speed (spikes on drum hits and note attacks).' },
+      { name: 'activity conf', key: 'coordActivityConf', max: 1, digits: 2,
+        note: 'Activity Tracker Confidence (0..1).\n\n' +
+              '• Base data: Flux reference stability and gate state.\n' +
+              '• Calculation: Ratio of rolling flux headroom and gateGain.\n' +
+              '• Meaning: Reliability of transient tracking.' },
+      { name: 'activity trend', key: 'coordActivityTrend', digits: 3,
+        note: 'Activity Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of slow activity EMA follower.\n' +
+              '• Calculation: (currActivity - prevActivity) / dtSeconds.\n' +
+              '• Meaning: Positive = accelerating rhythm / percussion density; negative = thinning rhythm.' },
+      { name: 'brightness coord', key: 'coordBrightness', max: 1, digits: 3,
+        note: 'Brightness Coordinate (0..1).\n\n' +
+              '• Base data: 256-bin FFT magnitude spectrum.\n' +
+              '• Calculation: Normalized spectral centroid: sum(k * mag[k]) / (sum(mag[k]) * 128). Fast tau 0.3s, slow tau 3.0s.\n' +
+              '• Meaning: Timbre color (0 = deep sub/bass, 1 = crisp treble/cymbals).' },
+      { name: 'brightness conf', key: 'coordBrightnessConf', max: 1, digits: 2,
+        note: 'Brightness Tracker Confidence (0..1).\n\n' +
+              '• Base data: Spectral energy sum.\n' +
+              '• Calculation: 1.0 when total energy > silence threshold; fades if signal is too quiet to measure centroid.\n' +
+              '• Meaning: Reliability of timbre estimation.' },
+      { name: 'brightness trend', key: 'coordBrightnessTrend', digits: 3,
+        note: 'Brightness Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of slow brightness EMA follower.\n' +
+              '• Calculation: (currBrightness - prevBrightness) / dtSeconds.\n' +
+              '• Meaning: Positive = filter opening / brighter timbre; negative = filter sweep down / darkening.' },
+      { name: 'weight', key: 'coordWeight', max: 1, digits: 3,
+        note: 'Weight Coordinate (0..1).\n\n' +
+              '• Base data: Low-frequency FFT bins (< 200 Hz).\n' +
+              '• Calculation: Bass energy sum normalized against its own 20s rolling peak envelope. Fast tau 0.3s, slow tau 3.0s.\n' +
+              '• Meaning: Low-end acoustic weight independent of overall track volume.' },
+      { name: 'weight conf', key: 'coordWeightConf', max: 1, digits: 2,
+        note: 'Weight Tracker Confidence (0..1).\n\n' +
+              '• Base data: Bass peak reference stability and gate gain.\n' +
+              '• Calculation: Normalized ratio of bass peak to total energy floor.\n' +
+              '• Meaning: Reliability of low-end measurement.' },
+      { name: 'weight trend', key: 'coordWeightTrend', digits: 3,
+        note: 'Weight Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of slow weight EMA follower.\n' +
+              '• Calculation: (currWeight - prevWeight) / dtSeconds.\n' +
+              '• Meaning: Positive = bass entry / kick buildup; negative = bass cut / breakdown.' },
+      { name: 'pulse', key: 'coordPulse', max: 1, digits: 3,
+        note: 'Pulse Regularity Coordinate (0..1).\n\n' +
+              '• Base data: Ring buffer of last 12 inter-beat intervals in ms.\n' +
+              '• Calculation: Periodicity consistency: 1.0 - (Median Absolute Deviation / Median Interval). Fast tau 2.0s, slow tau 10.0s.\n' +
+              '• Meaning: Metric regularity (near 1.0 for steady electronic beats; near 0 for ambient, speech, or syncopated breaks).' },
+      { name: 'pulse conf', key: 'coordPulseConf', max: 1, digits: 2,
+        note: 'Pulse Tracker Confidence (0..1).\n\n' +
+              '• Base data: Beat history buffer occupancy.\n' +
+              '• Calculation: Fraction of the 12-beat window filled: min(1.0, beatCount / 12.0).\n' +
+              '• Meaning: Confidence in beat periodicity.' },
+      { name: 'pulse trend', key: 'coordPulseTrend', digits: 3,
+        note: 'Pulse Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of slow pulse EMA follower.\n' +
+              '• Calculation: (currPulse - prevPulse) / dtSeconds.\n' +
+              '• Meaning: Positive = rhythm locking into steady meter; negative = rhythm dissolving into rubato/ambient.' },
+      { name: 'tempo coord', key: 'coordTempo', max: 1, digits: 3,
+        note: 'Tempo Coordinate (0..1).\n\n' +
+              '• Base data: Median inter-beat interval from onset detection.\n' +
+              '• Calculation: BPM = 60000 / medianInterval, normalized as BPM / 240.0. Decays exponentially on beat silence.\n' +
+              '• Meaning: Speed coordinate (0.5 = 120 BPM, 1.0 = 240 BPM).' },
+      { name: 'tempo conf', key: 'coordTempoConf', max: 1, digits: 2,
+        note: 'Tempo Tracker Confidence (0..1).\n\n' +
+              '• Base data: Beat interval variance and window fill.\n' +
+              '• Calculation: pulseConsistency * min(1.0, beatCount / 12.0).\n' +
+              '• Meaning: Confidence that estimated BPM matches actual musical meter.' },
+      { name: 'tempo trend', key: 'coordTempoTrend', digits: 3,
+        note: 'Tempo Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of slow tempo EMA follower.\n' +
+              '• Calculation: (currTempo - prevTempo) / dtSeconds.\n' +
+              '• Meaning: Positive = speeding up (accelerando); negative = slowing down (ritardando).' },
+      { name: 'texture', key: 'coordTexture', max: 1, digits: 3,
+        note: 'Texture / Noisiness Coordinate (0..1).\n\n' +
+              '• Base data: 256 FFT magnitude bins across full spectrum.\n' +
+              '• Calculation: Wiener entropy (spectral flatness): exp(mean(ln(mag + eps))) / (mean(mag) + eps). Fast tau 1.0s, slow tau 8.0s.\n' +
+              '• Meaning: Tone vs noise (0 = pure sine / harmonic tones; 1 = white noise, heavy distortion, snare splash).' },
+      { name: 'texture conf', key: 'coordTextureConf', max: 1, digits: 2,
+        note: 'Texture Tracker Confidence (0..1).\n\n' +
+              '• Base data: Spectrum total energy and gate gain.\n' +
+              '• Calculation: 1.0 when energy is sufficient for reliable entropy computation; decays during silence.\n' +
+              '• Meaning: Reliability of noise/tonality measurement.' },
+      { name: 'texture trend', key: 'coordTextureTrend', digits: 3,
+        note: 'Texture Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of slow texture EMA follower.\n' +
+              '• Calculation: (currTexture - prevTexture) / dtSeconds.\n' +
+              '• Meaning: Positive = audio becoming noisier / more distorted; negative = audio becoming cleaner / more tonal.' },
+      { name: 'presence coord', key: 'coordPresence', max: 1, digits: 3,
+        note: 'Presence Coordinate (0..1).\n\n' +
+              '• Base data: Time-domain RMS volume vs adaptive noise floor follower.\n' +
+              '• Calculation: Schmitt trigger with hysteresis slewed through attack/release ramp = gateGain (0..1).\n' +
+              '• Meaning: Smooth gate (0 = room silence; 1 = active music playback).' },
+      { name: 'presence conf', key: 'coordPresenceConf', max: 1, digits: 2,
+        note: 'Presence Tracker Confidence (0..1).\n\n' +
+              '• Base data: Distance between volume and noise floor.\n' +
+              '• Calculation: min(1.0, |volume - noiseFloor| / noiseFloor).\n' +
+              '• Meaning: Confidence that gate state is not ambiguous.' },
+      { name: 'presence trend', key: 'coordPresenceTrend', digits: 3,
+        note: 'Presence Rate of Change (units/sec).\n\n' +
+              '• Base data: Derivative of presence coordinate.\n' +
+              '• Calculation: (currPresence - prevPresence) / dtSeconds.\n' +
+              '• Meaning: Positive = audio appearing / gate opening; negative = audio ceasing / gate closing.' },
+    ],
+  },
+  {
+    title: 'Sample Clock & Stream Timing',
+    rows: [
+      { name: 'sample frame', key: 'sampleFrame', digits: 0,
+        note: 'Continuous audio block counter.\n\n' +
+              '• Base data: Inbound I2S audio hardware blocks.\n' +
+              '• Calculation: Increments by 1 for each 512-sample buffer processed (~86.13 blocks/sec at 44.1 kHz).\n' +
+              '• Meaning: Deterministic frame counter in the sample-clock domain, decoupled from video render rate.' },
+      { name: 'sample time (ms)', key: 'sampleTimeMs', digits: 0,
+        note: 'Elapsed audio time in milliseconds.\n\n' +
+              '• Base data: Cumulative processed sample count.\n' +
+              '• Calculation: (sampleFrame * 512 * 1000) / 44100.\n' +
+              '• Meaning: True audio stream timeline in milliseconds, free of browser setTimeout or requestAnimationFrame jitter.' },
+      { name: 'block delta (ms)', key: 'dtMs', max: 50, digits: 2,
+        note: 'Audio hop size in milliseconds.\n\n' +
+              '• Base data: Audio buffer size (512 samples) and sample rate (44100 Hz).\n' +
+              '• Calculation: (512 / 44100) * 1000 = ~11.61 ms.\n' +
+              '• Meaning: Physical time step of every feature extraction cycle.' },
     ],
   },
   {
     title: 'Output',
     rows: [
       { name: 'strip 0 lit', key: 'lit', max: 100, digits: 0,
-        note: 'How many pixels are not black right now. A strip reading 0 here ' +
-              'while energy is high is the blackout, stated directly.' },
+        note: 'Active non-black pixels on strip 0.\n\n' +
+              '• Base data: Strip 0 framebuffer RGB channels.\n' +
+              '• Calculation: Count of pixels where (R + G + B) > 0.\n' +
+              '• Meaning: Visual pixel activity. Reading 0 while audio energy is high identifies a blackout defect.' },
       { name: 'strip 0 brightness', key: 'litSum', digits: 0,
-        note: 'Summed channels, so 0..76500 for 100 pixels. This is the dimming ' +
-              'that falls short of going fully black.' },
-      { name: 'layers strip 0', key: 'layers', max: 4, digits: 0 },
-      { name: 'layers strip 1', key: 'layers1', max: 4, digits: 0 },
-      { name: 'scene changes', key: 'sceneChanges', digits: 0 },
+        note: 'Aggregated luminous output on strip 0.\n\n' +
+              '• Base data: Strip 0 framebuffer RGB channels.\n' +
+              '• Calculation: Summed R + G + B values across all pixels (0..76500 for 100 pixels).\n' +
+              '• Meaning: Total photonic drive. Measures aggregate dimming without going fully black.' },
+      { name: 'layers strip 0', key: 'layers', max: 4, digits: 0,
+        note: 'Active compositor layers on strip 0.\n\n' +
+              '• Base data: Compositor active layer stack for strip 0.\n' +
+              '• Calculation: Number of overlay layers currently blended onto the base animation.\n' +
+              '• Meaning: Visual layering complexity.' },
+      { name: 'layers strip 1', key: 'layers1', max: 4, digits: 0,
+        note: 'Active compositor layers on strip 1.\n\n' +
+              '• Base data: Compositor active layer stack for strip 1.\n' +
+              '• Calculation: Number of overlay layers currently blended onto the base animation on strip 1.\n' +
+              '• Meaning: Visual layering complexity on secondary strip.' },
+      { name: 'scene changes', key: 'sceneChanges', digits: 0,
+        note: 'Scene transition counter.\n\n' +
+              '• Base data: Scene manager transition events.\n' +
+              '• Calculation: Cumulative count of scene switches triggered by timers, mood changes, or beat cadence.\n' +
+              '• Meaning: Scene rotation activity.' },
       { name: 'mood changes', key: 'moodChanges', digits: 0,
-        note: 'Counted in the firmware, so it reads zero changes rather than no ' +
-              'measurement when the mood has held still for the whole session.' },
-      { name: 'mood history', key: 'history', max: 150, digits: 0 },
+        note: 'Mood transition counter.\n\n' +
+              '• Base data: Mood classifier state machine.\n' +
+              '• Calculation: Total count of mood shifts committed by the classifier.\n' +
+              '• Meaning: Reads 0 if mood has held constant for the entire session.' },
+      { name: 'mood history', key: 'history', max: 150, digits: 0,
+        note: 'Mood history buffer occupancy.\n\n' +
+              '• Base data: Circular buffer of past classified moods.\n' +
+              '• Calculation: Number of entries currently stored in the 150-slot transition history ring.\n' +
+              '• Meaning: Memory depth of recent musical mood trajectory.' },
     ],
   },
 ];
@@ -950,9 +1477,15 @@ function step() {
   // microphone against its references is what made every reading wrong after a
   // switch. A black strip and a note is the honest version of "no audio yet".
   const micLive = source === 'mic' && audioRunning();
-  if (micLive) analyser.getFloatTimeDomainData(samples);
-  else if (source === 'demo') fillDemo(samples);
-  else samples.fill(0);
+  const demoLive = source === 'demo' && audioRunning() && isAudioPlaying && bufferSourceNode;
+
+  if (micLive || demoLive) {
+    analyser.getFloatTimeDomainData(samples);
+  } else if (source === 'synth' || (source === 'demo' && !currentAudioBuffer)) {
+    fillDemo(samples);
+  } else {
+    samples.fill(0);
+  }
   appendRecording(samples);
   selftestStep();
 
@@ -970,7 +1503,7 @@ function step() {
   const f = readFeatures();
 
   const bins = new Float32Array(wasm.HEAPF32.buffer, engine.spectrumPtr, engine.spectrumCount);
-  spectrum.paint(bins, engine.spectrumCount, f.presence * f.level);
+  spectrum.paint(bins, engine.spectrumCount, f.gateGain);
 
   updateHud(f);
 
@@ -984,7 +1517,7 @@ function step() {
   // while the context is suspended, and a trace that named the microphone for a
   // frame the synthetic signal drove would send the next debugging session after
   // the wrong input.
-  f.source = micLive ? 'mic' : 'demo';
+  f.source = micLive ? 'mic' : (demoLive ? 'demo' : (source === 'synth' ? 'synth' : 'silent'));
   f.drawMs = leds.lastDrawMs;
   trace.frame(f);
 }
@@ -999,7 +1532,9 @@ function paintButtons() {
   state.live.source = source;
   state.live.note = noteText ?? (source === 'mic'
     ? 'Analysing the microphone. Bass, mid and treble are the firmware\'s own bands.'
-    : 'Showing a synthetic signal. Start the microphone to drive it with sound.');
+    : source === 'demo'
+    ? 'Playing demo track. Select a song or load an audio file to test rhythm & animations.'
+    : 'Showing a synthetic signal (55 Hz tone). Start the microphone or demo track to drive it with sound.');
 }
 
 // True only once the browser is actually delivering audio. A suspended context
@@ -1021,14 +1556,13 @@ function watchForAudioStart() {
 }
 
 function onAudioState() {
-  // Guarded on micOpened rather than on the source, because the source is already
-  // the microphone before this can fire: the page opens the stream at load and
-  // stays pointed at it, feeding the analysis silence until the browser hands over
-  // audio. What has to happen at the handover is the dropping of the references
-  // the silence built and the clearing of the note that says why the strip was
-  // dark, not a change of source.
-  if (running && micOpened && audioRunning()) {
+  if (running && micOpened && audioRunning() && source === 'mic') {
     selectSource('mic');
+    noteText = null;
+    paintButtons();
+    hideError();
+  } else if (running && audioRunning() && source === 'demo' && !bufferSourceNode && currentAudioBuffer && isAudioPlaying) {
+    playAudioBuffer();
     noteText = null;
     paintButtons();
     hideError();
@@ -1061,47 +1595,18 @@ async function openMicQuietly() {
 }
 
 // Point the analysis at a different input.
-//
-// Every feature is normalised against a reference learned from the input: the
-// loudest recent block for level, the same for the bands, a slow follower of the
-// quietest recent block for the gate. Those references make the readings
-// gain-independent, which is what they are for, and they are also why a change of
-// source is invisible to the analysis. It has no way to know the samples stopped
-// coming from the same place, so it goes on measuring the new input against the
-// old input's peak.
-//
-// The two sources here are about forty times apart. The synthetic signal is loud
-// and steady so the view is not blank while permission is pending, and this
-// microphone runs far below it. Switching back to the microphone after the demo
-// had been playing measured it against the demo's amplitude, and levelRef forgets
-// at 0.995 per frame, so every value read a fraction of the truth for about
-// thirteen seconds before climbing back. Nothing was wrong with the microphone.
-//
-// Every path that changes the source comes through here, which is the only thing
-// holding the invariant together: one place assigns `source`, and it forgets the
-// references in the same breath.
 function selectSource(kind) {
   source = kind;
-  // Guarded, because this is now reachable before the module has loaded: stop() is
-  // called on the way out of the live view whether or not start() got that far.
   if (wasm) wasm._gg_reset_analysis();
-  // And the two records the page keeps of the same signal. The spectrum's running
-  // peaks and the trace's min and max are session-wide by design, and they are
-  // still statistics of the input: carried across a switch they describe the
-  // louder source, so every bar and every range reads low against a scale that
-  // belongs to audio that has stopped. `spectrum` is null until the first frame
-  // has built it, and `trace` exists from module load.
   trace.resetRange();
   if (spectrum) spectrum.reset();
 }
 
 export async function setSource(kind) {
-  if (kind === source) return;
+  if (kind === source && (kind !== 'demo' || bufferSourceNode)) return;
 
   if (kind === 'mic') {
-    // openMic reads engine, so the module is loaded here rather than assumed: the
-    // button is reachable before start() has run, and before this it threw a
-    // TypeError about a null engine instead of saying the build was missing.
+    stopAudioBuffer();
     try {
       await loadWasm();
     } catch (err) {
@@ -1115,12 +1620,6 @@ export async function setSource(kind) {
       showError(micFailure(err));
       return;
     }
-    // Pointed at the microphone whether or not the browser has started audio yet:
-    // the stream is open, so the microphone is what this page wants, and step()
-    // fills the synthetic signal only while the context is still suspended. The
-    // switch used to be deferred until the context resumed, which left the
-    // analysis on the synthetic signal's references and made the first real
-    // reading a fraction of the truth.
     selectSource('mic');
     if (!audioRunning()) {
       noteText = 'The microphone is open but the browser has not started audio ' +
@@ -1129,9 +1628,27 @@ export async function setSource(kind) {
     } else {
       noteText = null;
     }
-  } else {
+  } else if (kind === 'demo') {
     closeMic();
     selectSource('demo');
+    isAudioPlaying = true;
+    state.live.audioPlaying = true;
+    if (!currentAudioBuffer) {
+      await loadDemoTrack(currentTrackId || 'edm');
+    } else {
+      playAudioBuffer();
+    }
+    if (!audioRunning()) {
+      noteText = 'Audio demo selected. Click anywhere, or press a key, to let the browser start audio.';
+      watchForAudioStart();
+    } else {
+      noteText = null;
+    }
+  } else {
+    // 'synth'
+    closeMic();
+    stopAudioBuffer();
+    selectSource('synth');
     noteText = null;
   }
 
@@ -1161,32 +1678,16 @@ export async function start() {
   running = true;
   leds.resize();
 
-  // The microphone, always, and never the synthetic signal unless someone asks
-  // for it there and then. The demo button is the only way to select it; the
-  // ?source=demo link is the other, for a headless screenshot, and it is consumed
-  // below rather than left in the address.
-  //
-  // The source is set here rather than when the microphone opens, so the page is
-  // pointed at the microphone from the first frame. It used to fall back to the
-  // synthetic signal whenever the microphone could not be had, and a browser
-  // starts every audio context suspended until it has had a gesture, so that
-  // fallback was the normal path: the page ran on the synthetic signal by default
-  // and the microphone was the deviation. Nothing on the analysis side can undo
-  // that, because the references it keeps are statistics of whatever was playing.
-  //
-  // Until audio is flowing the analysis is fed silence, not the synthetic signal.
-  // Silence reads as no signal, which is true, and it costs a black strip until
-  // the first click. A synthetic signal would cost the readings instead.
-  //
-  // Not awaited, so the permission prompt cannot hold up the first paint. The
-  // promise only has to report a failure, since the source is already set.
   const params = new URLSearchParams(window.location.search);
-  if (params.get('source') === 'demo') {
-    selectSource('demo');
-    // Removed from the address as it is read. The page reloads itself when the
-    // wasm module is rebuilt and a reload keeps the query string, so a link
-    // followed once would put every later run of this page on the synthetic
-    // signal without anyone asking for it again.
+  const requestedSource = params.get('source');
+  if (requestedSource === 'demo') {
+    setSource('demo');
+    params.delete('source');
+    const rest = params.toString();
+    history.replaceState(null, '', window.location.pathname +
+                                (rest ? '?' + rest : '') + window.location.hash);
+  } else if (requestedSource === 'synth') {
+    setSource('synth');
     params.delete('source');
     const rest = params.toString();
     history.replaceState(null, '', window.location.pathname +
@@ -1205,17 +1706,7 @@ export function stop() {
   running = false;
   cancelAnimationFrame(rafId);
   closeMic();
-  // Back to the microphone, which is the state the page rests in. This used to
-  // return to the synthetic signal, so anything that stopped and restarted the
-  // player silently moved the page onto audio nobody asked for.
-  //
-  // Through selectSource, because this is one of the two paths that changes the
-  // source and it is the one that made the leak reachable. Leaving the live view and
-  // coming back runs start() again on the module that is already loaded, so the
-  // references the previous source built are still in it, and the source variable was
-  // the only thing that said otherwise. Demo, then Recording, then Live again, and
-  // the microphone was being measured against the synthetic signal's peaks and
-  // classified against its dynamics window.
+  stopAudioBuffer();
   selectSource('mic');
   noteText = null;
 }

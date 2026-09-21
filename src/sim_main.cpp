@@ -10,8 +10,13 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
 #endif
 
 #include <Arduino.h>
@@ -45,6 +50,7 @@
 #include "animations/neonFlow.h"
 #include "animations/PsychedelicInkSquirtAnimation.h"
 #include "animations/AnimationCatalog.h"
+#include "animations/AnimationProfile.h"
 #include "core/LEDStripController.h"
 
 // -----------------------------------------------------------------------------
@@ -120,7 +126,6 @@ uint32_t millis(void) { return static_cast<uint32_t>(g_now); }
 uint32_t micros(void) { return static_cast<uint32_t>(g_now * 1000UL); }
 void     delay(int) {}
 void     yield(void) {}
-void     pinMode(uint8_t, uint8_t) {}
 }
 
 long random(long howbig) { return howbig > 0 ? std::rand() % howbig : 0; }
@@ -276,6 +281,7 @@ void checkCatalog() {
             bad += std::string(meta.name) + " has no factory; ";
             continue;
         }
+        random16_set_seed(0x5EED);
         Animation* a = meta.create();
         if (a == nullptr) {
             nonNull = false;
@@ -632,7 +638,8 @@ void checkAnimationSweep(bool verbose) {
             const size_t allocStart = g_allocCount;
             const size_t liveStart  = g_allocCount - g_freeCount;
 
-            Animation* anim = meta.create();
+            random16_set_seed(0x5EED);
+    Animation* anim = meta.create();
             anim->begin();
 
             AudioFeatures::BandRefs refs;
@@ -740,6 +747,7 @@ struct LitPeak {
 LitPeak peakLitSumAt(const AnimationMeta& meta, int n, int frames, int dtMs,
                      int16_t* wave, float* spectrum, float level) {
     std::vector<CRGB> buf(static_cast<size_t>(n), CRGB::Black);
+    random16_set_seed(0x5EED);
     Animation* anim = meta.create();
     anim->begin();
 
@@ -1413,6 +1421,110 @@ void checkSceneTransitions() {
 }
 
 // -----------------------------------------------------------------------------
+//  Selection by music coordinates. The picker ranks scenes by distance to the
+//  music in 7 dimensions instead of one loudness axis. What has to hold: quiet
+//  music gets a quiet bed and loud driving music a loud one, the map is not
+//  dominated by a handful of scenes, a structural event is answered by a scene
+//  written for it, and a scene just left is not the first choice to return to.
+// -----------------------------------------------------------------------------
+static MusicState makeMusic(float inten, float act, float bri, float wgt, float pul,
+                            float tmp, float tex) {
+    MusicState m;
+    MusicCoord* c[7] = {&m.intensity, &m.activity, &m.brightness, &m.weight,
+                        &m.pulse, &m.tempo, &m.texture};
+    const float v[7] = {inten, act, bri, wgt, pul, tmp, tex};
+    for (int i = 0; i < 7; ++i) { c[i]->value = v[i]; c[i]->confidence = 1.0f; }
+    m.presence.value = 1.0f;
+    m.presence.confidence = 1.0f;
+    m.initialized = true;
+    return m;
+}
+
+void checkMusicSelection() {
+    SceneRegistry reg;
+    reg.registerDefaultScenes();
+    SceneState state;
+
+    const MusicState quiet = makeMusic(0.06f, 0.05f, 0.4f, 0.2f, 0.2f, 0.25f, 0.2f);
+    const MusicState loud  = makeMusic(0.95f, 0.80f, 0.5f, 0.85f, 0.9f, 0.7f, 0.5f);
+
+    const SceneDefinition& q = reg.pickSceneByMusic(state, quiet, MOOD_COUNT);
+    const SceneDefinition& l = reg.pickSceneByMusic(state, loud, MOOD_COUNT);
+    const AnimationProfile& qp = animationProfile(q.baseAnimation);
+    const AnimationProfile& lp = animationProfile(l.baseAnimation);
+    record("quiet music selects a quiet scene and loud music a loud one",
+           qp.target[AX_INTENSITY] < 0.3f && lp.target[AX_INTENSITY] > 0.8f,
+           std::string("quiet -> ") + q.name + ", loud -> " + l.name);
+
+    // Coverage over a grid of plausible music: a map where three scenes win
+    // everything means the profiles are not separating the catalog.
+    std::vector<bool> won(static_cast<size_t>(AnimationType::COUNT), false);
+    int winners = 0;
+    for (int i = 0; i <= 4; ++i)
+    for (int a = 0; a <= 2; ++a)
+    for (int w = 0; w <= 2; ++w)
+    for (int p = 0; p <= 2; ++p)
+    for (int t = 0; t <= 2; ++t)
+    for (int x = 0; x <= 2; ++x) {
+        const MusicState m = makeMusic(i * 0.25f, a * 0.5f, 0.5f, w * 0.5f, p * 0.5f,
+                                       t * 0.5f, x * 0.5f);
+        const size_t idx = static_cast<size_t>(reg.pickSceneByMusic(state, m, MOOD_COUNT).baseAnimation);
+        if (!won[idx]) { won[idx] = true; ++winners; }
+    }
+    record("the music map reaches a wide part of the catalog",
+           winners >= 18,
+           std::to_string(winners) + " of " + std::to_string(int(AnimationType::COUNT) - 1) +
+           " animations win somewhere on the grid");
+
+    // A structural event is answered by a scene written for it.
+    int untagged = 0;
+    std::string tagNames;
+    const MoodType events[] = {TEASE, BUILDUP, DESCENT, DROP, WEIRD};
+    for (size_t e = 0; e < 5; ++e) {
+        const SceneDefinition& s = reg.pickSceneByMusic(state, loud, events[e]);
+        if (!s.isTaggedFor(events[e])) ++untagged;
+        tagNames += std::string(moodToString(events[e])) + "->" + s.name + " ";
+    }
+    record("a structural event picks a scene written for it",
+           untagged == 0, tagNames);
+
+    // Never the running scene, never a draw.
+    int selfPicks = 0;
+    for (int i = 0; i <= 10; ++i) {
+        const MusicState m = makeMusic(i * 0.1f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f);
+        const SceneDefinition& a = reg.pickSceneByMusic(state, m, MOOD_COUNT);
+        state.activeScene = &a;
+        if (&reg.pickSceneByMusic(state, m, MOOD_COUNT) == &a) ++selfPicks;
+        state.activeScene = nullptr;
+    }
+    record("the music picker never returns the running scene",
+           selfPicks == 0, std::to_string(selfPicks) + " self-picks in 11 states");
+
+    // Recency: after leaving a scene, the same music does not send it straight back
+    // when a near-equal alternative exists.
+    const SceneDefinition& first = reg.pickSceneByMusic(state, loud, MOOD_COUNT);
+    state.beginScene(&first, MoodSnapshot(), MoodType::INTENSE);
+    const SceneDefinition& second = reg.pickSceneByMusic(state, loud, MOOD_COUNT);
+    state.beginScene(&second, MoodSnapshot(), MoodType::INTENSE);
+    const SceneDefinition& third = reg.pickSceneByMusic(state, loud, MOOD_COUNT);
+    record("a scene just left is not the next pick",
+           &third != &first && &third != &second,
+           std::string(first.name) + " -> " + second.name + " -> " + third.name);
+
+    // Unsure coordinates count for less: the same distant target scores nearer
+    // when the analyser has not settled on the coordinate.
+    MusicState sure = makeMusic(0.9f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f);
+    MusicState unsure = sure;
+    unsure.intensity.confidence = 0.0f;
+    unsure.activity.confidence = 0.0f;
+    const AnimationProfile& hp = animationProfile(AnimationType::GRADIENT_WASH);
+    record("a low-confidence coordinate counts for less in the distance",
+           profileDistance(hp, unsure) < profileDistance(hp, sure),
+           "gradient wash distance " + std::to_string(profileDistance(hp, sure)) + " sure, " +
+           std::to_string(profileDistance(hp, unsure)) + " unsure");
+}
+
+// -----------------------------------------------------------------------------
 //  Check 10 - the mood classifier is total
 //
 //  The check the original defect would have failed. The classifier tested four
@@ -1895,6 +2007,40 @@ void checkAudioProcessor() {
            "level " + std::to_string(quarterLevel.level) +
            " held for six hundred blocks at a quarter of the amplitude that set the reference");
 
+    // Near-silence is not loud. Room tone sets the noise floor, and level is the
+    // envelope against the loudest recent envelope: a faint burst a few times the
+    // floor became the reference, and a signal barely above the room then read as a
+    // large fraction of it. The reference now cannot be less than a multiple of the
+    // floor, so a signal that close to the room reads low however it got there.
+    {
+        AudioProcessor procQuiet;
+        std::vector<float> faint(samples.size());
+        std::vector<float> fainter(samples.size());
+        for (size_t i = 0; i < faint.size(); ++i) {
+            faint[i]   = samples[i] * 0.0060f;   // a faint burst, about 0.0012 peak
+            fainter[i] = samples[i] * 0.0025f;   // then something barely above it
+        }
+        // Room tone at the floor, with a burst every fourth block, so the floor
+        // settles on the tone and the reference on the burst. Then the burst goes
+        // away and only a little more than tone remains.
+        std::vector<float> tone(samples.size());
+        for (size_t i = 0; i < tone.size(); ++i) tone[i] = samples[i] * 0.0030f;
+        AudioFeatures qf;
+        for (int b = 0; b < 600; ++b) {
+            const std::vector<float>& src = (b % 4 == 0) ? faint : tone;
+            procQuiet.submitSamples(src.data(), src.size());
+            qf = procQuiet.analyzeAudio();
+        }
+        for (int b = 0; b < 300; ++b) {
+            procQuiet.submitSamples(fainter.data(), fainter.size());
+            qf = procQuiet.analyzeAudio();
+        }
+        record("a signal barely above the room does not read as loud",
+               qf.level < 0.5f,
+               "level " + std::to_string(qf.level) + " with volume " + std::to_string(qf.volume) +
+               " and noise floor " + std::to_string(qf.noiseFloor));
+    }
+
     // --- Changing source -----------------------------------------------------
     // Every reference in the analysis is a statistic of the input: the loudest
     // recent value of the envelope for level and for the bands, a slow follower of
@@ -1999,13 +2145,19 @@ void checkAudioProcessor() {
     }
 
     AudioProcessor procBpm;
+    // AudioProcessor timestamps submitted samples from the device sample clock.
+    // Keep the fixture in that same domain: one 1024-sample block is about
+    // 11.6 ms at the configured sample rate, so an 800 ms beat interval is 69
+    // blocks. simAdvance() is the harness UI clock and must not be used to make
+    // audio appear to have elapsed.
+    const int kBlocksPer800Ms = int(0.800f * float(SAMPLE_RATE) / float(NUM_SAMPLES) + 0.5f);
     for (int beatFrame = 0; beatFrame < 12; ++beatFrame) {
         procBpm.submitSamples(samples.data(), samples.size());   // loud
         procBpm.analyzeAudio();
-        simAdvance(400);
-        procBpm.submitSamples(quiet.data(), quiet.size());       // the gap
-        procBpm.analyzeAudio();
-        simAdvance(400);
+        for (int gap = 1; gap < kBlocksPer800Ms; ++gap) {
+            procBpm.submitSamples(quiet.data(), quiet.size());   // the gap
+            procBpm.analyzeAudio();
+        }
     }
     const float bpmBefore = procBpm.analyzeAudio().bpm;
 
@@ -2014,7 +2166,7 @@ void checkAudioProcessor() {
 
     float bpmAfter = bpmBefore;
     int quietFrames = 0;
-    for (; quietFrames < 2000 && bpmAfter > 0.0f; ++quietFrames) {
+    for (; quietFrames < 2200 && bpmAfter > 0.0f; ++quietFrames) {
         procBpm.submitSamples(quiet.data(), quiet.size());
         bpmAfter = procBpm.analyzeAudio().bpm;
         simAdvance(33);
@@ -2023,7 +2175,7 @@ void checkAudioProcessor() {
     record("the BPM falls back to zero once the beats stop",
            bpmBefore > 0.0f && bpmAfter == 0.0f,
            "bpm went from " + std::to_string(bpmBefore) + " to " + std::to_string(bpmAfter) +
-           " over " + std::to_string(quietFrames) + " quiet frames");
+           " over " + std::to_string(quietFrames) + " quiet frames at the sample clock");
 
     // --- BPM stability -------------------------------------------------------
     // The readout was the newest interval outright, 60000/sinceBeat, so a single
@@ -2036,16 +2188,18 @@ void checkAudioProcessor() {
     // has to be the tempo, not what the gap alone implies, and it has to still be
     // the tempo once the gap has aged into the middle of the window.
     AudioProcessor procSteady;
+    const int kBlocksPer1600Ms = 2 * kBlocksPer800Ms;
     float bpmAtGap = 0.0f, bpmEnd = 0.0f;
     for (int i = 0; i < 10; ++i) {
         procSteady.submitSamples(samples.data(), samples.size());
         const float atBeat = procSteady.analyzeAudio().bpm;
         if (i == 5) bpmAtGap = atBeat;
         if (i == 9) bpmEnd = atBeat;
-        simAdvance(400);
-        procSteady.submitSamples(quiet.data(), quiet.size());
-        procSteady.analyzeAudio();
-        simAdvance(i == 5 ? 1200 : 400);
+        const int interval = i == 5 ? kBlocksPer1600Ms : kBlocksPer800Ms;
+        for (int gap = 1; gap < interval; ++gap) {
+            procSteady.submitSamples(quiet.data(), quiet.size());
+            procSteady.analyzeAudio();
+        }
     }
 
     const float kSteadyBpm = 60000.0f / 800.0f;
@@ -2276,7 +2430,11 @@ void checkAudioProcessor() {
     }
     procDynTuning.setDynamicsDecayPerBlock(0.0f);
     AudioFeatures tunedDyn;
-    for (int held = 0; held < 120; ++held) {
+    // The level envelope itself releases at LEVEL_ENV_RELEASE. Give it enough
+    // sample-clock blocks to reach the quiet level before judging the separate
+    // dynamics-edge decay setting; otherwise the lower edge is still following
+    // the envelope and the check measures that release time instead.
+    for (int held = 0; held < 300; ++held) {
         procDynTuning.submitSamples(quietTone.data(), quietTone.size());
         tunedDyn = procDynTuning.analyzeAudio();
     }
@@ -2368,11 +2526,13 @@ void checkAudioProcessor() {
         loud.level = 0.95f;
         loud.dynamics = 0.9f;
         loud.bpm = 140.0f;
+        loud.gateGain = 1.0f;
 
         AudioFeatures quiet{};
         quiet.level = 0.05f;
         quiet.dynamics = 0.02f;
         quiet.bpm = 60.0f;
+        quiet.gateGain = 1.0f;
 
         MoodHistory dwell;
         feed(dwell, loud, 30);
@@ -2739,6 +2899,39 @@ const Tracked kTracked[] = {
     {"bpm",             [](const AudioFeatures& f) { return f.bpm; }},
     {"centroid",        [](const AudioFeatures& f) { return f.spectrumCentroid; }},
     {"noiseFloor",      [](const AudioFeatures& f) { return f.noiseFloor; }},
+    {"buildup",         [](const AudioFeatures& f) { return f.buildup; }},
+    {"descent",         [](const AudioFeatures& f) { return f.descent; }},
+    {"dropDetected",    [](const AudioFeatures& f) { return f.dropDetected ? 1.0f : 0.0f; }},
+    {"teaseDetected",   [](const AudioFeatures& f) { return f.teaseDetected ? 1.0f : 0.0f; }},
+    {"anomaly",         [](const AudioFeatures& f) { return f.anomaly; }},
+    {"gateGain",        [](const AudioFeatures& f) { return f.gateGain; }},
+    {"spectralFlatness",[](const AudioFeatures& f) { return f.spectralFlatness; }},
+    {"intensity",       [](const AudioFeatures& f) { return f.music.intensity.value; }},
+    {"intensity.conf",  [](const AudioFeatures& f) { return f.music.intensity.confidence; }},
+    {"intensity.trend", [](const AudioFeatures& f) { return f.music.intensity.trend; }},
+    {"activity",        [](const AudioFeatures& f) { return f.music.activity.value; }},
+    {"activity.conf",   [](const AudioFeatures& f) { return f.music.activity.confidence; }},
+    {"activity.trend",  [](const AudioFeatures& f) { return f.music.activity.trend; }},
+    {"brightness",      [](const AudioFeatures& f) { return f.music.brightness.value; }},
+    {"brightness.conf", [](const AudioFeatures& f) { return f.music.brightness.confidence; }},
+    {"brightness.trend",[](const AudioFeatures& f) { return f.music.brightness.trend; }},
+    {"weight",          [](const AudioFeatures& f) { return f.music.weight.value; }},
+    {"weight.conf",     [](const AudioFeatures& f) { return f.music.weight.confidence; }},
+    {"weight.trend",    [](const AudioFeatures& f) { return f.music.weight.trend; }},
+    {"pulse",           [](const AudioFeatures& f) { return f.music.pulse.value; }},
+    {"pulse.conf",      [](const AudioFeatures& f) { return f.music.pulse.confidence; }},
+    {"pulse.trend",     [](const AudioFeatures& f) { return f.music.pulse.trend; }},
+    {"tempo",           [](const AudioFeatures& f) { return f.music.tempo.value; }},
+    {"tempo.conf",      [](const AudioFeatures& f) { return f.music.tempo.confidence; }},
+    {"tempo.trend",     [](const AudioFeatures& f) { return f.music.tempo.trend; }},
+    {"texture",         [](const AudioFeatures& f) { return f.music.texture.value; }},
+    {"texture.conf",    [](const AudioFeatures& f) { return f.music.texture.confidence; }},
+    {"texture.trend",   [](const AudioFeatures& f) { return f.music.texture.trend; }},
+    {"presence",        [](const AudioFeatures& f) { return f.music.presence.value; }},
+    {"presence.conf",   [](const AudioFeatures& f) { return f.music.presence.confidence; }},
+    {"presence.trend",  [](const AudioFeatures& f) { return f.music.presence.trend; }},
+    {"beatPhase",       [](const AudioFeatures& f) { return f.beatPhase; }},
+    {"beatConfidence",  [](const AudioFeatures& f) { return f.beatConfidence; }},
 };
 
 constexpr size_t kTrackedCount = sizeof(kTracked) / sizeof(kTracked[0]);
@@ -2815,7 +3008,8 @@ void writeCapture(const char* path, const std::vector<std::vector<float>>& block
 // Runs the blocks through the real pipeline. A frame is 33 ms, the harness's usual
 // step, so the beat detector's 250 ms refractory and the BPM's decay behave over a
 // capture the way they do live.
-ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks) {
+ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks,
+                            const char* tracePath = nullptr) {
     ReplayReport report;
     report.stats.resize(kTrackedCount);
 
@@ -2825,6 +3019,12 @@ ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks) {
     MoodType      previousMood = SILENT;
     bool          havePrevious = false;
     unsigned long moodSince    = 0;
+    std::FILE* trace = tracePath ? std::fopen(tracePath, "w") : nullptr;
+    if (trace) {
+        std::fprintf(trace, "frame,sampleFrame,dtSeconds");
+        for (size_t i = 0; i < kTrackedCount; ++i) std::fprintf(trace, ",%s", kTracked[i].name);
+        std::fprintf(trace, ",mood\n");
+    }
 
     for (const std::vector<float>& block : blocks) {
         proc.submitSamples(block.data(), block.size());
@@ -2838,6 +3038,14 @@ ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks) {
 
         mood.update(f);
         const MoodType m = mood.getCurrentMood();
+        if (trace) {
+            std::fprintf(trace, "%d,%llu,%.9f", report.frames - 1,
+                         static_cast<unsigned long long>(f.sampleFrame), f.dtSeconds);
+            for (size_t i = 0; i < kTrackedCount; ++i) {
+                std::fprintf(trace, ",%.9g", kTracked[i].get(f));
+            }
+            std::fprintf(trace, ",%s\n", moodToString(m));
+        }
         report.moodFrames[int(m)] += 1;
         if (!havePrevious) {
             previousMood = m;
@@ -2850,6 +3058,7 @@ ReplayReport analyzeCapture(const std::vector<std::vector<float>>& blocks) {
             previousMood = m;
         }
     }
+    if (trace) std::fclose(trace);
     return report;
 }
 
@@ -2891,7 +3100,7 @@ void printCapture(const char* path, const ReplayReport& r) {
     std::printf("  its spread every frame, which is what a flickering reading is.\n");
 }
 
-int replayCapture(const char* path) {
+int replayCapture(const char* path, const char* tracePath) {
     std::vector<std::vector<float>> blocks;
     std::string why;
     if (!loadCapture(path, blocks, why)) {
@@ -2902,7 +3111,8 @@ int replayCapture(const char* path) {
         std::printf("%s holds no frames\n", path);
         return 1;
     }
-    printCapture(path, analyzeCapture(blocks));
+    printCapture(path, analyzeCapture(blocks, tracePath));
+    if (tracePath) std::printf("trace written: %s\n", tracePath);
     return 0;
 }
 
@@ -2998,6 +3208,7 @@ int main(int argc, char** argv) {
     bool        verbose = true;
     const char* dumpDir = nullptr;
     const char* replayPath = nullptr;
+    const char* tracePath = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--plain") == 0) colour  = false;
@@ -3008,11 +3219,14 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--replay") == 0 && i + 1 < argc) {
             replayPath = argv[++i];
         }
+        if (std::strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
+            tracePath = argv[++i];
+        }
     }
 
     // A replay is a measurement of the real microphone, not a check, so it runs
     // on its own and skips the watchdog and the assertions entirely.
-    if (replayPath != nullptr) return replayCapture(replayPath);
+    if (replayPath != nullptr) return replayCapture(replayPath, tracePath);
 
     enableVt();
     randomSeed(20260916);
@@ -3037,6 +3251,7 @@ int main(int argc, char** argv) {
     setPhase("checkLayerSweep");     checkLayerSweep(verbose);
     setPhase("checkSoak");           checkSoak(verbose);
     setPhase("checkSceneTransitions"); checkSceneTransitions();
+    setPhase("checkMusicSelection"); checkMusicSelection();
     setPhase("checkMoodPartition");  checkMoodPartition();
     setPhase("checkAudioProcessor"); checkAudioProcessor();
     setPhase("checkReplay");         checkReplay();

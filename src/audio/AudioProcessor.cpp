@@ -25,7 +25,7 @@ void AudioProcessor::begin() {
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = 0,
-        .dma_buf_count = 8,
+        .dma_buf_count = 32,
         .dma_buf_len = 64,
         .use_apll = false,
         .tx_desc_auto_clear = false,
@@ -107,6 +107,7 @@ void AudioProcessor::submitSamples(const float* samples, size_t count) {
         vImag[i]  = 0.0f;
         buffer[i] = 0;
     }
+    if (n > 0) sampleClock += n;
 }
 
 // Drop the remembered statistics of the input. Not the buffers: the FFT's vReal
@@ -132,6 +133,19 @@ void AudioProcessor::resetTracking() {
 
     bandRefs.reset();
 
+    sampleClock = 0;
+    previousSampleClock = 0;
+    sampleClockSeeded = false;
+    intensityTracker.reset();
+    activityTracker.reset();
+    brightnessTracker.reset();
+    weightTracker.reset();
+    pulseTracker.reset();
+    textureTracker.reset();
+    memset(previousSpectrum, 0, sizeof(previousSpectrum));
+    fluxReference = 0.0f;
+    fluxSeeded = false;
+
     smoothBass    = 0.0f;
     smoothMid     = 0.0f;
     smoothTreble  = 0.0f;
@@ -147,12 +161,24 @@ void AudioProcessor::resetTracking() {
     // that has stopped.
     previousVolume     = 0.0f;
     previousBassEnergy = 0.0f;
+    previousMidEnergy  = 0.0f;
+    lastSignalTime     = 0;
     loudness           = 0.0f;
-    lastBeatTime   = millis();
+    // Beat timestamps are now in the sample-clock domain.  Starting these
+    // with wall-clock millis() would make the first sample-time subtraction
+    // underflow after a reset.
+    lastBeatTime   = 0;
     currentBPM     = 0.0f;
     bpmAtLastBeat  = 0.0f;
     beatIntervalCount = 0;
     beatIntervalNext  = 0;
+    for (int i = 0; i < ONSET_HISTORY_LEN; ++i) onsetHistory[i] = 0.0f;
+    onsetIndex = 0;
+    onsetCount = 0;
+    trackedPeriodFrames = 43.0f;
+    beatPhase = 0.0f;
+    beatConfidence = 0.0f;
+    autocorrCadence = 0;
 
     // The structural state. Every member here is a statistic of the source that
     // has just been switched away from, and the switch is the one moment that is
@@ -169,7 +195,7 @@ void AudioProcessor::resetTracking() {
     // detector never heard. Not part of clearStructure, which runs every frame the
     // gate is shut: re-stamping it there would keep pushing the cooldown out and
     // leave a passage's first eight seconds unable to report a drop.
-    lastDropMs = millis();
+    lastDropMs = 0;
 }
 
 void AudioProcessor::clearStructure() {
@@ -215,6 +241,87 @@ unsigned long AudioProcessor::medianBeatInterval() const {
     return sorted[beatIntervalCount / 2];
 }
 
+void AudioProcessor::updateAutocorrBeat(float novelty) {
+    onsetHistory[onsetIndex] = novelty;
+    onsetIndex = (onsetIndex + 1) % ONSET_HISTORY_LEN;
+    if (onsetCount < ONSET_HISTORY_LEN) ++onsetCount;
+
+    if (trackedPeriodFrames > 1.0f) {
+        beatPhase += 1.0f / trackedPeriodFrames;
+        if (beatPhase >= 1.0f) {
+            beatPhase -= 1.0f;
+        }
+    }
+
+    if (++autocorrCadence % 3 != 0 || onsetCount < 96) {
+        return;
+    }
+
+    const int kMinLag = 26; // ~199 BPM (26 * 11.6ms = 302ms)
+    const int kMaxLag = 86; // ~60 BPM (86 * 11.6ms = 998ms)
+    const int kCompareLen = 96;
+
+    if (onsetCount < kMaxLag + kCompareLen) {
+        return;
+    }
+
+    float scores[61] = {};
+    float bestScore = -1.0f;
+    int bestLag = 0;
+    float sumScore = 0.0f;
+    int scoreCount = 0;
+
+    for (int lag = kMinLag; lag <= kMaxLag; ++lag) {
+        float r = 0.0f;
+        for (int i = 0; i < kCompareLen; ++i) {
+            int idx0 = (onsetIndex - 1 - i + ONSET_HISTORY_LEN * 2) % ONSET_HISTORY_LEN;
+            int idxLag = (onsetIndex - 1 - i - lag + ONSET_HISTORY_LEN * 2) % ONSET_HISTORY_LEN;
+            r += onsetHistory[idx0] * onsetHistory[idxLag];
+        }
+
+        const float diff = float(lag - 43);
+        const float weight = 1.0f - 0.35f * (diff * diff) / (diff * diff + 250.0f);
+        const float score = r * weight;
+        scores[lag - kMinLag] = score;
+
+        sumScore += score;
+        ++scoreCount;
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestLag = lag;
+        }
+    }
+
+    // Octave disambiguation: check if half-lag (double tempo) has a substantial peak.
+    // In 4/4 music, a 2-beat period (60-80 BPM, lag 60-86) will always show high autocorrelation.
+    // If the 1-beat period (120-160 BPM, lag 30-43) also has a strong peak, the 1-beat period is the true tempo.
+    if (bestLag >= 52) {
+        int halfLag = (bestLag + 1) / 2;
+        if (halfLag >= kMinLag && halfLag <= kMaxLag) {
+            float halfScore = scores[halfLag - kMinLag];
+            if (halfLag - 1 >= kMinLag) halfScore = fmaxf(halfScore, scores[halfLag - 1 - kMinLag]);
+            if (halfLag + 1 <= kMaxLag) halfScore = fmaxf(halfScore, scores[halfLag + 1 - kMinLag]);
+            if (halfScore >= 0.50f * bestScore) {
+                bestLag = halfLag;
+                bestScore = halfScore;
+            }
+        }
+    }
+
+    if (scoreCount > 0 && bestScore > 1e-6f) {
+        const float meanScore = sumScore / float(scoreCount);
+        const float rawConf = constrain((bestScore - meanScore) / bestScore, 0.0f, 1.0f);
+        beatConfidence += (rawConf - beatConfidence) * 0.15f;
+    } else {
+        beatConfidence *= 0.90f;
+    }
+
+    if (beatConfidence > 0.25f && bestLag >= kMinLag && bestLag <= kMaxLag) {
+        trackedPeriodFrames += (float(bestLag) - trackedPeriodFrames) * 0.10f;
+    }
+}
+
 // Perform FFT and compute audio features
 AudioFeatures AudioProcessor::analyzeAudio() {
     AudioFeatures features;
@@ -228,11 +335,15 @@ AudioFeatures AudioProcessor::analyzeAudio() {
         float av = fabsf(v);
         sum += av;
         sumSq += v * v;
-        maxV = max(maxV, av);
+        maxV = fmaxf(maxV, av);
     }
     float avg = sum / NUM_SAMPLES;
     volume = sqrtf(sumSq / NUM_SAMPLES);
     peak = maxV;
+    loudness = gainSmoothing * loudness + (1 - gainSmoothing) * (volume * 100.0f);
+
+    // These live in members because they are stateful between frames, but they are
+    // also what every consumer reads, so they have to reach the returned struct.
     loudness = gainSmoothing * loudness + (1 - gainSmoothing) * (volume * 100.0f);
 
     // These live in members because they are stateful between frames, but they are
@@ -250,21 +361,23 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // exists.
     features.average  = avg;
 
-    // Hysteresis: open well above the floor, close closer to it, so a signal
-    // sitting on the threshold does not chatter the whole spectral feature set.
-    // Both thresholds are multiples of the floor rather than fixed amounts above
-    // it. A fixed amount is a claim about the input's absolute scale, and this
-    // microphone runs about 40 dB below it, so the absolute form left the gate
-    // shut through music. Multiples hold at any gain. The small additive terms
-    // only stop the gate opening on the first block, when the floor is still 0.
-    //
-    // Reads the floor this block left behind, since the floor is now measured
-    // after the FFT and the flatness that decides it comes from there. One block
-    // is 11.6 ms, which is under the gate's own ramp.
+    const unsigned long now = static_cast<unsigned long>(
+        (sampleClock * 1000ULL) / SAMPLE_RATE);
+
+    // Hysteresis with hangover: open well above the floor, and once open, hold for at
+    // least GATE_HANGOVER_MS so pauses between beats, vocal phrases, and stop consonants
+    // do not strobe/chatter the gate.
     if (signalPresence) {
-        if (volume < noiseFloor * 1.5f + 0.0005f) signalPresence = false;
+        if (volume > noiseFloor * 1.5f + 0.0005f) {
+            lastSignalTime = now;
+        } else if (now - lastSignalTime >= GATE_HANGOVER_MS) {
+            signalPresence = false;
+        }
     } else {
-        if (volume > noiseFloor * 2.5f + 0.001f) signalPresence = true;
+        if (volume > noiseFloor * 2.5f + 0.001f) {
+            signalPresence = true;
+            lastSignalTime = now;
+        }
     }
     features.signalPresence = signalPresence;
 
@@ -278,6 +391,7 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     int midLimit  = 2000 * NUM_SAMPLES / SAMPLE_RATE;
     int half      = NUM_SAMPLES / 2;
     float eTotal=0, cSum=0, bSum=0, mSum=0, tSum=0;
+    float spectralFlux = 0.0f;
     // Spectral flatness, the geometric mean of the magnitudes over their arithmetic
     // mean, accumulated here because this loop already walks the same bins. It is
     // what tells a room from a track, and level cannot: a loud room and a loud
@@ -289,6 +403,8 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     int   magBins = 0;
     for (int i=1;i<half;i++){
         float mag = vReal[i];
+        spectralFlux += fmaxf(0.0f, mag - previousSpectrum[i]);
+        previousSpectrum[i] = mag;
         if(i<=bassLimit) bSum+=mag;
         else if(i<=midLimit) mSum+=mag;
         else tSum+=mag;
@@ -323,6 +439,13 @@ AudioFeatures AudioProcessor::analyzeAudio() {
             ? expf(logSum / float(magBins)) / (eTotal / float(magBins))
             : 0.0f;
     features.spectralFlatness = spectralFlatness;
+
+    if (!fluxSeeded) {
+        fluxReference = spectralFlux;
+        fluxSeeded = true;
+    } else {
+        fluxReference = fmaxf(fluxReference * 0.995f, spectralFlux);
+    }
 
     // Tracked silence baseline. It falls onto a quieter block at a fixed rate, and
     // rises only onto a block whose spectrum is noise-like. See NOISE_FLAT_MIN in
@@ -442,7 +565,8 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // both slow, so the ratio is already a level rather than a spike train, and a
     // further follower would only add lag to a value whose whole job is to be
     // stable.
-    const float levelSpan = levelRef - noiseFloor;
+    const float levelRefEff = fmaxf(levelRef, noiseFloor * LEVEL_REF_MIN_OVER_NOISE);
+    const float levelSpan = levelRefEff - noiseFloor;
     const float levelRaw  = (levelSpan > 1e-5f) ? (levelEnv - noiseFloor) / levelSpan : 0.0f;
 
     // Still gated, for the moment the gate opens and closes: the envelope cannot
@@ -522,20 +646,49 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     // playing came from. The second condition is that the bass band has to rise
     // too. A kick is low end and a consonant is not, so it is the condition that
     // tells a rhythm from a voice. See BEAT_BASS_RISE in Config.h.
-    unsigned long now = millis();
+    features.sampleFrame = sampleClock / NUM_SAMPLES;
+    features.sampleTimeMs = now;
+    features.dtSeconds = sampleClockSeeded
+        ? float(sampleClock - previousSampleClock) / float(SAMPLE_RATE)
+        : 0.0f;
+    previousSampleClock = sampleClock;
+    sampleClockSeeded = true;
+
+    const float normSpectralFlux = (eTotal > 1e-5f) ? spectralFlux / eTotal : 0.0f;
+    const float normBassFlux = (bSum > 1e-5f) ? fmaxf(0.0f, bassEnergy - previousBassEnergy) / bSum : 0.0f;
+    const float normMidFlux = (mSum > 1e-5f) ? fmaxf(0.0f, mSum - previousMidEnergy) / mSum : 0.0f;
+
+    const float blockNovelty = (gateGain > 0.15f)
+        ? (normBassFlux * 1.0f + normMidFlux * 0.8f + normSpectralFlux * 0.5f)
+        : 0.0f;
+    updateAutocorrBeat(blockNovelty);
+
     const unsigned long sinceBeat = now - lastBeatTime;
-    const float beatRise = max(noiseFloor * BEAT_RISE_NOISE,
+    const float beatRise = fmaxf(noiseFloor * BEAT_RISE_NOISE,
                                previousVolume * BEAT_RISE_FRACTION);
+    const bool volRising = (volume - previousVolume > beatRise) || (normSpectralFlux > 0.12f);
+
+    // Multi-band beat trigger conditions:
+    // 1. Bass downbeat (kick/808):
+    const bool isBassHit = (bassEnergy > previousBassEnergy * BEAT_BASS_RISE) &&
+                           (features.bassLevel >= BEAT_MIN_BASS_LEVEL || normBassFlux > 0.20f);
+    // 2. Mid/Treble backbeat (snare/clap/bright acoustic transient):
+    const bool isMidHit = (normMidFlux > 0.25f) && (features.midLevel >= 0.12f) && (features.level >= 0.06f);
+    // 3. Phase-locked expectation: when autocorrelation confidence is high (>0.35),
+    // onsets near the predicted downbeat phase trigger cleanly even at low volume
+    const bool isPhaseHit = (beatConfidence >= 0.35f) &&
+                            (beatPhase < 0.15f || beatPhase > 0.85f) &&
+                            (normBassFlux > 0.10f || normMidFlux > 0.15f || normSpectralFlux > 0.10f);
+
     bool beat = false;
-    if (signalPresence && volume - previousVolume > beatRise &&
-        bassEnergy > previousBassEnergy * BEAT_BASS_RISE &&
-        sinceBeat > MIN_BEAT_INTERVAL) {
+    if (signalPresence && volRising && (isBassHit || isMidHit || isPhaseHit) &&
+        (lastBeatTime == 0 || sinceBeat > MIN_BEAT_INTERVAL)) {
         beat = true;
         // The tempo is the median of the recent intervals, not the newest one. One
         // interval moves the readout by tens of BPM when a beat lands a block early
         // or late, and a beat the detector misses doubles the interval and halves
         // the number, which is what an erratic readout is made of.
-        if (sinceBeat <= TEMPO_HOLD_MS) {
+        if (lastBeatTime > 0 && sinceBeat <= TEMPO_HOLD_MS) {
             beatIntervals[beatIntervalNext] = sinceBeat;
             beatIntervalNext = (beatIntervalNext + 1) % BEAT_BPM_WINDOW;
             if (beatIntervalCount < BEAT_BPM_WINDOW) ++beatIntervalCount;
@@ -543,7 +696,27 @@ AudioFeatures AudioProcessor::analyzeAudio() {
             bpmAtLastBeat = currentBPM;
         }
         lastBeatTime = now;
+
+        // Phase-locked loop nudging: if a strong kick lands, nudge beatPhase towards 0.0 (downbeat)
+        if (beatPhase < 0.35f) {
+            beatPhase *= 0.5f;
+        } else if (beatPhase > 0.65f) {
+            beatPhase += (1.0f - beatPhase) * 0.5f;
+            if (beatPhase >= 1.0f) beatPhase -= 1.0f;
+        }
     }
+
+    // Autocorrelation tempo lock:
+    // When autocorrelation has locked onto a periodic rhythm with good confidence,
+    // drive BPM smoothly and reliably, avoiding octave-jumps and missing-kick stalls.
+    const float autocorrBPM = (trackedPeriodFrames > 1.0f)
+        ? (float(SAMPLE_RATE) * 60.0f / (float(NUM_SAMPLES) * trackedPeriodFrames))
+        : 0.0f;
+    if (beatConfidence >= 0.30f && autocorrBPM >= 55.0f && autocorrBPM <= 200.0f) {
+        currentBPM = autocorrBPM;
+        bpmAtLastBeat = currentBPM;
+    }
+
     // No beats for a while means the tempo is no longer known. Without this the
     // last measured value stays on the readout forever, which reads as stuck
     // rather than as stale. The intervals go with it, because the first beat after
@@ -565,20 +738,69 @@ AudioFeatures AudioProcessor::analyzeAudio() {
             bpmAtLastBeat = 0.0f;
             beatIntervalCount = 0;
             beatIntervalNext  = 0;
+            lastBeatTime      = 0;
         }
     }
-    features.beatDetected = beat;
-    features.bpm          = currentBPM;
-    // 1 on a block carrying a strong bass impulse, 0 otherwise. BassPulseStorm
-    // reads this, and nothing had ever assigned it, so its branch that tests it
-    // was unreachable.
-    features.bassHits     = beat ? 1 : 0;
+    features.beatDetected   = beat;
+    features.bpm            = currentBPM;
+    features.beatPhase      = beatPhase;
+    features.beatConfidence = beatConfidence;
+    features.bassHits       = beat ? 1 : 0;
 
+    float pulse = 0.0f;
+    float pulseConfidence = float(beatIntervalCount) / float(BEAT_BPM_WINDOW);
+    if (beatIntervalCount > 0) {
+        const float median = float(medianBeatInterval());
+        float deviation = 0.0f;
+        for (int i = 0; i < beatIntervalCount; ++i) {
+            deviation += fabsf(float(beatIntervals[i]) - median);
+        }
+        deviation /= float(beatIntervalCount);
+        pulse = median > 0.0f ? constrain(1.0f - deviation / median, 0.0f, 1.0f) : 0.0f;
+    }
+    pulse = fmaxf(pulse, beatConfidence);
+    pulseConfidence = fmaxf(pulseConfidence, beatConfidence);
     updateStructure(features, now);
+    updateMusicState(features, spectralFlux, pulse, pulseConfidence);
 
     previousVolume     = volume;
     previousBassEnergy = bassEnergy;
+    previousMidEnergy  = mSum;
     return features;
+}
+
+void AudioProcessor::updateMusicState(AudioFeatures& features, float spectralFlux,
+                                      float pulse, float pulseConfidence) {
+    const float dt = features.dtSeconds > 0.0f ? features.dtSeconds : 1.0f / float(SAMPLE_RATE);
+    const float activity = fluxReference > 1e-6f
+        ? constrain(spectralFlux / fluxReference, 0.0f, 1.0f)
+        : 0.0f;
+    const float gateConfidence = constrain(features.gateGain, 0.0f, 1.0f);
+    intensityTracker.update(features.level, gateConfidence, dt);
+    activityTracker.update(activity, gateConfidence, dt);
+    brightnessTracker.update(constrain(features.spectrumCentroid / float(NUM_SAMPLES / 2), 0.0f, 1.0f), gateConfidence, dt);
+    weightTracker.update(features.bassLevel, gateConfidence, dt);
+    pulseTracker.update(pulse, pulseConfidence, dt);
+    textureTracker.update(features.spectralFlatness, gateConfidence, dt);
+
+    features.music.intensity = intensityTracker.output;
+    features.music.activity = activityTracker.output;
+    features.music.brightness = brightnessTracker.output;
+    features.music.weight = weightTracker.output;
+    features.music.pulse = pulseTracker.output;
+    features.music.tempo.value = constrain(features.bpm / 240.0f, 0.0f, 1.0f);
+    features.music.tempo.confidence = pulseConfidence;
+    features.music.tempo.trend = 0.0f;
+    features.music.texture = textureTracker.output;
+    features.music.presence.value = features.gateGain;
+    features.music.presence.confidence = gateConfidence;
+    features.music.presence.trend = 0.0f;
+    features.music.buildup = features.buildup > 0.0f;
+    features.music.descent = features.descent > 0.0f;
+    features.music.dropDetected = features.dropDetected;
+    features.music.teaseDetected = features.teaseDetected;
+    features.music.anomaly = features.anomaly > 0.0f;
+    features.music.initialized = true;
 }
 
 // The structural detectors: BUILDUP, DESCENT, DROP, TEASE and WEIRD. SILENT needs

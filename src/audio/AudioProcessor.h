@@ -39,6 +39,18 @@ private:
     // itself, because the ring's order is its insertion order.
     unsigned long medianBeatInterval() const;
 
+    // Autocorrelation onset history and beat phase tracking
+    static const int ONSET_HISTORY_LEN = 192;
+    float onsetHistory[ONSET_HISTORY_LEN] = {0};
+    int   onsetIndex = 0;
+    int   onsetCount = 0;
+    float trackedPeriodFrames = 43.0f; // ~120 BPM initial period (43 blocks @ 11.6ms)
+    float beatPhase = 0.0f;            // 0.0 to 1.0 phase in current beat
+    float beatConfidence = 0.0f;       // Periodicity confidence (0..1)
+    int   autocorrCadence = 0;
+
+    void updateAutocorrBeat(float novelty);
+
     // Silence tracking. noiseFloor is a slow follower of the quietest recent block,
     // and it may rise only onto a block whose spectrum is noise-like, which is what
     // stops a track raising the floor it is being measured against. signalPresence is
@@ -66,6 +78,8 @@ private:
     // to rise above. See BEAT_BASS_RISE in Config.h for why the level rise alone
     // was not enough and why this is the energy rather than the share.
     float previousBassEnergy = 0.0f;
+    float previousMidEnergy = 0.0f;
+    unsigned long lastSignalTime = 0;
 
     // The loudest block seen recently, which is what features.level is a fraction
     // of. This is what makes the level independent of the microphone's gain.
@@ -77,6 +91,19 @@ private:
     // number and why the envelope is asymmetric.
     float levelEnv       = 0.0f;
     bool  levelEnvSeeded = false;
+
+    unsigned long long sampleClock = 0;
+    unsigned long long previousSampleClock = 0;
+    bool sampleClockSeeded = false;
+    MusicCoordTracker intensityTracker;
+    MusicCoordTracker activityTracker;
+    MusicCoordTracker brightnessTracker;
+    MusicCoordTracker weightTracker;
+    MusicCoordTracker pulseTracker;
+    MusicCoordTracker textureTracker;
+    float previousSpectrum[NUM_SAMPLES / 2] = {};
+    float fluxReference = 0.0f;
+    bool fluxSeeded = false;
 
     // The band equivalents of levelRef, for the three bandLevels. Beside the level
     // reference rather than in the feature block, which is allocated fresh every
@@ -154,6 +181,9 @@ private:
     // same set of windows because they were filled while the gate was shut and
     // measure the gate's ramp rather than the music.
     void clearStructure();
+
+    void updateMusicState(AudioFeatures& features, float spectralFlux,
+                          float pulse, float pulseConfidence);
 
     // Everything above, run over the finished feature block. Separate from
     // analyzeAudio rather than inline because it is the half of that function

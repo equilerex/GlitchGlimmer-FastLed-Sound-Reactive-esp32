@@ -100,6 +100,16 @@
 // mean.
 #define LEVEL_REF_RISE      0.05f
 
+// The least the level's reference may be, as a multiple of the measured noise
+// floor. Without it the reference follows whatever the loudest recent signal was,
+// including room tone: a mic reading 0.0005 against a floor of 0.0003 set the
+// reference to about 0.0005 and level read 91 percent for what is very nearly
+// silence, because a ratio against a tiny reference fills the meter. Eight times
+// the floor is about 18 dB above the room, so anything quieter than that cannot
+// read as loud. A multiple of the floor rather than a constant, so it scales with
+// the microphone's gain the way the floor does.
+#define LEVEL_REF_MIN_OVER_NOISE 8.0f
+
 // How fast the silence gate opens and closes, per block. It opened at 0.12, which
 // is the spectrum gone inside a tenth of a second, and level multiplied by the
 // same ramp fell off a cliff at the end of every phrase. That is the gate's doing
@@ -130,21 +140,21 @@
 // few counts of the ADC, so a quiet room would pass it on noise alone. This floor
 // is a multiple of the measured noise floor rather than a fixed number, for the
 // same reason the fraction is relative.
-#define BEAT_RISE_NOISE     4.0f
-// Milliseconds between beats. Caps the detector at 240 BPM.
-#define MIN_BEAT_INTERVAL   250
+#define BEAT_RISE_NOISE     2.0f
+// Milliseconds the silence gate stays held open after signal drops below threshold.
+// Prevents stop consonants and brief pauses between beats from strobing or chattering the gate.
+#define GATE_HANGOVER_MS    350
+// Milliseconds between beats. Caps the detector at 187.5 BPM, preventing
+// syncopated 8th-note off-beats and subdivisions on 100-130 BPM material
+// from phase-locking the tempo tracker.
+#define MIN_BEAT_INTERVAL   320
 // How much the bass band's energy has to rise over the block before it for the
-// rise to count as a beat. The level rise above is cleared by any onset, and
-// speech is almost nothing but onsets: a syllable starts on a consonant, the block
-// before it was quieter, so the detector fired on every word and reported 140 to
-// 200 with no beat anywhere in the room. What a beat has that a word does not is
-// low end. Bass here is everything under 200 Hz, where a kick lives and where
-// speech carries almost nothing, so requiring that band to move is what separates
-// a rhythm from someone talking. A ratio to the previous block, so it holds at any
-// gain, and measured on the band's raw magnitude rather than its share, because a
-// block that is mostly bass already has a share at the top of its range and a
-// share cannot rise.
+// rise to count as a beat.
 #define BEAT_BASS_RISE      1.15f
+// The minimum normalized bass level (0..1, relative to recent peak bass) required
+// for an onset to count as a beat. Lowered to 0.15 to allow beats during quiet passages
+// and on tracks without overwhelming sub-bass.
+#define BEAT_MIN_BASS_LEVEL 0.15f
 // How many inter-beat intervals the tempo is the median of. One interval moves the
 // readout by tens of BPM when a beat lands a block early, and a missed beat halves
 // it, so the tempo comes from several and the outliers are discarded. Twelve is

@@ -7,10 +7,16 @@
 // Initialize default values
 SceneState::SceneState()
  : activeScene(nullptr), sceneStartMillis(0), sceneMinDurationMs(5000), sceneIdealDurationMs(12000), lastMood(), startMood(SILENT), sceneChangeCount(0), totalUptimeMs(0)
-{}
+{
+    for (int i = 0; i < kRecent; ++i) recent[i] = -1;
+}
 
 // Begin a new scene with baseline mood snapshot
 void SceneState::beginScene(const SceneDefinition* def, const MoodSnapshot& moodNow, MoodType moodNowType) {
+    if (activeScene && activeScene != def) {
+        for (int i = kRecent - 1; i > 0; --i) recent[i] = recent[i - 1];
+        recent[0] = static_cast<int>(activeScene->baseAnimation);
+    }
     activeScene = def;
     sceneStartMillis = millis();
     lastMood = moodNow;

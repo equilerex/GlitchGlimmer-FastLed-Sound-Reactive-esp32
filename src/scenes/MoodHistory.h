@@ -104,6 +104,8 @@ struct MoodSnapshot {
     float anomaly;
     bool  teaseDetected;
 
+    MusicState music;
+
     float frequency;
 
     unsigned long timestamp;
@@ -262,6 +264,7 @@ public:
         m.dropDetected = f.dropDetected;
         m.anomaly = f.anomaly;
         m.teaseDetected = f.teaseDetected;
+        m.music = f.music;
         m.frequency = f.frequency;
         m.timestamp = millis();
 
@@ -289,6 +292,14 @@ public:
         smoothed.level    = smoothLevel;
         smoothed.dynamics = smoothDynamics;
         smoothed.bpm      = smoothBpm;
+        // The classifier now consumes the coordinate state. Keep its
+        // intensity and tempo coordinates aligned with the legacy smoothed
+        // fields so step 3 preserves the existing smoothing behavior.
+        smoothed.music.intensity.value = smoothLevel;
+        smoothed.music.tempo.value = constrain(smoothBpm / 240.0f, 0.0f, 1.0f);
+        smoothed.music.presence.value = constrain(m.gateGain, 0.0f, 1.0f);
+        smoothed.music.presence.confidence = smoothed.music.presence.value;
+        smoothed.music.initialized = true;
 
         if (!dynSeeded) {
             dynLo = smoothDynamics;
@@ -408,6 +419,20 @@ public:
     bool  dynamicsThresholdsActive() const { return dynSpan > DYN_MIN_SPAN; }
 
 private:
+    MusicState stateFor(const MoodSnapshot& m) const {
+        if (m.music.initialized) return m.music;
+        MusicState s;
+        s.intensity.value = constrain(m.level, 0.0f, 1.0f);
+        s.tempo.value = constrain(m.bpm / 240.0f, 0.0f, 1.0f);
+        s.presence.value = constrain(m.gateGain, 0.0f, 1.0f);
+        s.buildup = m.buildup > 0.0f;
+        s.descent = m.descent > 0.0f;
+        s.dropDetected = m.dropDetected;
+        s.teaseDetected = m.teaseDetected;
+        s.anomaly = m.anomaly >= WEIRD_ANOMALY_MIN;
+        return s;
+    }
+
     // A total partition over level, with bpm and dynamics as nudges of at most
     // one rung each. The nudge is the whole fix.
     //
@@ -430,17 +455,19 @@ private:
     // true on every frame: the classifier could never reach CALM and returned
     // INTENSE whenever dynamics cleared its cut, whatever was playing.
     int ladderRankFrom(const MoodSnapshot& m) const {
+        const MusicState s = stateFor(m);
         int rung = 0;
-        if      (m.level >= LADDER_EDGE_3) rung = 4;
-        else if (m.level >= LADDER_EDGE_2) rung = 3;
-        else if (m.level >= LADDER_EDGE_1) rung = 2;
-        else if (m.level >= LADDER_EDGE_0) rung = 1;
+        if      (s.intensity.value >= LADDER_EDGE_3) rung = 4;
+        else if (s.intensity.value >= LADDER_EDGE_2) rung = 3;
+        else if (s.intensity.value >= LADDER_EDGE_1) rung = 2;
+        else if (s.intensity.value >= LADDER_EDGE_0) rung = 1;
 
         // bpm > 1 is required rather than defensive. bpm is exactly 0 whenever no
         // tempo is known, which is every beatless passage, so a bare `bpm < 80`
         // would push each of those down a rung for as long as it lasted.
-        if (m.bpm > BPM_NUDGE_UP) rung += 1;
-        else if (m.bpm > 1.0f && m.bpm < BPM_NUDGE_DOWN) rung -= 1;
+        const float bpm = s.tempo.value * 240.0f;
+        if (bpm > BPM_NUDGE_UP) rung += 1;
+        else if (bpm > 1.0f && bpm < BPM_NUDGE_DOWN) rung -= 1;
 
         // Only when the observed range is wide enough to split. Below DYN_MIN_SPAN
         // the input has no dynamic variation worth reading, and splitting its own
@@ -482,15 +509,16 @@ private:
     // needs it above CALM, because a fall that starts at the bottom is just
     // quiet.
     MoodType classifyMood(const MoodSnapshot& m) const {
-        if (m.gateGain < SILENT_GATE) return SILENT;
-        if (m.dropDetected)           return DROP;
-        if (m.teaseDetected)          return TEASE;
+        const MusicState s = stateFor(m);
+        if (s.presence.value < SILENT_GATE) return SILENT;
+        if (s.dropDetected)                 return DROP;
+        if (s.teaseDetected)                return TEASE;
 
         const int rung = ladderRankFrom(m);
 
-        if (m.buildup > 0.0f && rung < 3)                return BUILDUP;
-        if (m.descent > 0.0f && rung > 1)                return DESCENT;
-        if (m.anomaly >= WEIRD_ANOMALY_MIN && rung >= 2) return WEIRD;
+        if (s.buildup && rung < 3)                         return BUILDUP;
+        if (s.descent && rung > 1)                         return DESCENT;
+        if (s.anomaly && rung >= 2)                        return WEIRD;
         return ladderMood(rung);
     }
 

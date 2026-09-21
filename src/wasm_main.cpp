@@ -32,6 +32,14 @@
 #include "animations/AnimationCatalog.h"
 #include "core/LEDStripController.h"
 
+// FastLED's WASM platform is also usable as an Arduino-style application and
+// keeps these lifecycle hooks in its platform object. The browser entry point
+// drives the library through gg_step(), so the hooks are intentionally no-ops.
+void setup() {}
+void loop() {}
+
+extern "C" void js_post_ui_elements(const char*) {}
+
 // -----------------------------------------------------------------------------
 //  Globals the firmware expects to find at link time
 // -----------------------------------------------------------------------------
@@ -71,8 +79,8 @@ float g_samples[NUM_SAMPLES];
 // getCurrentSceneName() and getCurrentMoodName() both return by value, so the
 // pointer would dangle if it were taken from the temporary. These statics hold
 // the copy that the returned c_str() points at.
-std::string g_sceneName = "—";
-std::string g_moodName  = "—";
+String g_sceneName = "—";
+String g_moodName  = "—";
 
 } // namespace
 
@@ -114,7 +122,11 @@ int gg_sample_count(void) { return NUM_SAMPLES; }
 // are all built from the input that was playing, so a switch left the mood on
 // display as a verdict on audio that had stopped, for as long as the ring held it.
 EMSCRIPTEN_KEEPALIVE
-void gg_reset_analysis(void) { g_proc.resetTracking(); g_mood.reset(); }
+void gg_reset_analysis(void) {
+    g_proc.resetTracking();
+    g_mood.reset();
+    g_last = AudioFeatures{};
+}
 
 // Where to write the microphone's time-domain samples, each normalised to -1..1.
 EMSCRIPTEN_KEEPALIVE
@@ -198,9 +210,63 @@ float gg_feature(int index) {
         case 13: return g_last.bassLevel;
         case 14: return g_last.midLevel;
         case 15: return g_last.trebleLevel;
+        case 16: return g_last.buildup;
+        case 17: return g_last.descent;
+        case 18: return g_last.dropDetected ? 1.0f : 0.0f;
+        case 19: return g_last.teaseDetected ? 1.0f : 0.0f;
+        case 20: return g_last.anomaly;
+        case 21: return g_last.gateGain;
+        case 22: return g_last.spectralFlatness;
+        // MusicState coordinates: value, confidence, trend
+        case 23: return g_last.music.intensity.value;
+        case 24: return g_last.music.intensity.confidence;
+        case 25: return g_last.music.intensity.trend;
+        case 26: return g_last.music.activity.value;
+        case 27: return g_last.music.activity.confidence;
+        case 28: return g_last.music.activity.trend;
+        case 29: return g_last.music.brightness.value;
+        case 30: return g_last.music.brightness.confidence;
+        case 31: return g_last.music.brightness.trend;
+        case 32: return g_last.music.weight.value;
+        case 33: return g_last.music.weight.confidence;
+        case 34: return g_last.music.weight.trend;
+        case 35: return g_last.music.pulse.value;
+        case 36: return g_last.music.pulse.confidence;
+        case 37: return g_last.music.pulse.trend;
+        case 38: return g_last.music.tempo.value;
+        case 39: return g_last.music.tempo.confidence;
+        case 40: return g_last.music.tempo.trend;
+        case 41: return g_last.music.texture.value;
+        case 42: return g_last.music.texture.confidence;
+        case 43: return g_last.music.texture.trend;
+        case 44: return g_last.music.presence.value;
+        case 45: return g_last.music.presence.confidence;
+        case 46: return g_last.music.presence.trend;
+        // Sample clock telemetry
+        case 47: return g_last.dtSeconds;
+        case 48: return static_cast<float>(g_last.sampleTimeMs);
+        case 49: return static_cast<float>(g_last.sampleFrame);
+        // Autocorrelation rhythm and phase tracking
+        case 50: return g_last.beatPhase;
+        case 51: return g_last.beatConfidence;
         default: return 0.0f;
     }
 }
+
+EMSCRIPTEN_KEEPALIVE
+double gg_sample_frame(void) { return static_cast<double>(g_last.sampleFrame); }
+
+EMSCRIPTEN_KEEPALIVE
+double gg_sample_time_ms(void) { return static_cast<double>(g_last.sampleTimeMs); }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_dt_seconds(void) { return g_last.dtSeconds; }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_beat_phase(void) { return g_last.beatPhase; }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_beat_confidence(void) { return g_last.beatConfidence; }
 
 // Pointers to the feature struct and the spectrum array, so the page can render a
 // spectrum meter without an accessor per bin.
@@ -243,7 +309,7 @@ int gg_scene_changes(void) { return g_ctrl.getSceneChangeCount(); }
 // -----------------------------------------------------------------------------
 EMSCRIPTEN_KEEPALIVE
 const char* gg_mood_predicted_name(void) {
-    static std::string name;
+    static String name;
     name = g_mood.getPredictedMoodName();
     return name.c_str();
 }

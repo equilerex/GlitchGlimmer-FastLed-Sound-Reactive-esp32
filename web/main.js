@@ -1,5 +1,5 @@
 import { createApp } from 'vue';
-import { state } from './state.js';
+import { state, COORD_INFO } from './state.js';
 import * as recording from './app.js';
 import * as live from './live.js';
 import { PROFILES, profileById, countForLength } from './viz/profiles.js';
@@ -22,6 +22,18 @@ const app = createApp({
     };
   },
   computed: {
+    // The ladder moods (floaty, calm, dancy, energetic, intense) only describe
+    // loudness, which the coordinates show directly. Only the structural moods say
+    // something the coordinates do not.
+    structureLabel() {
+      const mood = this.s.mode === 'live' ? this.s.live.mood : this.s.recording.mood;
+      const structural = ['Silent', 'Tease', 'Buildup', 'DROP', 'Weeeeird', 'Descent'];
+      return structural.indexOf(mood) >= 0 ? mood : 'Steady';
+    },
+    visibleEvents() {
+      const events = this.s.live.events || [];
+      return this.s.live.hideGateEvents ? events.filter((ev) => ev.type !== 'gate') : events;
+    },
     profileNote() {
       const strip = this.s.hw.strips[this.s.hw.activeStrip];
       return strip ? profileById(strip.profile).note : '';
@@ -36,6 +48,18 @@ const app = createApp({
     }
   },
   methods: {
+    clearEvents() {
+      this.s.live.events = [];
+    },
+    coordLabel(name) {
+      const info = COORD_INFO[name];
+      return info ? info.label : name;
+    },
+    coordTooltip(name) {
+      const info = COORD_INFO[name];
+      if (!info) return name;
+      return [info.label, 'Source: ' + info.base, 'Formula: ' + info.formula, info.desc].join('\n\n');
+    },
     async selectMode(next) {
       if (next === this.s.mode) return;
 
@@ -67,6 +91,25 @@ const app = createApp({
     },
     useDemo() {
       live.setSource('demo');
+    },
+    useSynth() {
+      live.setSource('synth');
+    },
+    toggleAudioPlay() {
+      live.toggleAudioPlay();
+    },
+    toggleAudioMute() {
+      live.toggleAudioMute();
+    },
+    changeDemoTrack() {
+      live.selectDemoTrack(this.s.live.demoTrack);
+    },
+    onAudioFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      if (file) {
+        live.loadAudioFile(file);
+      }
+      event.target.value = '';
     },
     updateTuning(index, value) {
       live.updateTuning(index, parseFloat(value));

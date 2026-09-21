@@ -6,7 +6,11 @@
   "scripts": {
     "start": "node tools/serve-web.js",
     "frames": "node tools/dump-frames.js",
-    "wasm": "bash tools/build-wasm.sh",
+    "native": "node tools/run-native.js",
+    "wasm": "node tools/run-wasm.js",
+    "setup": "node tools/setup.js",
+    "setup:native": "node tools/setup-native.js",
+    "setup:wasm": "node tools/setup-emscripten.js",
     "test": "node --test \"test/**/*.test.js\"",
     "upload": "pio run -e esp32s3 -t upload --upload-port COM9"
   },

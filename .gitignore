@@ -48,3 +48,4 @@ node_modules/
 # whatever was in the room, which is the user's environment rather than the
 # project's source, and the harness generates its own fixtures for the checks.
 *.f32
+.tools/

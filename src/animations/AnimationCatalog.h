@@ -49,6 +49,14 @@ enum class AnimationType {
     MOONLIGHT,
     FOREST_CANOPY,
     LAVA_CYBER_STORM,
+    JUGGLE,
+    SINELON,
+    CONFETTI,
+    TWINKLE_STARS,
+    RAINBOW_MARCH,
+    BREATHING,
+    BEAT_TRAILS,
+    BPM_STRIPES,
     COUNT
 };
 

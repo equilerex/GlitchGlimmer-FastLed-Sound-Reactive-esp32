@@ -34,6 +34,7 @@
 #include "MoonlightAnimation.h"
 #include "ForestCanopyAnimation.h"
 #include "LavaCyberStormAnimation.h"
+#include "ThemeAnimations.h"
 
 // Definition of the central animation catalog (was extern in header)
 //
@@ -91,5 +92,14 @@ const std::array<AnimationMeta, static_cast<size_t>(AnimationType::COUNT)> anima
     { AnimationType::GENTLE_PULSE_WAVE,  "Gentle Pulse",        MoodType::TEASE,  0.52f, 0.46f, []() { return new GentlePulseWaveAnimation(); } },
     { AnimationType::MOONLIGHT,          "Moonlight",           MoodType::SILENT, 0.30f, 0.05f, []() { return new MoonlightAnimation(); } },
     { AnimationType::FOREST_CANOPY,      "Forest Canopy",       MoodType::SILENT, 0.32f, 0.04f, []() { return new ForestCanopyAnimation(); } },
-    { AnimationType::LAVA_CYBER_STORM,   "Lava Cyber Storm",    MoodType::DESCENT,0.62f, 0.65f, []() { return new LavaCyberStormAnimation(); } }
+    { AnimationType::LAVA_CYBER_STORM,   "Lava Cyber Storm",    MoodType::DESCENT,0.62f, 0.65f, []() { return new LavaCyberStormAnimation(); } },
+    // Ported from the Serenity themes folder. See ThemeAnimations.h.
+    { AnimationType::JUGGLE,             "Juggle",              MoodType::DANCY,  0.60f, 0.54f, []() { return new JuggleAnimation(); } },
+    { AnimationType::SINELON,            "Sinelon",             MoodType::CALM,   0.55f, 0.40f, []() { return new SinelonAnimation(); } },
+    { AnimationType::CONFETTI,           "Confetti",            MoodType::DANCY,  0.65f, 0.47f, []() { return new ConfettiAnimation(); } },
+    { AnimationType::TWINKLE_STARS,      "Twinkle Stars",       MoodType::FLOATY, 0.40f, 0.22f, []() { return new TwinkleStarsAnimation(); } },
+    { AnimationType::RAINBOW_MARCH,      "Rainbow March",       MoodType::DANCY,  0.70f, 0.57f, []() { return new RainbowMarchAnimation(); } },
+    { AnimationType::BREATHING,          "Breathing",           MoodType::FLOATY, 0.30f, 0.08f, []() { return new BreathingAnimation(); } },
+    { AnimationType::BEAT_TRAILS,        "Beat Trails",         MoodType::CALM,   0.50f, 0.36f, []() { return new BeatTrailsAnimation(); } },
+    { AnimationType::BPM_STRIPES,        "BPM Stripes",         MoodType::ENERGETIC, 0.75f, 0.62f, []() { return new BpmAnimation(); } }
 }};

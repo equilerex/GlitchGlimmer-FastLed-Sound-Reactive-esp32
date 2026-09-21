@@ -2,8 +2,13 @@
 #include "../config/Config.h"
 #include <Arduino.h>
 #include <cmath>
+#include "MusicState.h"
 
 struct AudioFeatures {
+    unsigned long long sampleFrame = 0;
+    float dtSeconds = 0.0f;
+    unsigned long sampleTimeMs = 0;
+
     float volume = 0.0f;            // Root mean square volume
     float loudness = 0.0f;          // Smoothed loudness (0–100)
     float peak = 0.0f;              // Peak amplitude
@@ -114,6 +119,8 @@ struct AudioFeatures {
 
     bool beatDetected = false;      // Beat detection flag
     float bpm = 0.0f;               // Estimated BPM
+    float beatPhase = 0.0f;         // Normalized beat phase [0.0..1.0), 0 = on the beat
+    float beatConfidence = 0.0f;    // Autocorrelation rhythm regularity/confidence [0..1]
     int bassHits = 0;               // Count of strong bass impulses
 
     float noiseFloor = 0.0f;        // Tracked silence baseline
@@ -183,6 +190,8 @@ struct AudioFeatures {
     // a pulse that will not sustain. Any one of the three is enough, because to a
     // listener they are the same thing.
     bool teaseDetected = false;
+
+    MusicState music;
 
     int16_t* waveform = nullptr;    // Pointer to time-domain samples
     size_t waveformSize = 0;        // Size of waveform buffer

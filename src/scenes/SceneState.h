@@ -14,6 +14,12 @@ struct SceneState {
     MoodSnapshot lastMood;
     MoodType startMood;
 
+    // The last few base animations, newest first, so the selector can lean away
+    // from a scene it just left. Without it two scenes with nearly equal distance
+    // to the music trade places every dwell, which reads as a loop of two looks.
+    static const int kRecent = 3;
+    int recent[kRecent];
+
     // Base durations, adjustable at run time so the scene clock can be tuned
     // against real audio from the page rather than by rebuilding. The tempo and
     // mood factors still scale them.

@@ -1,5 +1,6 @@
 #pragma once
 #include "Animation.h"
+#include "BeatClock.h"
 #include <FastLED.h>
 
 class SpaceWizardsAndLizardsAnimation : public Animation {
@@ -7,6 +8,7 @@ class SpaceWizardsAndLizardsAnimation : public Animation {
     uint16_t      t;
     uint32_t      wizardSeed;
     bool          isWizardPhase;
+    HoldLatch     phaseLatch;
     uint32_t      lastPhaseSwitch;
     CRGBPalette16 wizardPal;
     CRGBPalette16 lizardPal;
@@ -34,8 +36,12 @@ public:
         EVERY_N_MILLISECONDS(40) { ++gHue; ++t; }
 
         const uint32_t now = millis();
-        if (now - lastPhaseSwitch > 6000) {
-            isWizardPhase = !isWizardPhase;
+        // Tonal music gets the wizard, noisy or percussive music the lizard.
+        // Texture is spectral flatness, so it separates the two by timbre where the
+        // old 6 s timer separated them by nothing.
+        const bool wantLizard = phaseLatch.update(f.music.texture.value, 0.40f, 0.55f, 5000);
+        if (wantLizard == isWizardPhase) {
+            isWizardPhase = !wantLizard;
             lastPhaseSwitch = now;
             wizardSeed = random16();
         }

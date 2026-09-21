@@ -1,5 +1,6 @@
 #include "SceneRegistry.h"
 #include "SceneState.h"
+#include "../animations/AnimationProfile.h"
 #include <Arduino.h>
 #include <cmath>
 
@@ -155,6 +156,54 @@ const SceneDefinition& SceneRegistry::pickSceneByMood(const SceneState& current,
         }
     }
 
+    return *best;
+}
+
+float SceneRegistry::sceneDistance(const SceneState& current, const SceneDefinition& scene,
+                                   const MusicState& music) const {
+    float d = profileDistance(animationProfile(scene.baseAnimation), music);
+    // A scene left within the last few picks is nudged away, newest strongest. The
+    // running scene is exempt: it is the incumbent and gets its own edge from the
+    // director's margin, not from being penalised here.
+    if (current.activeScene != &scene) {
+        for (int i = 0; i < SceneState::kRecent; ++i) {
+            if (current.recent[i] == static_cast<int>(scene.baseAnimation)) {
+                d += 0.10f - 0.03f * i;
+                break;
+            }
+        }
+    }
+    return d;
+}
+
+const SceneDefinition& SceneRegistry::pickSceneByMusic(const SceneState& current,
+                                                       const MusicState& music,
+                                                       MoodType structural) const {
+    std::vector<const SceneDefinition*> candidates;
+    if (structural != MOOD_COUNT && ladderRank(structural) < 0) {
+        for (const auto& s : scenes) {
+            if (s.isTaggedFor(structural)) candidates.push_back(&s);
+        }
+    }
+    if (candidates.empty()) {
+        for (const auto& s : scenes) candidates.push_back(&s);
+    }
+    if (candidates.empty()) return scenes.front();
+
+    if (candidates.size() > 1 && current.activeScene != nullptr) {
+        candidates.erase(std::remove(candidates.begin(), candidates.end(), current.activeScene),
+                         candidates.end());
+    }
+
+    const SceneDefinition* best = nullptr;
+    float bestDist = 0.0f;
+    for (const SceneDefinition* s : candidates) {
+        const float d = sceneDistance(current, *s, music);
+        if (best == nullptr || d < bestDist) {
+            best = s;
+            bestDist = d;
+        }
+    }
     return *best;
 }
 

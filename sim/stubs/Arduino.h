@@ -20,7 +20,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <string>
+#include <thread>
 
 using std::abs;
 using std::max;
@@ -68,6 +70,8 @@ void     pinMode(uint8_t pin, uint8_t mode);
 using String = std::string;
 
 typedef unsigned char byte;
+typedef volatile uint32_t RoReg;
+typedef volatile uint32_t RwReg;
 
 // Arduino's flash-string macro. There is no PROGMEM on the host.
 #ifdef F

@@ -4,6 +4,7 @@
 #include "../audio/AudioFeatures.h"
 #include "../audio/AudioHistoryTracker.h"
 #include "../animations/AlienPulse.h"
+#include "BeatClock.h"
 #include "../animations/neonFlow.h"
 #include "../animations/PsychedelicInkSquirtAnimation.h"
 #include "../audio/AudioSnapshot.h"
@@ -14,6 +15,7 @@ private:
     float opacities[3];
     unsigned long lastSwitch = 0;
     size_t currentIndex = 0;
+    HoldSelect leadSelect;
 
 public:
     MultiLayeredHybridAnimation() {
@@ -37,12 +39,20 @@ public:
 
         fill_solid(leds, n, CRGB::Black);
 
+        // The band carrying the most energy leads: bass to Alien Pulse, mid to Neon
+        // Flow, treble to the squirts. The other two stay under it at a third, and
+        // opacities slew toward their targets so a change of lead is a crossfade.
+        // It rotated every 10 s and snapped its opacities before this.
         unsigned long nowTime = millis();
-        if (nowTime - lastSwitch > 10000) {
-            currentIndex = (currentIndex + 1) % 3;
-            for (int i = 0; i < 3; ++i) opacities[i] = 0.3;
-            opacities[currentIndex] = 1.0;
-            lastSwitch = nowTime;
+        const float dt = lastSwitch == 0 ? 0.0f : (nowTime - lastSwitch) * 0.001f;
+        lastSwitch = nowTime;
+        const float scores[3] = {now.bassLevel, now.midLevel, now.trebleLevel};
+        currentIndex = size_t(leadSelect.update(scores, 3, 0.15f, 4000));
+        for (int i = 0; i < 3; ++i) {
+            const float target = (size_t(i) == currentIndex) ? 1.0f : 0.3f;
+            const float stepTo = 1.5f * dt;
+            if (opacities[i] < target) opacities[i] = fminf(target, opacities[i] + stepTo);
+            else                       opacities[i] = fmaxf(target, opacities[i] - stepTo);
         }
 
         for (int i = 0; i < 3; ++i) {

@@ -12,14 +12,15 @@
 
 #include <Arduino.h>
 
-// FastLED's wasm timing source calls FASTLED_WARN but includes no header that
-// defines it, and works in FastLED's own build only because that build has a
-// precompiled header carrying it. Included here for the same effect.
-#include "fl/warn.h"
+// FastLED's wasm timing source calls FASTLED_WARN. Current FastLED defines it in
+// the logging header.
+#include "fl/log/log.h"
 
 #include <cstdint>
-#include <string>
+extern "C" uint32_t millis();
 
+// FastLED's stub Arduino header supplies String as fl::string. Do not redeclare it
+// as std::string: newer FastLED packages reject the second alias.
 // FastLED's emulation announces ARDUINO as 1, which is below the 100 threshold
 // arduinoFFT uses to choose between Arduino.h and the pre-1.0 WProgram.h, so it
 // asks for a header that no longer ships. 1.8.19 is the version the comment in
@@ -27,9 +28,6 @@
 #undef ARDUINO
 #define ARDUINO 10819
 
-// SceneDirector returns Arduino's String by value. The device gets the real class
-// from the ESP32 core; here it is the standard string.
-using String = std::string;
 
 // FastLED's stub declares constrain as a function template, which cannot deduce
 // through the mixed-type calls the effect code makes, such as

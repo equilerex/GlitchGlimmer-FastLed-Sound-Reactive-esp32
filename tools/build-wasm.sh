@@ -4,12 +4,9 @@
 # compiled to WebAssembly, plus the JavaScript glue that feeds it microphone
 # samples. Output lands in web/live/.
 #
-# Needs Emscripten on PATH. Nothing else in this repo does, which is why this is a
-# shell script rather than a PlatformIO environment: Emscripten is not one of
-# PlatformIO's platforms and emulating it there would fight the tool.
-#
-#     source /path/to/emsdk/emsdk_env.sh
-#     tools/build-wasm.sh
+# `npm run wasm` is the supported entry point. `tools/run-wasm.js` activates the
+# pinned SDK in the child process before invoking this script. Running this file
+# directly still works when em++ is already on PATH.
 #
 # FastLED comes out of the native environment's library directory. Run
 # `pio run -e native` once first if it is not there.
@@ -48,24 +45,7 @@ for arg in "$@"; do
 done
 
 if ! command -v em++ >/dev/null 2>&1; then
-  # npm cannot change the parent terminal's environment, but the build process
-  # can load Emscripten itself. Prefer the active EMSDK and then the standard
-  # Windows Git Bash location used by this repo's setup instructions.
-  emsdk_candidates=()
-  if [ -n "${EMSDK:-}" ]; then emsdk_candidates+=("$EMSDK"); fi
-  emsdk_candidates+=(/d/emsdk /c/emsdk "$HOME/emsdk")
-  for emsdk_dir in "${emsdk_candidates[@]}"; do
-    if [ -f "$emsdk_dir/emsdk_env.sh" ]; then
-      # shellcheck disable=SC1090
-      source "$emsdk_dir/emsdk_env.sh" >/dev/null
-      break
-    fi
-  done
-fi
-
-if ! command -v em++ >/dev/null 2>&1; then
-  echo "em++ is not available. Install Emscripten or set EMSDK to its directory." >&2
-  echo "Expected, for example: /d/emsdk/emsdk_env.sh" >&2
+  echo "em++ is not available. Run 'npm run setup:wasm', then use 'npm run wasm'." >&2
   exit 1
 fi
 
@@ -130,6 +110,8 @@ mapfile -t fastled_src < <(find "$fastled" -name '*.cpp' | sort | grep -Ev "$ski
 
 compile_flags=(
   -std=gnu++17
+  -matomics
+  -mbulk-memory
   -O2
   -fno-exceptions
   -fno-rtti
@@ -150,6 +132,8 @@ compile_flags=(
 )
 
 link_flags=(
+  -matomics
+  -mbulk-memory
   -sMODULARIZE=1
   -sEXPORT_NAME=createGlitchGlimmer
   -sENVIRONMENT=web
@@ -221,7 +205,8 @@ queue lib "$arduinofft/arduinoFFT.cpp"
 queue repo "${repo_src[@]}"
 queue repo src/scenes/*.cpp src/animations/*.cpp
 
-jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+jobs="${GG_WASM_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+jobs="${jobs//[^0-9]/}"
 echo "Emscripten: $(em++ --version | head -1)"
 echo "FastLED:    $fastled (${#fastled_src[@]} sources)"
 

@@ -1,10 +1,12 @@
 #pragma once
 #include "Animation.h"
+#include "BeatClock.h"
 #include <FastLED.h>
 
 class PlayaChaosAnimation : public Animation {
     uint8_t       gHue;
     uint8_t       currentMood;
+    HoldSelect    moodSelect;
     uint32_t      lastMoodChange;
     uint16_t      dustOffset;
     uint8_t       artCarPos;
@@ -24,8 +26,17 @@ public:
         if (n <= 0) return;
 
         const uint32_t now = millis();
-        if (now - lastMoodChange > 8000) {
-            currentMood = (currentMood + 1) % 3;
+        // The palette follows the sound: dark and heavy is fire, mid is dusk,
+        // bright is cool. It used to rotate every 8 s regardless of the music.
+        const float bri = f.music.brightness.value;
+        const float scores[3] = {
+            0.6f * f.music.weight.value + 0.4f * (1.0f - bri),
+            0.8f * (1.0f - 2.0f * fabsf(bri - 0.5f)),
+            bri
+        };
+        const uint8_t pick = uint8_t(moodSelect.update(scores, 3, 0.12f, 5000));
+        if (pick != currentMood) {
+            currentMood = pick;
             lastMoodChange = now;
         }
 

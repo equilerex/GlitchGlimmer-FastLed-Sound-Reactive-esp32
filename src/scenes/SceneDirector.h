@@ -34,6 +34,40 @@ private:
     MoodHistory&   mood;
     SceneRegistry& registry;
     unsigned long  lastScenePrint = 0;
+    // Cooldown stamps for reactive layer injection. Members and not function statics,
+    // so two directors do not share a cooldown and a fresh one starts clear.
+    unsigned long  lastBeat   = 0;
+    unsigned long  lastEnergy = 0;
+    unsigned long  lastDrop   = 0;
+    unsigned long  lastBuild  = 0;
+
+    // The scene that has been a better fit than the running one, and since when.
+    // A challenger has to stay ahead for kChallengeMs before it takes over, so a
+    // passage hovering between two looks does not flip between them.
+    const SceneDefinition* challenger = nullptr;
+    unsigned long          challengerSince = 0;
+
+    static constexpr float         kSwitchMargin = 0.12f;  // distance the challenger must win by
+    static constexpr unsigned long kChallengeMs  = 1500;   // how long it must keep winning
+    static constexpr unsigned long kEventDwellMs = 1500;   // least a scene runs before an event cuts it
+
+    // The event the music is reporting, or MOOD_COUNT when it is on the ladder.
+    static inline MoodType structuralOf(MoodType m) {
+        return ladderRank(m) < 0 ? m : MOOD_COUNT;
+    }
+
+    inline const SceneDefinition& pick(MoodType structural) {
+        const MoodSnapshot& now = mood.getCurrentSnapshot();
+        if (now.music.initialized) {
+            return registry.pickSceneByMusic(*state, now.music, structural);
+        }
+        return registry.pickSceneByMood(*state, mood.getCurrentMood());
+    }
+
+    inline void switchTo(const SceneDefinition& next) {
+        state->beginScene(&next, mood.getCurrentSnapshot(), mood.getCurrentMood());
+        challenger = nullptr;
+    }
 
 public:
     inline SceneDirector(MoodHistory& m, SceneRegistry& r)
@@ -44,9 +78,7 @@ public:
 
     inline void begin() {
         if (!state) return;
-        const SceneDefinition& first =
-            registry.pickSceneByMood(*state, mood.getCurrentMood());
-        state->beginScene(&first, mood.getCurrentSnapshot(), mood.getCurrentMood());
+        switchTo(pick(structuralOf(mood.getCurrentMood())));
     }
 
     /*-------------------- helpers --------------------*/
@@ -72,11 +104,58 @@ public:
         // back by accident.
         const MoodSnapshot& now = mood.getCurrentSnapshot();
 
-        if (state->shouldTransition(now, mood.getCurrentMood())) {
-            const SceneDefinition& nxt =
-                registry.pickSceneByMood(*state, mood.getCurrentMood());
-            state->beginScene(&nxt, now, mood.getCurrentMood());
+        // Snapshots built by hand carry no musical coordinates, so the mood
+        // ladder stays the selector for them.
+        if (!now.music.initialized) {
+            if (state->shouldTransition(now, mood.getCurrentMood())) {
+                const SceneDefinition& nxt =
+                    registry.pickSceneByMood(*state, mood.getCurrentMood());
+                state->beginScene(&nxt, now, mood.getCurrentMood());
+            }
+            return;
         }
+
+        const unsigned long t  = millis();
+        const unsigned long el = t - state->sceneStartMillis;
+        const MoodType structural = structuralOf(mood.getCurrentMood());
+
+        // A structural passage (build, drop, tease, descent, weird) is a moment
+        // the classifier has already confirmed and held, so it cuts in after a
+        // short dwell without waiting out the challenge. A scene already written
+        // for that moment is left alone.
+        if (structural != MOOD_COUNT && structural != state->startMood &&
+            el > kEventDwellMs && state->activeScene &&
+            !state->activeScene->isTaggedFor(structural)) {
+            switchTo(pick(structural));
+            return;
+        }
+
+        if (el <= (unsigned long)state->sceneMinDurationMs) {
+            challenger = nullptr;
+            return;
+        }
+
+        // Past the minimum, the running scene is judged against the best other on
+        // the same distance. It must lose by a margin, for a sustained time.
+        const SceneDefinition& best = registry.pickSceneByMusic(*state, now.music, structural);
+        const float incumbent = state->activeScene
+            ? registry.sceneDistance(*state, *state->activeScene, now.music) : 1e9f;
+        const float rival = registry.sceneDistance(*state, best, now.music);
+
+        if (incumbent - rival >= kSwitchMargin) {
+            if (challenger != &best) {
+                challenger = &best;
+                challengerSince = t;
+            } else if (t - challengerSince >= kChallengeMs) {
+                switchTo(best);
+                return;
+            }
+        } else {
+            challenger = nullptr;
+        }
+
+        // A scene that is still the best fit may stay, but not forever.
+        if (el > (unsigned long)(state->sceneIdealDurationMs * 2.0f)) switchTo(best);
     }
 
     /*-------------------- reactive layer injection --------------------*/
@@ -84,14 +163,32 @@ public:
                                          const AudioFeatures& af,
                                          unsigned long now)
     {
-        static unsigned long lastBeat   = 0;
-        static unsigned long lastEnergy = 0;
         constexpr int MAX_LAYERS = 4;
 
         if (lm.activeCount() >= MAX_LAYERS) return;
 
+        // Structural events first. They are rare and each is the moment the
+        // visuals should answer, so they bypass the probability gates below and
+        // keep only a cooldown, so a drop that is reported for several frames adds
+        // its layers once.
+        if (af.dropDetected && now - lastDrop > 3000) {
+            lm.addLayerByType(LayerType::HIGHLIGHT);
+            lm.addLayerByType(LayerType::ENERGY);
+            lastDrop = now;
+            return;
+        }
+        if (af.buildup > 0.0f && now - lastBuild > 4000) {
+            lm.addLayerByType(LayerType::OVERLAY);
+            lastBuild = now;
+            return;
+        }
+
+        // A beat accent. Trusted when the tracker is locked, so a locked groove
+        // gets an accent on most beats and an unlocked one on fewer, rather than
+        // a fixed 70% either way.
         if (af.beatDetected && now - lastBeat > 800) {
-            if (random(100) < 70) lm.addLayerByType(LayerType::REACTIVE);
+            const int chance = af.beatConfidence >= 0.6f ? 80 : 40;
+            if (random(100) < chance) lm.addLayerByType(LayerType::REACTIVE);
             lastBeat = now;
         }
         // level, not energy. energy is a raw FFT magnitude sum in the hundreds,
@@ -114,9 +211,7 @@ public:
     }
     inline void forceNextScene() {
         if (!state) return;
-        const SceneDefinition& nxt =
-            registry.pickSceneByMood(*state, mood.getCurrentMood());
-        state->beginScene(&nxt, mood.getCurrentSnapshot(), mood.getCurrentMood());
+        switchTo(pick(structuralOf(mood.getCurrentMood())));
     }
 
     /*-------------------- serial logging --------------------*/
