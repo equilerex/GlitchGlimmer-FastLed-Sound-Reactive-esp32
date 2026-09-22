@@ -33,7 +33,7 @@ fs.cpSync(source, destination, {
   recursive: true,
   filter: (entry) => {
     const parts = entry.split(path.sep);
-    return !parts.includes('.obj') && path.basename(entry) !== 'build.json';
+    return !parts.includes('.obj') && !parts.includes('local') && path.basename(entry) !== 'build.json';
   },
 });
 

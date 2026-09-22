@@ -52,3 +52,7 @@ node_modules/
 # project's source, and the harness generates its own fixtures for the checks.
 *.f32
 .tools/
+
+# Copyrighted local-only tracks. Never commit; the committed audio is small and royalty-free.
+web/audio/local/
+dist/audio/local/

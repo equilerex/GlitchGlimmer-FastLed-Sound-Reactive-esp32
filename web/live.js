@@ -51,8 +51,8 @@ let isAudioPlaying = true;
 let currentTrackId = 'edm';
 
 const DEMO_URLS = {
-  edm: 'audio/demo.mp3',
-  jazz: 'audio/jazz.mp3',
+  //edm: 'audio/demo.mp3',
+  //jazz: 'audio/jazz.mp3',
 };
 
 const demo = { time: 0, bassPhase: 0, midPhase: 0, noise: 1 };
