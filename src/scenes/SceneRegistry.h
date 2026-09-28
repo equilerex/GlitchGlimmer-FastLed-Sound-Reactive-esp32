@@ -11,7 +11,8 @@ struct SceneState;
 struct SceneDefinition {
     AnimationType baseAnimation;
     std::vector<LayerType> layerTypes;
-    // Structural moods only: SILENT, TEASE, BUILDUP, DESCENT, DROP, WEIRD. A ladder mood
+    // Structural states only: SILENT, BUILDUP, DESCENT, DROP, WEIRD. Tease is not
+    // one of them. A tag for floaty, calm, dancy, energetic or intense
     // here would be inert, and worse than inert. Eight catalog scenes each
     // carrying their own animation's mood would each win their own mood outright
     // and the intensity axis would never be consulted, so CALM would always be

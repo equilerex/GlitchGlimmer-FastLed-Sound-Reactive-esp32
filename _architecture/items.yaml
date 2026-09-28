@@ -1,0 +1,191 @@
+repo: glitchglimmer-fastled-sound-reactive-esp32
+last_flush: null
+items:
+  ha8d:
+    title: Finish the backlog sweep from Phase 4
+    status: now
+    priority: 1000
+    body: |-
+      Phases 0, 1, 2, 3 and 5 of `plans/2026-09-27-backlog-sweep.md` are done. Phase 2 and Phase 5 are still uncommitted, on top of `081e1fd`. `src/core/MemoryGuard.h` is untracked. Commit those before Phase 4 so its diff is its own. The handoff is `plans/2026-09-27-backlog-sweep-HANDOFF.md`.
+
+      Next: Phase 4, the browser pass. It only observes, writes findings as parked items, and checks the spectrum sizing and the count notice in a real browser. Then Phase 6 and Phase 7 together, then Phase 8.
+
+      Phase 8 stops for the owner to label tease candidates by ear. Any constant that encodes microphone gain waits for a 60 to 120 second capture. What `level` should mean is a separate parked item.
+
+      The published demo does not ship `demo.mp3` or `jazz.mp3`. `tools/build-dist.js` excludes them.
+    ts_created: 2026-09-28T19:36:37Z
+    ts_started: 2026-09-28T19:36:37Z
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:37Z
+  p8my:
+    title: Seven unused Config.h macros still name an intent
+    status: parked
+    priority: 2000
+    body: |-
+      CHANNEL_COUNT, BITS_PER_SAMPLE, FFT_BANDS, FFT_MAX_SCALE, BAR_HEIGHT_MAX, MIN_SWITCH_INTERVAL and ENABLE_WEB_UI have zero uses outside `Config.h`. The owner kept them on 18-09-2026. Each goes only once what it was for is known. FFT_BANDS and BAR_HEIGHT_MAX may still be display work. ENABLE_WEB_UI is a switch. The beat gates inside the layers have the same shape: `BassShockwaveLayer` wants a beat and bass above 0.8 against a fixed divisor of 100 that nothing calibrates.
+
+      Next: for each macro, find the caller that was removed or confirm the intent is dead, then delete that one.
+    ts_created: 2026-09-28T19:36:37Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:37Z
+  oip6:
+    title: Decide whether the repo is licensed for reuse
+    status: parked
+    priority: 3000
+    body: |-
+      There is no LICENSE file, so the repo is all-rights-reserved. `AGENTS.md` forbids adding one until the owner decides. `package.json` has no `license` field for the same reason.
+
+      Next: the owner picks a license, or says the code stays unlicensed. Do not add the file before that.
+    ts_created: 2026-09-28T19:36:37Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:37Z
+  o0x9:
+    title: Structural mood thresholds are unvalidated
+    status: parked
+    priority: 4000
+    body: |-
+      TEASE, WEIRD and DESCENT overlap and none of the windows has been checked on a real track. The only capture is `docs/glitchglimmer-2026-09-17T20-27-18-691Z.f32`, 2.3 seconds, gitignored, shorter than every window.
+
+      Blocked on: a 60 to 120 second `.f32` from the live page's Record button.
+
+      Phase 8 of the backlog sweep redesigns the detected tease and still stops for ear labels. This item is the validation, not that design.
+    ts_created: 2026-09-28T19:36:37Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:37Z
+  z6dv:
+    title: Which accent belongs on which intensity band
+    status: parked
+    priority: 5000
+    body: |-
+      `SceneDefinition::layerTypes` is chosen by intensity band. The sets were chosen by reading the layers, not by looking at a strip. Ten of the twelve concrete layer types are reachable without any scene naming them.
+
+      Blocked on: a 60 to 120 second capture and a look at the live page.
+    ts_created: 2026-09-28T19:36:37Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:37Z
+  i837:
+    title: Replace the mood label with music coordinates
+    status: parked
+    priority: 6000
+    body: |-
+      The single mood label should become independent coordinates, trends, structural states and events, chosen from research and real captures. Animation metadata becomes regions in that space. Selection uses distance plus hysteresis.
+
+      The distance picker is already the live path. This item is the rest of that replacement.
+
+      Next: `plans/2026-09-21-music-model-for-lighting-research.md` and `plans/2026-09-21-mood-vs-events-revamp.md`.
+    ts_created: 2026-09-28T19:36:37Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:37Z
+  i26b:
+    title: Decide what level should mean
+    status: parked
+    priority: 7000
+    body: |-
+      `level` is the envelope over the loudest envelope of the last ~20 s, so a steady passage reads 70 to 100 percent. A floor at eight times the noise floor stops near-silence reading loud. Steady music still sits high.
+
+      Options: (1) a much longer reference plus a curve such as level squared. (2) an absolute anchor at a typical loud-music RMS, which needs per-microphone calibration. (3) leave level relative and relabel the meter. Recommendation in the old note was 1. Changing it moves every level threshold and the ladder edges.
+
+      Phase 5 evidence, 28-09-2026. Not a decision. On a tone at 1.7 times a floor near 0.0004, level was 0.15 on the first quiet block and 0.31 when the gate flag cleared, because `LEVEL_ENV_RELEASE` is slower than the hangover. After about nine more seconds it stayed under 0.5. The reported 91 percent did not appear.
+
+      Next: the owner picks an option. Then re-run the harness and check on real audio.
+    ts_created: 2026-09-28T19:36:37Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:37Z
+  cyu5:
+    title: Energy spiral reads as the whole show
+    status: parked
+    priority: 8000
+    body: |-
+      Owner, 28-09-2026: `EnergySpiralLayer` is too prominent, and the other layers are usually much too short. No code change. The mechanism is in `src/scenes/CONTEXT.md`. The spiral is the confirmed drop window. It paints every LED at opacity 1 for the whole episode. Beat, contrast and energy accents are 450 ms, 800 ms and 1200 ms, and they lose the four-layer cap to section layers.
+
+      Next: pick one look. Dim the spiral, give the drop window a shorter layer, or lengthen the accents. Scene beds with `durMs = 0` last the whole scene. They are not the short ones.
+    ts_created: 2026-09-28T19:36:38Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:38Z
+  vj3d:
+    title: Owner review of drop confidence and episode layers
+    status: parked
+    priority: 9000
+    body: |-
+      `dropConfidence` weights, the descent counting as preparation (0.4), whether a drop should end a tease that began before the buildup, and which layer each episode gets. These are the owner's call. The current mapping is in `src/scenes/CONTEXT.md`.
+
+      Next: the owner reviews those four. Do not retune them from the synthetic signal.
+    ts_created: 2026-09-28T19:36:38Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:38Z
+  pjp2:
+    title: Flash the board and set the heap thresholds from a real run
+    status: parked
+    priority: 10000
+    body: |-
+      Nothing has run on hardware. Flash and confirm: strips animate, no crash under scene changes, stable heap, screen free of flicker, mic responsive.
+
+      On that run, log boot heap, the steady-state minimum and the largest free block over 10 minutes of music, then set the `HEAP_*` thresholds in `Config.h`. They are provisional until then.
+
+      Blocked on: the board.
+    ts_created: 2026-09-28T19:36:38Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:38Z
+  z1cw:
+    title: Enable GitHub Pages for the demo workflow
+    status: parked
+    priority: 11000
+    body: |-
+      `.github/workflows/pages.yml` publishes `dist/` only after Pages is enabled in the repository settings, Source set to GitHub Actions.
+
+      Next: the owner turns that on. The published demo does not ship `demo.mp3` or `jazz.mp3`.
+    ts_created: 2026-09-28T19:36:38Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:38Z
+  s4ej:
+    title: Re-verify feature scale against a real microphone
+    status: parked
+    priority: 12000
+    body: |-
+      The only capture is `docs/glitchglimmer-2026-09-17T20-27-18-691Z.f32`, gitignored, 2.3 seconds. That is shorter than the windows, so it can show that a value moves and not that it has settled. Replayed, `level` reads 0.04 to 0.83 and is still climbing at the end. The capture is tonal, so it cannot exercise the noise-floor rise. Tempo on live music is unmeasured, and so is bass on a source with little energy under 200 Hz.
+
+      Blocked on: a 60 to 120 second `.f32` from the live page's Record button. Do not tune against the synthetic signal.
+    ts_created: 2026-09-28T19:36:38Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:38Z
+  e2d9:
+    title: Finish the mood arc plan
+    status: parked
+    priority: 13000
+    body: |-
+      `plans/2026-09-18-mood-arc.md`. Steps 2, 3 and 4 are done, including the `DESCENT` mood. `gateGain` defaults to 1 rather than 0, because the harness builds `AudioFeatures` by hand. No detector runs while the gate reads the room as silent.
+
+      Next: the plan's remaining steps. A 60 to 120 second capture, the unused layer classes, the C2 cross-check, and the crossfade. Do not describe the firmware as working.
+    ts_created: 2026-09-28T19:36:38Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:36:38Z
+  u96a:
+    title: Leave the two FastLED guides in docs alone
+    status: dropped
+    priority: 14000
+    body: Owner, 27-09-2026. `docs/_Fastled-animation-guidelines.md` and `docs/ai-fastled-guide.md` stay. The vendored `jookoi-fastled` skill is what agents use. Do not delete or rewrite these files unless the owner asks.
+    ts_created: 2026-09-28T19:36:58Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:37:09Z
+  s65m:
+    title: Leave AI_ASSIST_INSTRUCTIONS.MD alone
+    status: dropped
+    priority: 15000
+    body: Owner, 27-09-2026. The file at the repo root stays. It is an IntelliJ prompt and nothing in the repo reads it. Do not delete it unless the owner asks.
+    ts_created: 2026-09-28T19:36:58Z
+    ts_started: null
+    ts_done: null
+    ts_touched: 2026-09-28T19:37:09Z

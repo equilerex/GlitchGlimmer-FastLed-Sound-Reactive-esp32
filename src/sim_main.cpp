@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "config/Config.h"
+#include "core/MemoryGuard.h"
 #include "audio/AudioFeatures.h"
 #include "audio/AudioProcessor.h"
 #include "audio/AudioSnapshot.h"
@@ -145,8 +146,8 @@ void randomSeed(unsigned long seed) { std::srand(static_cast<unsigned>(seed)); }
 SimSerial Serial;
 SimEsp    ESP;
 
-uint32_t SimEsp::getFreeHeap() const { return 200u * 1024u; }
-uint32_t SimEsp::getMinFreeHeap() const { return 200u * 1024u; }
+uint32_t SimEsp::getFreeHeap() const { return SIM_HEAP_BYTES; }
+uint32_t SimEsp::getMinFreeHeap() const { return SIM_HEAP_BYTES; }
 
 // -----------------------------------------------------------------------------
 //  Check bookkeeping
@@ -1487,8 +1488,8 @@ void checkMusicSelection() {
     // A structural event is answered by a scene written for it.
     int untagged = 0;
     std::string tagNames;
-    const MoodType events[] = {TEASE, BUILDUP, DESCENT, DROP, WEIRD};
-    for (size_t e = 0; e < 5; ++e) {
+    const MoodType events[] = {BUILDUP, DESCENT, DROP, WEIRD};
+    for (size_t e = 0; e < 4; ++e) {
         const SceneDefinition& s = reg.pickSceneByMusic(state, loud, events[e]);
         if (!s.isTaggedFor(events[e])) ++untagged;
         tagNames += std::string(moodToString(events[e])) + "->" + s.name + " ";
@@ -1873,10 +1874,15 @@ void checkAudioProcessor() {
         m.level = 0.50f;  const MoodType midBuild  = mood.classifyForTest(m);
         m.level = 0.95f;  const MoodType highBuild = mood.classifyForTest(m);
 
-        record("a climb is a buildup until the ladder is already at the top",
-               lowBuild == BUILDUP && midBuild == BUILDUP && highBuild != BUILDUP,
-               std::string("buildup at level 0.10 reads ") + moodToString(lowBuild) +
-               ", at 0.50 reads " + moodToString(midBuild) + ", at 0.95 reads " +
+        MoodSnapshot plain;
+        plain.level = 0.10f; const MoodType lowName  = mood.classifyForTest(plain);
+        plain.level = 0.50f; const MoodType midName  = mood.classifyForTest(plain);
+        plain.level = 0.95f; const MoodType highName = mood.classifyForTest(plain);
+        record("a climb does not replace the mood",
+               lowBuild == lowName && midBuild == midName && highBuild == highName &&
+               lowBuild != BUILDUP && highBuild != BUILDUP,
+               std::string("with a climb, level 0.10 reads ") + moodToString(lowBuild) +
+               ", 0.50 reads " + moodToString(midBuild) + ", 0.95 reads " +
                moodToString(highBuild));
 
         m.buildup = 0.0f;
@@ -1886,10 +1892,15 @@ void checkAudioProcessor() {
         m.level = 0.50f;  const MoodType midFall  = mood.classifyForTest(m);
         m.level = 0.10f;  const MoodType lowFall  = mood.classifyForTest(m);
 
-        record("a fall is a descent until the ladder is already at the bottom",
-               highFall == DESCENT && midFall == DESCENT && lowFall != DESCENT,
-               std::string("descent at level 0.95 reads ") + moodToString(highFall) +
-               ", at 0.50 reads " + moodToString(midFall) + ", at 0.10 reads " +
+        plain.descent = 0.0f;
+        plain.level = 0.95f; const MoodType highQuiet = mood.classifyForTest(plain);
+        plain.level = 0.50f; const MoodType midQuiet  = mood.classifyForTest(plain);
+        plain.level = 0.10f; const MoodType lowQuiet  = mood.classifyForTest(plain);
+        record("a fall does not replace the mood",
+               highFall == highQuiet && midFall == midQuiet && lowFall == lowQuiet &&
+               highFall != DESCENT && lowFall != DESCENT,
+               std::string("with a fall, level 0.95 reads ") + moodToString(highFall) +
+               ", 0.50 reads " + moodToString(midFall) + ", 0.10 reads " +
                moodToString(lowFall));
 
         // And the mirror is a mirror: a descent out of a drop's aftermath is the
@@ -1898,8 +1909,10 @@ void checkAudioProcessor() {
         m.descent = 0.4f;
         m.level   = 0.95f;
         m.teaseDetected = true;
-        record("a tease claims the passage it is anchored to",
-               mood.classifyForTest(m) == TEASE,
+        plain = MoodSnapshot();
+        plain.level = 0.95f;
+        record("a tease does not replace the mood",
+               mood.classifyForTest(m) == mood.classifyForTest(plain),
                std::string("a descent during a tease window reads ") +
                moodToString(mood.classifyForTest(m)));
     }
@@ -2384,6 +2397,88 @@ void checkAudioProcessor() {
                f.level < 0.40f,
                "faint tone at 0.0006 RMS reported level " + std::to_string(f.level) +
                " with floor " + std::to_string(f.noiseFloor));
+    }
+
+    // Reported: volume 0.0005 against a floor of 0.0003, gate still open, level
+    // at 91%. The close line is noiseFloor * 1.5 + 0.0005, which at that floor
+    // is 0.00095, so 1.7x the floor is under it and the hangover is the only
+    // reason the gate can still read open. This is that input: a flat bed raises
+    // the floor, a short tone opens the gate, then a tone at 1.7x the floor has
+    // to close it inside the hangover plus one block.
+    {
+        AudioProcessor proc;
+        std::vector<float> block(NUM_SAMPLES);
+        long long prng = 42;
+        const float noiseAmp = 0.0004f * std::sqrt(3.0f);
+        AudioFeatures bed;
+        for (int i = 0; i < 80; ++i) {
+            for (int s = 0; s < NUM_SAMPLES; ++s) {
+                prng = (prng * 16807LL) % 2147483647LL;
+                block[s] = (float(prng) / 2147483647.0f * 2.0f - 1.0f) * noiseAmp;
+            }
+            proc.submitSamples(block.data(), block.size());
+            bed = proc.analyzeAudio();
+        }
+
+        const float openAmp = 0.01f * std::sqrt(2.0f);
+        AudioFeatures opened;
+        for (int i = 0; i < 8; ++i) {
+            for (int s = 0; s < NUM_SAMPLES; ++s) {
+                const float t = float(s) / float(SAMPLE_RATE);
+                block[s] = openAmp * std::sin(kTwoPi * 440.0f * t);
+            }
+            proc.submitSamples(block.data(), block.size());
+            opened = proc.analyzeAudio();
+        }
+
+        const float floor = opened.noiseFloor;
+        const float quietAmp = floor * 1.7f * std::sqrt(2.0f);
+        const unsigned long blockMs =
+            static_cast<unsigned long>(NUM_SAMPLES) * 1000ul / SAMPLE_RATE;
+        const int quietBlocks = static_cast<int>(GATE_HANGOVER_MS / blockMs) + 1;
+        AudioFeatures quiet;
+        float levelWhileOpen = -1.0f;
+        for (int i = 0; i < quietBlocks; ++i) {
+            for (int s = 0; s < NUM_SAMPLES; ++s) {
+                const float t = float(s) / float(SAMPLE_RATE);
+                block[s] = quietAmp * std::sin(kTwoPi * 440.0f * t);
+            }
+            proc.submitSamples(block.data(), block.size());
+            quiet = proc.analyzeAudio();
+            if (levelWhileOpen < 0.0f) levelWhileOpen = quiet.level;
+        }
+        const float closeLine = floor * 1.5f + 0.0005f;
+        record("a signal at 1.7x the floor closes the gate after the hangover",
+               bed.noiseFloor > 0.0002f && opened.signalPresence && !quiet.signalPresence,
+               "bed floor " + std::to_string(bed.noiseFloor) +
+               ", opened " + std::to_string(opened.signalPresence) +
+               ", floor " + std::to_string(floor) +
+               ", 1.7x rms " + std::to_string(floor * 1.7f) +
+               ", close line " + std::to_string(closeLine) +
+               ", after " + std::to_string(quietBlocks) + " blocks presence " +
+               std::to_string(quiet.signalPresence) +
+               " level " + std::to_string(quiet.level) +
+               ", level on the first quiet block " + std::to_string(levelWhileOpen));
+
+        // The opener's envelope is still in level at the hangover, because
+        // LEVEL_ENV_RELEASE is slower than GATE_HANGOVER_MS. Give it a few
+        // seconds on the 1.7x tone and see what the floor leaves. This is the
+        // reading the level question is waiting on. It is not a new threshold.
+        AudioFeatures settled = quiet;
+        for (int i = 0; i < 800; ++i) {
+            for (int s = 0; s < NUM_SAMPLES; ++s) {
+                const float t = float(s) / float(SAMPLE_RATE);
+                block[s] = quietAmp * std::sin(kTwoPi * 440.0f * t);
+            }
+            proc.submitSamples(block.data(), block.size());
+            settled = proc.analyzeAudio();
+        }
+        record("level on a 1.7x-floor tone stays off the top of the scale",
+               !settled.signalPresence && settled.level < 0.5f,
+               "settled level " + std::to_string(settled.level) +
+               " presence " + std::to_string(settled.signalPresence) +
+               " floor " + std::to_string(settled.noiseFloor) +
+               " volume " + std::to_string(settled.volume));
     }
 
     // --- Mood flicker --------------------------------------------------------
@@ -4196,6 +4291,84 @@ void checkReplay() {
     std::filesystem::remove_all(dir, ignored);
 }
 
+void checkMemoryGuard() {
+    const uint32_t plenty = HEAP_DEGRADED_EXIT_BYTES + 1u;
+
+    MemoryGuard ok;
+    MemoryGuardSample s = ok.update(plenty, plenty, 0);
+    record("memory guard starts ok",
+           s.pressure == MemoryPressure::OK && !s.changed && !s.restart);
+
+    s = ok.update(HEAP_DEGRADED_ENTER_BYTES, HEAP_DEGRADED_ENTER_BYTES, 1);
+    record("memory guard stays ok at the degraded entry",
+           s.pressure == MemoryPressure::OK && !s.restart);
+
+    s = ok.update(HEAP_DEGRADED_ENTER_BYTES - 1u, plenty, 2);
+    record("memory guard enters degraded below the entry",
+           s.pressure == MemoryPressure::DEGRADED && s.changed && !s.restart);
+
+    s = ok.update(HEAP_DEGRADED_EXIT_BYTES - 1u, HEAP_DEGRADED_EXIT_BYTES - 1u, 3);
+    record("memory guard holds degraded inside the margin",
+           s.pressure == MemoryPressure::DEGRADED && !s.changed);
+
+    s = ok.update(HEAP_DEGRADED_EXIT_BYTES, HEAP_DEGRADED_EXIT_BYTES, 4);
+    record("memory guard leaves degraded at the exit",
+           s.pressure == MemoryPressure::OK && s.changed && !s.restart);
+
+    MemoryGuard frag;
+    s = frag.update(plenty, HEAP_DEGRADED_ENTER_BYTES - 1u, 0);
+    record("memory guard enters degraded on fragmentation alone",
+           s.pressure == MemoryPressure::DEGRADED && !s.restart);
+
+    s = frag.update(plenty, HEAP_CRITICAL_ENTER_BYTES - 1u, 1);
+    record("memory guard enters critical on fragmentation alone",
+           s.pressure == MemoryPressure::CRITICAL && s.changed && !s.restart);
+
+    MemoryGuard critical;
+    const uint32_t entered = 1000u;
+    s = critical.update(HEAP_CRITICAL_ENTER_BYTES - 1u, plenty, entered);
+    record("memory guard enters critical from ok",
+           s.pressure == MemoryPressure::CRITICAL && s.changed && !s.restart);
+
+    s = critical.update(HEAP_CRITICAL_ENTER_BYTES - 1u, plenty,
+                        entered + HEAP_CRITICAL_RESTART_MS - 1u);
+    record("memory guard does not restart before the timeout",
+           s.pressure == MemoryPressure::CRITICAL && !s.restart);
+
+    s = critical.update(HEAP_CRITICAL_ENTER_BYTES - 1u, plenty,
+                        entered + HEAP_CRITICAL_RESTART_MS);
+    record("memory guard restarts once critical has held",
+           s.pressure == MemoryPressure::CRITICAL && s.restart);
+
+    s = critical.update(plenty, plenty, 50000u);
+    record("memory guard returns to ok above both exits",
+           s.pressure == MemoryPressure::OK && s.changed && !s.restart);
+
+    s = critical.update(HEAP_CRITICAL_ENTER_BYTES - 1u, HEAP_CRITICAL_ENTER_BYTES - 1u, 50000u);
+    record("memory guard restarts its critical timer on re-entry",
+           s.pressure == MemoryPressure::CRITICAL && !s.restart);
+
+    s = critical.update(HEAP_CRITICAL_ENTER_BYTES - 1u, HEAP_CRITICAL_ENTER_BYTES - 1u,
+                        50000u + HEAP_CRITICAL_RESTART_MS - 1u);
+    record("memory guard still withholds restart on the new timer", !s.restart);
+
+    MemoryGuard band;
+    band.update(HEAP_CRITICAL_ENTER_BYTES - 1u, HEAP_CRITICAL_ENTER_BYTES - 1u, 0);
+    s = band.update(HEAP_CRITICAL_EXIT_BYTES, HEAP_CRITICAL_EXIT_BYTES, 10);
+    record("memory guard leaves critical into degraded",
+           s.pressure == MemoryPressure::DEGRADED && s.changed && !s.restart);
+
+    MemoryGuard wrapped;
+    const uint32_t nearWrap = 0xFFFFFFF0u;
+    wrapped.update(HEAP_CRITICAL_ENTER_BYTES - 1u, HEAP_CRITICAL_ENTER_BYTES - 1u, nearWrap);
+    s = wrapped.update(HEAP_CRITICAL_ENTER_BYTES - 1u, HEAP_CRITICAL_ENTER_BYTES - 1u,
+                       nearWrap + HEAP_CRITICAL_RESTART_MS - 1u);
+    record("memory guard timeout survives millis wrap", !s.restart);
+    s = wrapped.update(HEAP_CRITICAL_ENTER_BYTES - 1u, HEAP_CRITICAL_ENTER_BYTES - 1u,
+                       nearWrap + HEAP_CRITICAL_RESTART_MS);
+    record("memory guard restarts across millis wrap", s.restart);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -4240,6 +4413,7 @@ int main(int argc, char** argv) {
     setPhase("checkCompositor");     checkCompositor();
     setPhase("checkLayerCap");       checkLayerCap();
     setPhase("checkHistorySizing");  checkHistorySizing();
+    setPhase("checkMemoryGuard");    checkMemoryGuard();
     setPhase("checkLifecycle");      checkLifecycle(verbose);
     setPhase("checkAnimationSweep"); checkAnimationSweep(verbose);
     setPhase("checkMeasuredLevel");  checkMeasuredLevelBrightness(verbose);

@@ -36,6 +36,10 @@ fs.cpSync(source, destination, {
     // web/package.json only tells Node that web/ holds ES modules, for the tests.
     // The browser never reads it, so it stays out of the bundle.
     if (entry === path.join(source, 'package.json')) return false;
+    // demo.mp3 and jazz.mp3 are gitignored as copyrighted local-only tracks.
+    // The published bundle must not pick them up from a machine that has them.
+    const rel = path.relative(source, entry);
+    if (rel === path.join('audio', 'demo.mp3') || rel === path.join('audio', 'jazz.mp3')) return false;
     return !parts.includes('.obj') && !parts.includes('local') && path.basename(entry) !== 'build.json';
   },
 });

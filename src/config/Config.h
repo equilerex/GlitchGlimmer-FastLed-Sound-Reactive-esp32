@@ -508,6 +508,22 @@
 // 1500), so raise it only when a reader needs the depth.
 #define AUDIO_HISTORY_CAPACITY 32
 
+// Provisional heap guard. A 10-minute music run still has to log boot heap,
+// the steady-state minimum and the largest free block, and these numbers
+// move to match that. Until then they are only a net above the old 20KB stall.
+// Enter on whichever of free heap and largest 8-bit block is worse. Leave only
+// after the same 8KB climb, so a reading sitting on the line cannot flap.
+#define HEAP_DEGRADED_ENTER_BYTES (24u * 1024u)
+#define HEAP_DEGRADED_EXIT_BYTES  (32u * 1024u)
+#define HEAP_CRITICAL_ENTER_BYTES (12u * 1024u)
+#define HEAP_CRITICAL_EXIT_BYTES  (20u * 1024u)
+#define HEAP_CRITICAL_RESTART_MS  10000u
+// About a third of DEFAULT_BRIGHTNESS. The strip stays lit and draws less
+// current while the guard is in CRITICAL. Provisional, same as the thresholds.
+#define HEAP_CRITICAL_BRIGHTNESS  48
+// Host stand-in so the native and wasm ESP stubs look healthy. Not a threshold.
+#define SIM_HEAP_BYTES (200u * 1024u)
+
 // ==== OTHER ====
 #define ENABLE_WEB_UI      false        // Enable/disable WebUI
 #define DEBUG_ENABLED      true        // Toggle debug logging

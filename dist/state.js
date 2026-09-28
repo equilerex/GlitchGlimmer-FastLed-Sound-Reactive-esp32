@@ -1,5 +1,6 @@
 import { reactive } from 'vue';
 import { DEFAULT_STRIP_CONFIGS } from './viz/hwStore.js';
+import { emptyAttention } from './attention.js';
 
 export const COORD_INFO = {
   intensity: {
@@ -47,7 +48,7 @@ export const COORD_INFO = {
   presence: {
     label: 'Presence',
     base: 'Time-domain RMS sample volume vs adaptive silence noise floor follower (tracking quietest blocks over 10s).',
-    formula: 'Schmitt trigger hysteresis: opens when RMS > 2.0 * noiseFloor, closes when RMS < 1.5 * noiseFloor. Slewed through attack/release ramp to produce gateGain (0..1).',
+    formula: 'Schmitt trigger. Opens when block RMS > 2.5 * noiseFloor + 0.001. Closes after a 350 ms hangover when block RMS <= 1.5 * noiseFloor + 0.0005. gateGain slews toward that flag at 0.04 per block.',
     desc: 'Acoustic presence gate: smoothly transitions between quiet background room ambience (0) and active sound/music playback (1).'
   }
 };
@@ -158,6 +159,7 @@ export const state = reactive({
     dropConfirmed: false,
     events: [],
     hideGateEvents: false,
+    attention: emptyAttention(),
     eventHold: {
       drop: 0,
       tease: 0,

@@ -1,14 +1,14 @@
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include "core/Debug.h"
 #include "core/CommunicationService.h"
 #include "core/MainController.h"
+#include "core/MemoryGuard.h"
 
 CommunicationService commService;
 MainController controller(commService);
 
-// Forward declarations for error handling helpers
 void safeDelay(unsigned long ms);
-bool isMemoryHealthy();
 
 void setup() {
     Serial.begin(115200);
@@ -37,44 +37,44 @@ void setup() {
 }
 
 void loop() {
-    // Use a watchdog pattern for safer execution
     static unsigned long lastErrorCheck = 0;
-    static unsigned long lastHeapCheck = 0;
     unsigned long now = millis();
-    
-    // Update the controller with error protection
-    if (isMemoryHealthy()) {
-        // Defence in depth, not the fix. The two history buffers no longer
-        // allocate and the misplaced handlers that used to sit around memcpy are
-        // gone, so nothing in this call is expected to throw. But loop() has no
-        // caller: an exception escaping it reaches std::terminate and reboots the
-        // board, and a dropped frame is cheaper than a reboot.
-        try {
-            controller.update();
-        } catch (...) {
-            Debug::log(Debug::ERROR, "Exception escaped controller.update()");
-            safeDelay(100);
-        }
-    } else {
-        // If memory looks compromised, just wait and try again later
+
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    const uint32_t minFree = ESP.getMinFreeHeap();
+    const MemoryGuardSample sample = memoryGuard().update(freeHeap, largest, now);
+    if (sample.changed) {
+        Debug::logf(Debug::INFO, "heap %s free=%u largest=%u min=%u",
+                    memoryPressureName(sample.pressure),
+                    static_cast<unsigned>(freeHeap),
+                    static_cast<unsigned>(largest),
+                    static_cast<unsigned>(minFree));
+    }
+    if (sample.restart) {
+        Debug::logf(Debug::ERROR, "heap critical for %u ms, restarting",
+                    static_cast<unsigned>(HEAP_CRITICAL_RESTART_MS));
+        ESP.restart();
+    }
+
+    // Defence in depth, not the fix. The two history buffers no longer
+    // allocate and the misplaced handlers that used to sit around memcpy are
+    // gone, so nothing in this call is expected to throw. But loop() has no
+    // caller: an exception escaping it reaches std::terminate and reboots the
+    // board, and a dropped frame is cheaper than a reboot.
+    try {
+        controller.update();
+    } catch (...) {
+        Debug::log(Debug::ERROR, "Exception escaped controller.update()");
         safeDelay(100);
     }
-    
-    // Periodically log running status and heap info
-    if (now - lastErrorCheck > 30000) { // Every 30 seconds
+
+    // Periodic status only while healthy. Pressure transitions log themselves.
+    if (memoryGuard().pressure() == MemoryPressure::OK && now - lastErrorCheck > 30000) {
         Debug::log(Debug::INFO, "System running");
         lastErrorCheck = now;
     }
-    
-    // Check heap health every 5 seconds
-    if (now - lastHeapCheck > 5000) {
-        if (!isMemoryHealthy()) {
-            Debug::log(Debug::ERROR, "Low memory detected");
-        }
-        lastHeapCheck = now;
-    }
-    
-    // Always yield to the OS to prevent watchdog timeouts
+
     yield();
 }
 
@@ -87,9 +87,3 @@ void safeDelay(unsigned long ms) {
     }
 }
 
-// Check if memory/heap is in a healthy state
-bool isMemoryHealthy() {
-    // ESP32 has around 320KB of SRAM
-    // Consider it unhealthy if we have less than 20KB free
-    return ESP.getFreeHeap() > 20 * 1024;
-}

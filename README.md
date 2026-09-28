@@ -150,4 +150,4 @@ _architecture/        Design decisions and project working notes
 
 For the reasoning behind the audio model, compositor, and brightness curves,
 start with [`_architecture/ARCHITECTURE.md`](_architecture/ARCHITECTURE.md).
-The active work list is in [`_architecture/TODO.md`](_architecture/TODO.md).
+The active work list is `_architecture/items.yaml`. Read it through the jookoi-paper-trail script, or at `http://127.0.0.1:4173`.

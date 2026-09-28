@@ -195,6 +195,10 @@ public:
         FastLED.show();
     }
 
+    // CRITICAL dims the strip and stops new layer injection. Existing layers
+    // keep drawing. The flag is sampled once per frame by MainController.
+    inline void setMemoryCritical(bool critical) { memoryCritical = critical; }
+
     //­­­­­­­­­­­­­­­­­------------------------------------------------------------
     //  Per-frame update – call from loop()
     //­­­­­­­­­­­­­­­­­------------------------------------------------------------
@@ -204,6 +208,7 @@ public:
         // decayed strip 0 twice per frame and never touched any other strip.
         moodHistory.update(audio);
         sceneDirector.update();
+        FastLED.setBrightness(memoryCritical ? HEAP_CRITICAL_BRIGHTNESS : DEFAULT_BRIGHTNESS);
 
         const SceneDefinition* scenePtr = sceneDirector.getActiveScene();
         if (scenePtr != nullptr) {
@@ -212,7 +217,9 @@ public:
             for (int i = 0; i < stripCount; ++i) {
                 strips[i].setAnimation(scene.baseAnimation, audio);
                 strips[i].setScene(scene);                        // rebuild only on change
-                sceneDirector.maybeInjectReactiveLayer(strips[i].layers(), audio, millis());
+                if (!memoryCritical) {
+                    sceneDirector.maybeInjectReactiveLayer(strips[i].layers(), audio, millis());
+                }
                 strips[i].update(audio, audioHistory.getHistory());
             }
         }
@@ -318,11 +325,7 @@ private:
     LEDStrip strips[10];
     int      softwareLengths[10] = {};
     int      stripCount = 0;
-
-    // No heap monitor here. checkMemory() had no call sites and its low-water
-    // mark was write-only, and loop() already gates on ESP.getFreeHeap() every
-    // frame with a logged warning every 5s. A second health check with a
-    // different threshold would only give two answers to one question.
+    bool     memoryCritical = false;
 
     // optional serial debug every second
     inline void debugPrint() {

@@ -73,7 +73,9 @@ const std::array<AnimationMeta, static_cast<size_t>(AnimationType::COUNT)> anima
     { AnimationType::GRADIENT_WASH,      "Gradient Wash",       MoodType::SILENT, 0.35f, 0.06f, []() { return new GradientWashAnimation(); } },
     { AnimationType::ETHERAL_PLASMA_DRIFT,"Plasma Drift",       MoodType::FLOATY, 0.50f, 0.12f, []() { return new EtherealPlasmaDriftAnimation(); } },
     { AnimationType::TWILIGHT_RIPPLE,    "Twilight Ripple",     MoodType::DESCENT,0.60f, 0.66f, []() { return new TwilightRippleAnimation(); } },
-    { AnimationType::LAVA_LAMP,          "Lava Lamp",           MoodType::TEASE,  0.55f, 0.45f, []() { return new LavaLampAnimation(); } },
+    // Owner, 28-09-2026: Lava Lamp belongs with silence or floaty, not dance or
+    // rhythm. Floaty is that placement. It is not a structural tag.
+    { AnimationType::LAVA_LAMP,          "Lava Lamp",           MoodType::FLOATY, 0.55f, 0.45f, []() { return new LavaLampAnimation(); } },
     { AnimationType::BEAT_SCANNER,       "Beat Scanner",        MoodType::BUILDUP,0.90f, 0.60f, []() { return new BeatScannerAnimation(); } },
     { AnimationType::GLITCHED_CYBER,     "Glitched Cyber",      MoodType::WEIRD,  0.80f, 0.78f, []() { return new GlitchedCyberAnimation(); } },
     { AnimationType::BEAT_DROP,          "Beat Drop",           MoodType::DROP,   0.98f, 0.95f, []() { return new BeatDropAnimation(); } },
@@ -88,8 +90,13 @@ const std::array<AnimationMeta, static_cast<size_t>(AnimationType::COUNT)> anima
     { AnimationType::SPACE_WIZARDS,      "Space Wizards",       MoodType::WEIRD,  0.75f, 0.76f, []() { return new SpaceWizardsAndLizardsAnimation(); } },
     { AnimationType::PLAYA_CHAOS,        "Playa Chaos",         MoodType::WEIRD,  0.82f, 0.79f, []() { return new PlayaChaosAnimation(); } },
     { AnimationType::THREE_SIN_TWO,      "Three Sin Two",       MoodType::WEIRD,  0.70f, 0.75f, []() { return new ThreeSinTwoAnimation(); } },
-    { AnimationType::HEARTBEAT,          "Heartbeat",           MoodType::TEASE,  0.50f, 0.44f, []() { return new HeartbeatAnimation(); } },
-    { AnimationType::GENTLE_PULSE_WAVE,  "Gentle Pulse",        MoodType::TEASE,  0.52f, 0.46f, []() { return new GentlePulseWaveAnimation(); } },
+    // Owner, 28-09-2026: Heartbeat is a bad long hold. It fits a short buildup
+    // as a layer, not as the base. The buildup tag does not select it. The
+    // director no longer picks a base scene from a buildup.
+    { AnimationType::HEARTBEAT,          "Heartbeat",           MoodType::BUILDUP,0.50f, 0.44f, []() { return new HeartbeatAnimation(); } },
+    // Was tagged Tease with the lava lamps. Tease is not a mood. Gentle Pulse
+    // is a quiet bed, so it sits with floaty.
+    { AnimationType::GENTLE_PULSE_WAVE,  "Gentle Pulse",        MoodType::FLOATY, 0.52f, 0.46f, []() { return new GentlePulseWaveAnimation(); } },
     { AnimationType::MOONLIGHT,          "Moonlight",           MoodType::SILENT, 0.30f, 0.05f, []() { return new MoonlightAnimation(); } },
     { AnimationType::FOREST_CANOPY,      "Forest Canopy",       MoodType::SILENT, 0.32f, 0.04f, []() { return new ForestCanopyAnimation(); } },
     { AnimationType::LAVA_CYBER_STORM,   "Lava Cyber Storm",    MoodType::DESCENT,0.62f, 0.65f, []() { return new LavaCyberStormAnimation(); } },
@@ -110,7 +117,7 @@ const std::array<AnimationMeta, static_cast<size_t>(AnimationType::COUNT)> anima
     { AnimationType::TRIPPY_HIPPIE,      "Trippy Hippie",       MoodType::FLOATY, 0.45f, 0.58f, []() { return new TrippyHippieAnimation(); } },
     { AnimationType::PLASMA_EFFECT,      "Plasma Effect",       MoodType::CALM,   0.40f, 0.48f, []() { return new PlasmaEffectAnimation(); } },
     { AnimationType::PLASMA_EFFECT_TWO,  "Plasma Effect 2",     MoodType::ENERGETIC,0.65f,0.78f, []() { return new PlasmaEffectTwoAnimation(); } },
-    { AnimationType::LAVA_LAMP_TWO,      "Lava Lamp 2",         MoodType::TEASE,  0.38f, 0.52f, []() { return new LavaLampTwoAnimation(); } },
+    { AnimationType::LAVA_LAMP_TWO,      "Lava Lamp 2",         MoodType::FLOATY, 0.38f, 0.52f, []() { return new LavaLampTwoAnimation(); } },
     { AnimationType::THREE_SIN,          "Three Sin",           MoodType::DANCY,  0.52f, 0.64f, []() { return new ThreeSinAnimation(); } },
     { AnimationType::TWO_SIN_PSY,        "Two Sin nPsy",        MoodType::WEIRD,  0.58f, 0.72f, []() { return new TwoSinPsyAnimation(); } },
     { AnimationType::RAINBOW_GLITTER,    "Rainbow with Glitter",MoodType::DANCY,  0.50f, 0.66f, []() { return new RainbowWithGlitterAnimation(); } }

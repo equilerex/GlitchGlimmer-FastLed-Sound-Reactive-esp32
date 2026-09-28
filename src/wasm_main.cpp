@@ -51,12 +51,11 @@ CRGB ledStrip_1[LED_1_CAPACITY];
 //
 //  SimEsp is declared in sim/stubs/wasm/prelude.h, which this build force-includes
 //  into every translation unit, because FastLED's Arduino emulation has no ESP
-//  object. LEDStripController's memory check compares these against MIN_FREE_HEAP,
-//  so they report a plausible fixed figure rather than zero, which would trip the
-//  warning on every frame.
+//  object. The figures are a healthy stand-in. The device gate lives in
+//  MemoryGuard and is fed from loop(), which this entry point does not run.
 // -----------------------------------------------------------------------------
-uint32_t SimEsp::getFreeHeap() const { return 200u * 1024u; }
-uint32_t SimEsp::getMinFreeHeap() const { return 200u * 1024u; }
+uint32_t SimEsp::getFreeHeap() const { return SIM_HEAP_BYTES; }
+uint32_t SimEsp::getMinFreeHeap() const { return SIM_HEAP_BYTES; }
 
 SimEsp ESP;
 

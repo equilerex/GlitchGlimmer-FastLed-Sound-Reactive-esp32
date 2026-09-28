@@ -61,6 +61,8 @@ public:
     void showSetting(const String& name, int value);
     void drawSettingScreen();
     void showError(const String& message);
+    // One line when heap pressure is not OK. A null label clears it.
+    void showMemoryPressure(const char* label);
     void setCurrentAnimation(const String& name);
     void clearError();
     bool hasError() const { return errorState; }

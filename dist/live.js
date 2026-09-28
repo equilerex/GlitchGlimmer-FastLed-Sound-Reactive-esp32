@@ -577,6 +577,7 @@ function readFeatures() {
 }
 
 import { state } from './state.js';
+import { noteAttention, attentionRows } from './attention.js';
 
 let lastSeen = {
   mood: '',
@@ -708,8 +709,8 @@ function updateHud(f) {
           lastSeen.presenceConfirmed = hasPresence;
           lastSeen.lastGateEventTime = now;
           pushLiveEvent('gate', hasPresence ? 'SOUND DETECTED' : 'SOUND LOST', hasPresence
-            ? `silence gate opened: signal volume rose above 2x the noise floor (${f.noiseFloor.toFixed(4)})`
-            : `silence gate closed: signal volume fell below 1.5x the noise floor (${f.noiseFloor.toFixed(4)})`);
+            ? `silence gate opened: block RMS rose above 2.5x the noise floor plus 0.001 (${f.noiseFloor.toFixed(4)})`
+            : `silence gate closed: block RMS fell to 1.5x the noise floor plus 0.0005 (${f.noiseFloor.toFixed(4)}) and the hangover elapsed`);
         }
       }
     } else {
@@ -717,6 +718,16 @@ function updateHud(f) {
       lastSeen.presenceCandidateSince = now;
     }
   }
+
+  const layerNames = [];
+  const details = f.layerDetails || [];
+  for (let i = 0; i < details.length; i++) layerNames.push(details[i].name);
+  noteAttention(state.live.attention, {
+    dtMs: f.dtMs,
+    scene: f.scene,
+    mood: f.mood,
+    layers: layerNames,
+  });
 
   paintState(f);
 }
@@ -792,7 +803,7 @@ const STATE_GROUPS = [
       { name: 'signal present', key: 'presence', max: 1, digits: 0,
         note: 'Binary silence gate state.\n\n' +
               '• Base data: Block RMS volume vs adaptive noise floor.\n' +
-              '• Calculation: Schmitt trigger with hysteresis: 1 when RMS > 2.0 * noiseFloor, dropping to 0 when RMS < 1.5 * noiseFloor.\n' +
+              '• Calculation: Schmitt trigger. Opens when block RMS > 2.5 * noiseFloor + 0.001. Closes, after a 350 ms hangover, when block RMS <= 1.5 * noiseFloor + 0.0005.\n' +
               '• Meaning: 1 = deliberate sound or music present; 0 = quiet room silence.' },
       { name: 'gate gain', key: 'gateGain', max: 1, digits: 3,
         note: 'Silence gate smoothing gain multiplier.\n\n' +
@@ -1009,6 +1020,12 @@ export async function copyDiagnostics(button) {
     `  - Presence: ${(l.coords.presence.value * 100).toFixed(0)}% (conf ${(l.coords.presence.conf * 100).toFixed(0)}%, trend ${l.coords.presence.trend >= 0 ? '+' : ''}${l.coords.presence.trend.toFixed(2)})`
   ].join('\n') : '';
 
+  const weightLine = (bucket) => {
+    const rows = attentionRows(l.attention ? l.attention[bucket] : {}, l.attention ? l.attention.ms : 0, 4);
+    return rows.length
+      ? rows.map(r => `${r.name} ${r.pct}% (${r.starts})`).join(', ')
+      : 'none';
+  };
   const recentEvents = (l.events && l.events.length > 0)
     ? l.events.slice(0, 6).map(ev => `  - ${ev.time}: ${ev.label}${ev.detail ? ` (${ev.detail})` : ''}`).join('\n')
     : '  - none';
@@ -1024,6 +1041,7 @@ export async function copyDiagnostics(button) {
     `- **8D Coordinates**:`,
     coordsStr,
     `- **Structure**: Buildup: ${l.buildup.toFixed(3)} (${formatAgo(l.lastSeenTimes?.buildup)}) | Descent: ${l.descent.toFixed(3)} (${formatAgo(l.lastSeenTimes?.descent)}) | Drop: ${l.dropDetected ? 1 : 0} (${formatAgo(l.lastSeenTimes?.drop)}) | Tease: ${l.teaseDetected ? 1 : 0} (${formatAgo(l.lastSeenTimes?.tease)}) | Anomaly: ${l.anomaly.toFixed(0)}`,
+    `- **Weight**: Moods: ${weightLine('moods')} | Scenes: ${weightLine('scenes')} | Layers: ${weightLine('layers')}`,
     `- **Recent Events**:`,
     recentEvents
   ];

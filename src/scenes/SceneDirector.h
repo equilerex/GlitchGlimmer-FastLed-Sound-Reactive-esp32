@@ -51,9 +51,11 @@ private:
     static constexpr unsigned long kChallengeMs  = 1500;   // how long it must keep winning
     static constexpr unsigned long kEventDwellMs = 1500;   // least a scene runs before an event cuts it
 
-    // The event the music is reporting, or MOOD_COUNT when it is on the ladder.
+    // The event that may replace the base scene. Only a drop or silence does.
+    // Buildup, descent and weird are layers. They are not moods.
     static inline MoodType structuralOf(MoodType m) {
-        return ladderRank(m) < 0 ? m : MOOD_COUNT;
+        if (m == DROP || m == SILENT) return m;
+        return MOOD_COUNT;
     }
 
     inline const SceneDefinition& pick(MoodType structural) {
@@ -109,7 +111,7 @@ public:
         const MoodSnapshot& now = mood.getCurrentSnapshot();
 
         // Snapshots built by hand carry no musical coordinates, so the mood
-        // ladder stays the selector for them.
+        // name stays the selector for them.
         if (!now.music.initialized) {
             if (state->shouldTransition(now, mood.getCurrentMood())) {
                 const SceneDefinition& nxt =
@@ -123,10 +125,9 @@ public:
         const unsigned long el = t - state->sceneStartMillis;
         const MoodType structural = structuralOf(mood.getCurrentMood());
 
-        // A structural passage (build, drop, tease, descent, weird) is a moment
-        // the classifier has already confirmed and held, so it cuts in after a
-        // short dwell without waiting out the challenge. A scene already written
-        // for that moment is left alone.
+        // A drop or a silence is a moment the classifier has already confirmed
+        // and held, so it cuts in after a short dwell. A scene already written
+        // for that moment is left alone. A buildup or a descent does not cut.
         if (structural != MOOD_COUNT && structural != state->startMood &&
             el > kEventDwellMs && state->activeScene &&
             !state->activeScene->isTaggedFor(structural)) {

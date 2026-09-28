@@ -31,12 +31,9 @@ float targetIntensity(MoodType mood) {
         case DANCY:     return 0.50f;
         case ENERGETIC: return 0.70f;
         case INTENSE:   return 0.90f;
-        // Structural moods are not on the ladder, so these are positions rather than
-        // midpoints, and unlike the rungs they may share a scene. Six moods against an
-        // eight-entry catalog have no choice about that, and a structural mood is
-        // meant to be answered by a scene tagged for it, so its target is the
-        // fallback for when none is.
-        case TEASE:     return 0.45f;
+        // Structural states are not one of the five names, so these are positions
+        // rather than midpoints. A structural state is meant to be answered by a
+        // scene tagged for it, so its target is the fallback for when none is.
         case BUILDUP:   return 0.60f;
         // Between the two rungs a descent travels rather than beside its mirror.
         // BUILDUP's 0.60 would be the symmetric choice, and it would also make the

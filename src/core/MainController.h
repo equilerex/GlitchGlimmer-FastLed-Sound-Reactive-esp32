@@ -7,6 +7,7 @@
 #include "../input/ButtonInput.h"
 #include "../display/DisplayManager.h"
 #include "../core/SettingsManager.h" // <-- Add this include
+#include "../core/MemoryGuard.h"
 
 // Forward declarations (already present, kept for clarity)
 class AudioProcessor;
@@ -36,4 +37,6 @@ private:
     ButtonInput*        buttonInput;
     DisplayManager*     displayManager;
     CommunicationService& commService;
+    MemoryPressure      shownPressure;
+    void noteMemoryOnScreen();
 };

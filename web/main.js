@@ -8,6 +8,7 @@ import { SHAPES } from './viz/path.js';
 import { BenchStrip } from './viz/BenchStrip.js';
 import { loadHw, resetHw, bindView } from './viz/hwStore.js';
 import { countMismatch } from './viz/counts.js';
+import { attentionRows, resetAttention } from './attention.js';
 
 const app = createApp({
   data() {
@@ -28,17 +29,29 @@ const app = createApp({
     countNotice() {
       return countMismatch(this.countsByMode.live, this.countsByMode.recording);
     },
-    // The ladder moods (floaty, calm, dancy, energetic, intense) only describe
-    // loudness, which the coordinates show directly. Only the structural moods say
-    // something the coordinates do not.
+    // Floaty, calm, dancy, energetic and intense only describe loudness, which
+    // the coordinates show directly. Only a structural state says something
+    // the coordinates do not. Do not describe those five names as a ladder.
     structureLabel() {
       const mood = this.s.mode === 'live' ? this.s.live.mood : this.s.recording.mood;
-      const structural = ['Silent', 'Tease', 'Buildup', 'DROP', 'Weeeeird', 'Descent'];
+      const structural = ['Silent', 'Buildup', 'DROP', 'Weeeeird', 'Descent'];
       return structural.indexOf(mood) >= 0 ? mood : 'Steady';
     },
     visibleEvents() {
       const events = this.s.live.events || [];
       return this.s.live.hideGateEvents ? events.filter((ev) => ev.type !== 'gate') : events;
+    },
+    weightScenes() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.scenes, att.ms, 6) : [];
+    },
+    weightMoods() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.moods, att.ms, 6) : [];
+    },
+    weightLayers() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.layers, att.ms, 6) : [];
     },
     profileNote() {
       const strip = this.s.hw.strips[this.s.hw.activeStrip];
@@ -51,6 +64,13 @@ const app = createApp({
     zoomPercent() {
       const zoom = Number.isFinite(this.s.hw.zoom) ? this.s.hw.zoom : 1;
       return Math.round((zoom - 1) * 100);
+    },
+    // The big word is the predicted mood name. The scene's catalog tag is not that:
+    // Lava Lamp 2 is tagged Tease and role Bed, so the banner used to say
+    // "Tease · Bed" for as long as that scene was up.
+    bannerMood() {
+      if (this.s.mode !== 'live') return '';
+      return this.s.live.predicted || this.s.live.mood || '';
     },
     currentSceneMeta() {
       if (this.s.mode !== 'live' || !this.s.live.sceneCatalog) return null;
@@ -69,7 +89,7 @@ const app = createApp({
 
       for (const sc of catalog) {
         const m = (sc.mood || '').toUpperCase();
-        if (['DROP', 'BUILDUP', 'TEASE', 'DESCENT', 'WEEEEIRD', 'WEIRD'].includes(m)) {
+        if (['DROP', 'BUILDUP', 'DESCENT', 'WEEEEIRD', 'WEIRD'].includes(m)) {
           structural.push(sc);
         } else if (['INTENSE', 'ENERGETIC', 'DANCY'].includes(m)) {
           energetic.push(sc);
@@ -157,6 +177,7 @@ const app = createApp({
     },
     clearEvents() {
       this.s.live.events = [];
+      if (this.s.live.attention) resetAttention(this.s.live.attention);
     },
     coordLabel(name) {
       const info = COORD_INFO[name];

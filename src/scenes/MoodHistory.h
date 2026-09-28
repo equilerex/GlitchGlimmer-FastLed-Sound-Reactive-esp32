@@ -5,10 +5,11 @@
 #include "../audio/AudioFeatures.h"
 #include "../audio/SnapshotRing.h"
 
-// Display order, and deliberately not intensity order. SILENT, TEASE, BUILDUP,
-// DROP, DESCENT and WEIRD name the shape of a passage rather than how loud it is,
-// so they sit between rungs rather than on one, and comparing two MoodType values
-// does not compare intensity. Every rank comparison goes through ladderRank().
+// Display order, and deliberately not intensity order. SILENT, BUILDUP,
+// DROP, DESCENT and WEIRD name the shape of a passage rather than how loud it is.
+// Tease is not one of them. It is an episode that adds a layer, and it is not a
+// mood. Comparing two MoodType values does not compare intensity. Every rank
+// comparison goes through ladderRank().
 //
 // The order walks the archetypal arc and returns to where it started: silence,
 // then up through the rungs with the structural moods at the points they happen,
@@ -21,7 +22,7 @@
 // count was hardcoded as 5 in three places in the harness, so adding a mood
 // silently left two of them behind.
 enum MoodType {
-    SILENT, FLOATY, CALM, TEASE, DANCY,
+    SILENT, FLOATY, CALM, DANCY,
     BUILDUP, ENERGETIC, DROP, INTENSE, WEIRD,
     DESCENT,
     MOOD_COUNT
@@ -32,7 +33,6 @@ static const char* moodToString(MoodType mood) {
         case SILENT:    return "Silent";
         case FLOATY:    return "Floaty";
         case CALM:      return "Calm";
-        case TEASE:     return "Tease";
         case DANCY:     return "Dancy";
         case BUILDUP:   return "Buildup";
         case ENERGETIC: return "Energetic";
@@ -490,36 +490,16 @@ private:
     // The order among the structural ones is by how tightly each is tied to
     // something that just happened. SILENT is the gate, the one condition that can
     // say there is no audio here at all. DROP is an event and outranks
-    // everything. TEASE is anchored to an event as well, since its post-drop
-    // trigger is a drop within the last twelve seconds, and the aftermath of an
-    // event is named by the event. DESCENT and BUILDUP are standing measurements
-    // of a movement with nothing event-shaped behind them, and they take over
-    // once no event is in recent memory. WEIRD is the loosest, needing two of
-    // three, so it loses to all of them.
-    //
-    // TEASE ahead of DESCENT is the ordering that changed on review, and it
-    // matters because the two genuinely overlap: a drop is always followed by a
-    // fall, so the twelve seconds after one are both. Those twelve seconds go to
-    // TEASE, which is what was asked for, and DESCENT catches every wind-down
-    // that is not a drop's aftermath.
-    //
-    // No structural mood is reachable from every rung. The two that the ladder
-    // gates are gated in mirror image: BUILDUP needs the rung below ENERGETIC,
-    // because a climb that starts at the top is just loud music, and DESCENT
-    // needs it above CALM, because a fall that starts at the bottom is just
-    // quiet.
+    // everything. Buildup, descent, tease and anomaly are movements or
+    // accents. A track is almost always rising or falling, so naming the
+    // passage after that would recycle the same few scenes. They add a layer.
+    // They do not name the mood and they do not choose the base scene. A drop
+    // still does: it is the hit, and it may replace the base for that moment.
     MoodType classifyMood(const MoodSnapshot& m) const {
         const MusicState s = stateFor(m);
         if (s.presence.value < SILENT_GATE) return SILENT;
         if (s.dropDetected)                 return DROP;
-        if (s.teaseDetected)                return TEASE;
-
-        const int rung = ladderRankFrom(m);
-
-        if (s.buildup && rung < 3)                         return BUILDUP;
-        if (s.descent && rung > 1)                         return DESCENT;
-        if (s.anomaly && rung >= 2)                        return WEIRD;
-        return ladderMood(rung);
+        return ladderMood(ladderRankFrom(m));
     }
 
 public:

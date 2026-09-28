@@ -1,5 +1,5 @@
 # CONTEXT — scenes
-updated: 2026-09-21
+updated: 28-09-2026 21:33
 
 <!-- All four sections stay even when briefly empty — an absent section is
      indistinguishable from an omission. -->
@@ -10,7 +10,7 @@ Scene selection and the layer compositor. `SceneRegistry` holds one scene per ca
 
 ## Why it's built this way
 
-Live audio takes the music-space path: `pickSceneByMusic` ranks by distance to each animation's profile (`animations/AnimationProfile.h`), and the director switches only when a rival wins by a margin for a sustained time, or on a structural event. The mood ladder and `pickSceneByMood` remain for snapshots built by hand, which carry no coordinates. See `_architecture/plans/decisions/001-select-scenes-by-distance-in-music-space.md`.
+Live audio takes the music-space path: `pickSceneByMusic` ranks by distance to each animation's profile (`animations/AnimationProfile.h`), and the director switches only when a rival wins by a margin for a sustained time, or on a structural event. `pickSceneByMood` remains for snapshots built by hand, which carry no coordinates. See `_architecture/plans/decision-history/001-select-scenes-by-distance-in-music-space.md`.
 
 `SceneState::recent` holds the last three animations left, so the selector can lean away from them. Cooldown stamps for layer injection are members of the director, not function statics, so two directors do not share one.
 
@@ -26,14 +26,18 @@ Which layer each episode gets is a visual choice and may change: buildup `BUILDU
 
 ## Gotchas
 
+The base scene follows the music coordinates. A drop or silence can replace it. Buildup, descent, tease and anomaly do not. Each of those still adds its own layer in `attachEpisodeLayers`.
+
+`ENERGY_SPIRAL` is the confirmed drop window, not an accent. It stays for the whole episode, up to `STRUCT_DROP_MAX_MS` (60 s), at opacity 1, and `render` adds a saturated value onto every LED. The reactive injections are 450 ms to 1200 ms, and the four-layer cap evicts the lowest class first, so a section layer keeps its slot and those accents often never appear. Owner noted this on 28-09-2026. No change yet. The open item is cyu5 Energy spiral reads as the whole show.
+
 `SceneDirector::attachState` has to be called or `update` returns immediately and nothing draws.
 
 `LEDStripController::update` must call `sceneDirector.maybeInjectReactiveLayer(strips[i].layers(), audio, now)` or transient visual accents will never trigger.
 
-A scene's structural tags come from the catalog entry's mood, and only structural moods are copied. A ladder tag on a scene would win its mood outright and the ranking would never be consulted.
+A scene's structural tags come from the catalog entry's mood, and only structural moods are copied. A tag for floaty, calm, dancy, energetic or intense on a scene would win that name outright and the ranking would never be consulted.
 
 `sceneDistance` includes the recency penalty and exempts the running scene. The director compares the running scene's distance with the best rival's on that same number, so do not compute one of them another way.
 
 ## Don't
 
-Do not assign high-energy or full-screen reactive layers (like `TriwaveBeatLayer` or unattenuated `NoiseFloorMistLayer`) as permanent `durMs=0` scene layers. Keep scene beds minimal so base animations can breathe. Do not remove the ladder fallback until the harness builds coordinates in its fixtures. Do not call `mood.update()` from the director; the controller already advances it each frame.
+Do not assign high-energy or full-screen reactive layers (like `TriwaveBeatLayer` or unattenuated `NoiseFloorMistLayer`) as permanent `durMs=0` scene layers. Keep scene beds minimal so base animations can breathe. Do not remove the `pickSceneByMood` fallback until the harness builds coordinates in its fixtures. Do not call `mood.update()` from the director; the controller already advances it each frame.
