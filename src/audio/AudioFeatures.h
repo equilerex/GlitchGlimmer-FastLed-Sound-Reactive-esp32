@@ -221,4 +221,17 @@ struct AudioFeatures {
 
     float centroid = 0.0f;          //  ??
     float frequency = 0.0f;         //  frequency
+
+    // 8 log-spaced sub-band shares (Sub-bass, Bass, Low-mid, Mid, High-mid, Presence, Brilliance, Air)
+    float subBands[8] = {};
+    float spectralTilt = 0.0f;      // Low vs high balance (-1.0 to +1.0)
+    float spectralNovelty = 0.0f;   // Multi-band half-wave rectified onset flux
+
+    // Peak tension climax & contrast tracking
+    bool  buildupClimax = false;    // All bands equalized at peak and fluctuating
+    float spectralContrast = 0.0f;  // Instantaneous spectral shift / fingerprint inversion
+    float deltaIntensity = 0.0f;    // Fast vs slow level shift (+surge / -cut)
+    float deltaWeight = 0.0f;       // Fast vs slow bass shift (+slam / -thinning)
+    float deltaTilt = 0.0f;         // Fast vs slow spectral tilt shift (+bright / -dark)
+    float contrastMagnitude = 0.0f; // Total transition vector magnitude
 };

@@ -19,37 +19,37 @@ Resolved 2026-09-21. `SceneDirector::maybeInjectReactiveLayer` has been wired in
 
 ## The heap gate has a floor that stops everything
 
-Status: OPEN
+Status: DESIGNED. Requirements and guard in `plans/2026-09-27-backlog-sweep.md`, Phase 2.
 
 main.ino:48 skips controller.update() entirely whenever free heap drops below 20KB, so the <10KB branch in MainController.cpp:298 is unreachable and the system's actual low-memory behaviour is a bare delay loop, not the LED-only fallback that branch describes. Now that the leak is fixed, confirm the heap never approaches that floor and decide whether the gate should degrade (drop display, keep audio and LEDs) rather than stall.
 
 ## Per-pixel transcendental math in layers
 
-Status: OPEN
+Status: DROPPED. Done 2026-09-27, Phase 1 of `plans/2026-09-27-backlog-sweep.md`.
 
 `src/animations/visual-layers/VisualLayers.h:328` runs `exp(-pow(...))` inside a per-LED loop, and `:295` and `:178` call `sin` per LED. Float arguments promote to software double and ESP32 has no hardware double FPU, so the cost scales with LED count: invisible on a 10-LED strip, dominant on a 300-LED one. This was latent rather than live until recently, because the whole scene path early-returned and none of it executed. Now that layers render it is real, and the earlier estimate was made against code that did not run, so measure frame time before optimising.
 
 ## Dead code and uninstantiated classes
 
-Status: OPEN
+Status: DROPPED. Done 2026-09-27, Phase 1 of `plans/2026-09-27-backlog-sweep.md`.
 
 LayerPool is never instantiated anywhere, so its getByType() returning std::vector<Entry> by value is latent rather than live. AlienSquirtTrailLayer is unused. WormholeVortexLayer and CentroidColorFlowLayer are no longer in this list: both are reachable now that the twelve concrete `LayerType` values exist, so the phase wraps in them are live code rather than hygiene. SettingIconWidget is declared and owned at DisplayManager.h:67 but never constructed, and ScrollingTextWidget at Widget.h:218 is never instantiated.
 
 ## Verbose ESP-IDF logging left on
 
-Status: OPEN
+Status: DROPPED. Already fixed: `platformio.ini` sets `-DCORE_DEBUG_LEVEL=0` (checked 2026-09-27).
 
 platformio.ini sets -DCORE_DEBUG_LEVEL=5, which is verbose. It costs cycles and floods the serial console during timing work.
 
 ## MainController holds a second, dead SceneDirector
 
-Status: OPEN
+Status: DROPPED. Done 2026-09-27, Phase 1 of `plans/2026-09-27-backlog-sweep.md`.
 
 MainController.cpp constructs a SceneDirector with its own SceneRegistry and never attaches a SceneState, so every call on it early-returns. The display scene name now reads from the live director inside LEDStripController instead. Deleting this removes a redundant registry and a heap allocation. It is live code: the device build now includes `src/core/MainController.cpp`, so the dead director is compiled and constructed on every boot.
 
 ## History depth is now a fixed 60KB of heap
 
-Status: OPEN
+Status: DROPPED. Done 2026-09-27, Phase 1 of `plans/2026-09-27-backlog-sweep.md`.
 
 `AudioHistory` is a fixed-capacity ring of 1500 `AudioSnapshot`s, so it holds 60000 bytes for the life of the program, allocated once at boot. The harness measures it as filling to that cap. The deepest live consumer is `MoodMemoryArcLayer`, which reads the last 10, and nothing else reads it at all. The capacity is carried over from the `std::deque` it replaced, where the same 1500 cost nothing up front. Shrinking it is a behaviour change rather than a cleanup, which is why it is not in the current work.
 
@@ -61,13 +61,13 @@ There is no LICENSE file. That leaves the repository all-rights-reserved by defa
 
 ## Two AI-era FastLED guides in docs/ are unreferenced
 
-Status: OPEN
+Status: DROPPED. Owner decided 2026-09-27 to leave these files alone.
 
 `docs/_Fastled-animation-guidelines.md` and `docs/ai-fastled-guide.md` are AI-era guides that nothing in the repo references, and the vendored `.agents/skills/jookoi-fastled/` supersedes them for the same purpose. Two separate problems. The guidelines file still claims FastLED has no built-in named animations, which is false and is the era's defect class in prose rather than in code. And it carries the `_` private-layer prefix while being committed, which reads the prefix as a filename convention rather than as the privacy switch it is. Decide per file: correct it, delete it, or fold whatever is still true into the vendored skill.
 
 ## AI_ASSIST_INSTRUCTIONS.MD targets a gitignored IDE directory
 
-Status: OPEN
+Status: DROPPED. Owner decided 2026-09-27 to leave this file alone.
 
 `AI_ASSIST_INSTRUCTIONS.MD` at the root is a prompt file for an IntelliJ assistant. Nothing in the repo reads it, it targets `.idea/`, which is now gitignored, and its only mention anywhere is the generated `graphify-out/GRAPH_REPORT.md`. Delete it unless an IDE still points at it.
 
@@ -85,7 +85,7 @@ Blocked on a 60-120 s capture and a look at the live page. `SceneDefinition::lay
 
 ## Visualiser follow-ups left after the rebuild
 
-Status: OPEN
+Status: DROPPED. Done 2026-09-27, Phase 3 of `plans/2026-09-27-backlog-sweep.md`. The "0.25 px floor" below never existed in `placePixels`, so the test covers a 0.3 px pitch instead.
 
 Small, unordered, none blocking. Each was raised in review during the ten-task rebuild and deliberately deferred rather than fixed.
 
@@ -101,7 +101,7 @@ Nothing exercises `pointAt` and `placePixels` against the sharper presets. That 
 
 ## Pixel counts agree by convention, not by construction
 
-Status: OPEN
+Status: DROPPED. Done 2026-09-27, Phase 3 of `plans/2026-09-27-backlog-sweep.md`. The harness already stamped the manifest with `LED_0_NUM`/`LED_1_NUM`, and the page now shows a notice above the bench when the live and recording counts differ (`web/viz/counts.js`).
 
 The browser visualiser learns its pixel counts twice: live from the WASM engine, which reads `LED_0_NUM` and `LED_1_NUM` in `src/config/Config.h`, and for recordings from `leds0`/`leds1` in `web/data/manifest.json`. Both say `[100, 10]` today. Nothing enforces that they keep agreeing.
 
@@ -123,6 +123,6 @@ level is the envelope over the loudest envelope of the last ~20 s, so any steady
 
 ## Silence gate looks too lenient near the noise floor
 
-Status: OPEN
+Status: DESIGNED. `plans/2026-09-27-backlog-sweep.md`, Phase 5.
 
 A reading of volume 0.0005 against a noise floor of 0.0003 showed the gate open and level at 91 percent. The gate opens at noiseFloor * 1.5 + 0.0005 (AudioProcessor.cpp around line 371), and the hangover holds it 350 ms, so a signal about 1.7 times the floor should not stay open. Not investigated. Also: a tonal synthetic signal never raises the noise floor above 0 in the harness, because the floor only rises on blocks with spectral flatness above NOISE_FLAT_MIN, so no harness check reaches the floor-relative guard on level.

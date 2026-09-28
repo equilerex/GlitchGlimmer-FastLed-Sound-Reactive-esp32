@@ -246,12 +246,14 @@ export function fitScale(path, count, pitchMm) {
   return lengthMm > 0 ? path.total / lengthMm : 1;
 }
 
+// Handles within `radius` (inclusive) are candidates. On a tie the lower index
+// wins, so the same click always grabs the same handle.
 export function hitHandle(pts, width, height, x, y, radius = 16) {
   let best = -1;
-  let bestDistance = radius;
+  let bestDistance = Infinity;
   for (let i = 0; i < pts.length; i++) {
     const d = Math.hypot(pts[i][0] * width - x, pts[i][1] * height - y);
-    if (d <= bestDistance) {
+    if (d <= radius && d < bestDistance) {
       bestDistance = d;
       best = i;
     }

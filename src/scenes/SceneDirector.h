@@ -248,6 +248,19 @@ public:
             }
             lastEnergy = now;
         }
+
+        // Directional contrast response: lighter -> intense surge or bass slam
+        if (af.contrastMagnitude >= 0.40f && (af.deltaIntensity >= 0.25f || af.deltaWeight >= 0.30f) && now - lastEnergy > 2000) {
+            lm.addLayerByType(LayerType::HIGHLIGHT, 450, LayerClass::ACCENT);
+            lastEnergy = now;
+        }
+
+        // Peak tension climax: all bands saturated and fluctuating
+        if (af.buildupClimax && now - lastEnergy > 1200) {
+            lm.addLayerByType(LayerType::DYNAMICS_FLICKER_STORM, 800, LayerClass::ACCENT);
+            lastEnergy = now;
+        }
+
         // Rare mood arc sweep across scene
         if (random(1000) < 2 && now - lastBeat > 6000) {
             lm.addLayerByType(LayerType::MOOD_ARC, 4000);

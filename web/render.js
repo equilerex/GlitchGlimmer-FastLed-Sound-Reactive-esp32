@@ -39,6 +39,28 @@ export class Spectrum {
     // quiet, not because the bass was loud.
     this.bars = 64;
     this.barPeak = new Float32Array(this.bars);
+
+    // The stylesheet owns the canvas's size. The backing store follows the laid-out
+    // box, read from the canvas itself rather than guessed from its parent, so a
+    // layout change never leaves the bars drawn at a stale width or height.
+    this.cssWidth = 0;
+    this.cssHeight = 0;
+    this.measure();
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => this.measure()).observe(canvas);
+    }
+  }
+
+  // clientWidth/clientHeight are the content box, inside the CSS border, which is
+  // the area the backing store maps onto.
+  measure() {
+    const dpr = window.devicePixelRatio || 1;
+    this.cssWidth = this.canvas.clientWidth;
+    this.cssHeight = this.canvas.clientHeight;
+    const w = Math.round(this.cssWidth * dpr);
+    const h = Math.round(this.cssHeight * dpr);
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
   }
 
   // Forget the per-bar references. Called when the page changes which input it is
@@ -63,14 +85,14 @@ export class Spectrum {
     // divide by its own noise.
     const floor = Math.max(framePeak * 0.02, 1e-4);
 
+    // Without a ResizeObserver, re-read every frame. A devicePixelRatio change
+    // (browser zoom, moving between screens) does not resize the box either.
     const dpr = window.devicePixelRatio || 1;
-    const cssWidth = this.canvas.parentElement.clientWidth - 16;
-    const cssHeight = 48;
-    if (this.canvas.width !== Math.round(cssWidth * dpr)) {
-      this.canvas.width = Math.round(cssWidth * dpr);
-      this.canvas.height = Math.round(cssHeight * dpr);
-      this.canvas.style.height = cssHeight + 'px';
-    }
+    if (typeof ResizeObserver !== 'function' ||
+        this.canvas.width !== Math.round(this.cssWidth * dpr)) this.measure();
+    const cssWidth = this.cssWidth;
+    const cssHeight = this.cssHeight;
+    if (cssWidth <= 0 || cssHeight <= 0) return;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.ctx.clearRect(0, 0, cssWidth, cssHeight);
 

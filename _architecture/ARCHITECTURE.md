@@ -53,6 +53,17 @@ Read `docs/music-research/MODEL.md` before touching the structural detectors, th
 - **A tease is a buildup whose expected arrival is withheld.** An actual drop resolves it. It is recognised in retrospect and its reliability is low.
 - **A breakdown is a sustained stripping-back**, distinct from a drop and from a buildup. `descent` is the closest detector the code has, not the concept.
 - **Section events, and the decision that they have ended, live in the firmware.** The page displays them and sends tuning values, and never decides when an episode starts or ends. The plan is `plans/2026-09-21-structural-event-lifecycle.md`.
+- **No prescribed chronological arc.** Music is creative across genres (jazz, ambient, rock, classical, EDM) and does not follow a fixed formulaic cycle. The system must not enforce rigid sequence expectations such as a buildup of length X followed by a pause of length Y before an arrival counts.
+- **Dramatic contrast over static loudness.** What drives visual drama is sudden shift and discontinuity between the immediate frame (50-150 ms) and the recent context (1-2 s):
+  - Intensity delta ($\Delta I$): sudden surge versus sudden cut or dropout.
+  - Weight delta ($\Delta W$): low-end kick and sub-bass arrival versus thinning.
+  - Spectral tilt delta ($\Delta T$): bright wash versus grounded low-end weight.
+  - Rhythmic density delta ($\Delta R$): groove arrival versus beat dropout.
+- **Directional visual response.** Lighting effects answer the direction and magnitude of the contrast vector:
+  - Lighter to intense ($\Delta I \gg 0$ or $\Delta W \gg 0$): high-contrast impact flash, saturation burst, rhythm-locked energetic layers.
+  - Intense to lighter ($-\Delta I \gg 0$ or $-\Delta W \gg 0$): instant negative space, brightness pulled back to create headroom, spacious ambient drift.
+  - Timbral inversion ($\Delta T$ flip): palette transformation (cool high-end tint to deep warm low-end weight) and texture morph.
+- **Peak tension clues.** When bass, mids and treble all equalize near peak with high frame-to-frame volatility, the track is in full-spectrum saturation. This state drives tension layer escalation (strobe, rapid reactive flicker) and primes the system for the contrast release that follows.
 
 ## Scenes and layers
 

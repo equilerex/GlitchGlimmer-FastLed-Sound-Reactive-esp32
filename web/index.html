@@ -266,6 +266,7 @@
         <span class="topbar-spacer"></span>
         <div class="legend"><span id="t-power">&mdash;</span></div>
       </header>
+      <p class="count-notice" v-if="countNotice" role="status">{{ countNotice }}</p>
       <canvas id="bench" class="bench" aria-label="Pixel indices and values"></canvas>
       <div class="footer-readout-slot">
         <div class="inspector" v-if="s.hw.inspect">

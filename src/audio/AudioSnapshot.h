@@ -2,6 +2,7 @@
 #pragma once
 
 #include "SnapshotRing.h"
+#include "../config/Config.h"
 
 struct AudioSnapshot {
     float volume;
@@ -22,4 +23,4 @@ struct AudioSnapshot {
 //
 // The capacity is the cap: push_back evicts the oldest element once the ring is
 // full, which is what the deque's separate maxHistorySize check used to do.
-using AudioHistory = SnapshotRing<AudioSnapshot, 1500>;
+using AudioHistory = SnapshotRing<AudioSnapshot, AUDIO_HISTORY_CAPACITY>;

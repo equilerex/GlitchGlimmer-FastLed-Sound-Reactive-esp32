@@ -309,17 +309,29 @@
 // exactly what BEAT_BASS_RISE exploits to tell a rhythm from a voice. A kick
 // cannot light all three bands against their own recent maxima at once. A drop
 // does it by construction.
-#define DROP_BAND_LEVEL      0.60f
+#define DROP_BAND_LEVEL      0.55f
+#define DROP_MID_LEVEL       0.50f
+#define DROP_TREBLE_LEVEL    0.35f
 // The slam itself, as displacement above the slow mean in a single block. Strictly
 // larger than BUILDUP_LEVEL, so a passage that merely rises is not a drop.
 #define DROP_SCALE           0.35f
+#define DROP_BASS_SCALE      0.45f
 // And the seconds before it have to have been quiet, which is what stops a drop
 // firing mid-chorus. This encodes the musical fact that a drop follows a breakdown
-// or a buildup rather than arriving in the middle of a loud passage.
+// or a buildup (either broadband quiet or bass withdrawal) rather than arriving mid-chorus.
 #define DROP_QUIET_LEVEL     0.55f
-#define DROP_ARM_MS          400
-// At most one drop every eight seconds, so the mood cannot park there.
-#define DROP_COOLDOWN_MS     8000
+#define DROP_QUIET_BASS_LEVEL 0.25f
+// The follower time constant for bass tracking. Faster than BUILDUP_TAU_SEC (10s)
+// because rhythm sections and basslines drop out over 1-4 bars (2-4s), whereas
+// broadband energy builds over 16-32 bars.
+#define DROP_BASS_TAU_SEC    2.0f
+// Fast follower time constant (150ms) for transient jump discrimination. A drop slam is an explosive
+// edge that jumps above this fast baseline, whereas a gradual crescendo/swell moves with it.
+#define DROP_FAST_TAU_SEC    0.15f
+#define DROP_JUMP_SCALE      0.30f
+#define DROP_ARM_MS          250
+// At most one drop every five seconds, preventing re-triggering inside the payoff.
+#define DROP_COOLDOWN_MS     5000
 // How long the mood reads DROP after one fires. dropDetected is a single block's
 // pulse, which the confirmation window would reject before it could ever be shown,
 // so MoodHistory adopts it at once and holds the display for this long.
@@ -487,6 +499,14 @@
 #endif
 #define BUTTON_PIN_1         CONFIG_BTN1
 #define BUTTON_PIN_2         35
+
+// ==== History ====
+// Snapshots the audio history ring keeps, one per frame. The deepest reader is
+// MoodMemoryArcLayer, which averages the last 10, so 32 leaves headroom for a
+// reader of up to a second at 30 fps. The ring is allocated once at boot and
+// costs capacity * sizeof(AudioSnapshot) of heap (1.3KB at 32, 60KB at the old
+// 1500), so raise it only when a reader needs the depth.
+#define AUDIO_HISTORY_CAPACITY 32
 
 // ==== OTHER ====
 #define ENABLE_WEB_UI      false        // Enable/disable WebUI

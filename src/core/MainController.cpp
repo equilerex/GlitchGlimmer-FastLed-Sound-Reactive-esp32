@@ -1,7 +1,6 @@
 #include "MainController.h"
 #include "../audio/AudioProcessor.h"
 #include "../audio/AudioHistoryTracker.h"
-#include "../scenes/SceneDirector.h"
 #include "../core/LEDStripController.h"
 #include "../input/EncoderInput.h"
 #include "../input/ButtonInput.h"
@@ -39,8 +38,6 @@ MainController::MainController(CommunicationService& comm)
     // Initialize all pointers to nullptr first
     audioHistory    = nullptr;
     moodHistory     = nullptr;
-    sceneRegistry   = nullptr;
-    sceneDirector   = nullptr;
     audioProcessor  = nullptr;
     ledController   = nullptr;
     encoderInput    = nullptr;
@@ -59,8 +56,6 @@ MainController::~MainController() {
     delete encoderInput;
     delete ledController;
     delete audioProcessor;
-    delete sceneDirector;
-    delete sceneRegistry;
     delete moodHistory;
     delete audioHistory;
 }
@@ -104,27 +99,6 @@ void MainController::begin() {
     audioProcessor = new AudioProcessor();
     if (!audioProcessor) { 
         Serial.println("Failed to create AudioProcessor"); 
-        allComponentsInitialized = false;
-    }
-
-    // Create scene management components
-    Serial.println("Creating SceneRegistry..."); Serial.flush();
-    sceneRegistry = new SceneRegistry();
-    if (!sceneRegistry) { 
-        Serial.println("Failed to create SceneRegistry"); 
-        allComponentsInitialized = false;
-    }
-
-    // Only create SceneDirector if dependencies exist
-    Serial.println("Creating SceneDirector..."); Serial.flush();
-    if (moodHistory && sceneRegistry) {
-        sceneDirector = new SceneDirector(*moodHistory, *sceneRegistry);
-        if (!sceneDirector) { 
-            Serial.println("Failed to create SceneDirector"); 
-            allComponentsInitialized = false;
-        }
-    } else {
-        Serial.println("Cannot create SceneDirector due to missing dependencies");
         allComponentsInitialized = false;
     }
 
@@ -176,12 +150,6 @@ void MainController::begin() {
         Serial.println("Initializing AudioProcessor..."); Serial.flush();
         audioProcessor->begin();
         Serial.println("AudioProcessor initialized"); Serial.flush();
-    }
-    
-    if (sceneDirector) {
-        Serial.println("Initializing SceneDirector..."); Serial.flush();
-        sceneDirector->begin();
-        Serial.println("SceneDirector initialized"); Serial.flush();
     }
     
     // Initialize display if available

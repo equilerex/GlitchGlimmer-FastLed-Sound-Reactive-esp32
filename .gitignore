@@ -56,3 +56,11 @@ node_modules/
 # Copyrighted local-only tracks. Never commit; the committed audio is small and royalty-free.
 web/audio/local/
 dist/audio/local/
+/web/audio/demo.mp3
+/web/audio/jazz.mp3
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+
+/.ollamassist/conversations/b4a8d7ba-eed3-4795-8f83-f4167be17cff.json

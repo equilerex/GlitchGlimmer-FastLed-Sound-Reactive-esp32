@@ -16,6 +16,7 @@ will this look like on the wall*, and *which pixel is wrong*.
 | `realistic.js` | Physical parts for the realistic look: PCB, pads, bodies, sleeve, `glowSpots` | no |
 | `BenchStrip.js` | Straightened indexed strip under the stage | no |
 | `hwStore.js` | The settings object, localStorage, view binding | partly |
+| `counts.js` | The live-vs-recording pixel count check behind the bench notice | yes |
 
 `web/render.js` re-exports `StripView` as `LedCanvas`, the name `app.js` and `live.js` use.
 
@@ -175,6 +176,6 @@ and change the other.
 
 ## Testing
 
-`camera.js`, `profiles.js` and `path.js` are pure and tested under `test/viz/`. The canvas modules
+`camera.js`, `profiles.js`, `path.js` and `counts.js` are pure and tested under `test/viz/`. The canvas modules
 are not, and are verified by hand in a browser. Keep new logic on the pure side of that line where
 you can.

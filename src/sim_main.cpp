@@ -594,14 +594,15 @@ void checkHistorySizing() {
     std::printf("\nhistory sizing\n");
     std::printf("  AudioSnapshot %zu bytes, MoodSnapshot %zu bytes\n",
                 sizeof(AudioSnapshot), sizeof(MoodSnapshot));
-    std::printf("  AudioHistoryTracker peak %zu elements, %zu bytes of payload, declared cap 1500\n",
-                peakAudio, peakAudio * sizeof(AudioSnapshot));
+    std::printf("  AudioHistoryTracker peak %zu elements, %zu bytes of payload, declared cap %d\n",
+                peakAudio, peakAudio * sizeof(AudioSnapshot), AUDIO_HISTORY_CAPACITY);
     std::printf("  MoodHistory peak %zu elements, %zu bytes of payload, declared cap 150\n",
                 peakMood, peakMood * sizeof(MoodSnapshot));
 
     record("both history buffers fill to their declared cap",
-           peakAudio == 1500 && peakMood == 150,
-           "audio peak " + std::to_string(peakAudio) + " of 1500, mood peak " +
+           peakAudio == size_t(AUDIO_HISTORY_CAPACITY) && peakMood == 150,
+           "audio peak " + std::to_string(peakAudio) + " of " +
+           std::to_string(AUDIO_HISTORY_CAPACITY) + ", mood peak " +
            std::to_string(peakMood) + " of 150");
 }
 

@@ -176,8 +176,8 @@ public:
         for (int i = 0; i < count; i++) {
             float pos = (float)i / count;
             float tri = direction
-                ? abs(fmod((pos + phaseOffset) * 2.0f, 1.0f) * 2.0f - 1.0f)
-                : abs(fmod((1.0f - pos + phaseOffset) * 2.0f, 1.0f) * 2.0f - 1.0f);
+                ? fabsf(fmodf((pos + phaseOffset) * 2.0f, 1.0f) * 2.0f - 1.0f)
+                : fabsf(fmodf((1.0f - pos + phaseOffset) * 2.0f, 1.0f) * 2.0f - 1.0f);
             uint8_t brightness = uint8_t(tri * drive * 255.0f);
             leds[i] += CHSV(200, 255, brightness);
         }
@@ -193,10 +193,14 @@ public:
     }
 
     void render(CRGB* leds, int count) override {
-        float hueOffset = fmod(millis() / 50.0, 255);
+        // Time terms are computed once per frame, in double and wrapped, so the
+        // per-pixel loop stays in single-precision float: the ESP32 FPU has no
+        // double, and millis() as a float loses precision after a few hours.
+        const float hueOffset = float(fmod(millis() / 50.0, 255.0));
+        const float t = float(fmod(millis() / 200.0, 6.283185307179586));
         for (int i = 0; i < count; ++i) {
             float phase = float(i) / count * 6.2831f; // 2π
-            float amp = sin(phase + millis() / 200.0) * 0.5 + 0.5;
+            float amp = sinf(phase + t) * 0.5f + 0.5f;
             leds[i] += CHSV(hueOffset + amp * 100, 255, amp * 100);
         }
     }
@@ -313,7 +317,7 @@ public:
         int center = map(spectrumCentroid, 0, NUM_SAMPLES / 2, 0, count - 1);
         for (int i = 0; i < count; ++i) {
             float dist = abs(i - center);
-            float pulse = sin(dist * 0.3f + ripplePhase);
+            float pulse = sinf(dist * 0.3f + ripplePhase);
             uint8_t bright = constrain((pulse + 1.0f) * 128, 0, 255);
             leds[i] += CHSV(center, 255, bright);
         }
@@ -346,7 +350,9 @@ public:
         float radius = frame * 0.8f;
         for (int i = 0; i < count; ++i) {
             float dist = abs(i - count / 2);
-            float wave = exp(-pow((dist - radius) / 5.0f, 2));
+            float x = (dist - radius) * 0.2f;
+            if (x > 4.0f || x < -4.0f) continue;  // exp(-16) rounds to 0 brightness
+            float wave = expf(-x * x);
             uint8_t brightness = wave * 255;
             leds[i] += CHSV(0, 255, brightness);
         }
@@ -371,7 +377,7 @@ public:
     void render(CRGB* leds, int count) override {
         for (int i = 0; i < count; ++i) {
             float angle = offset + i * 0.15f;
-            uint8_t hue = fmod(angle * 40, 255);
+            uint8_t hue = uint8_t(fmodf(angle * 40.0f, 255.0f));
             leds[i] += CHSV(hue, 255, 80);
         }
     }

@@ -1321,9 +1321,8 @@ button[aria-pressed="true"] {
 
 .spectrum {
   width: 100%;
-  /* render.js's Spectrum.paint sets this canvas's style.height inline from
-     its own cssHeight constant on every resize, which always wins over this
-     rule. Kept in step by hand — change one, change the other. */
+  /* The single source of the spectrum's size. render.js's Spectrum reads the
+     laid-out box and sizes its backing store to it. */
   height: 48px;
   background: var(--void);
   border: 1px solid var(--line);
@@ -1440,6 +1439,15 @@ button[aria-pressed="true"] {
 .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .chip.ok { color: var(--ok); }
 .chip.warn { color: var(--hot); border-color: var(--hot); }
+.count-notice {
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--hot);
+  border-radius: 4px;
+  color: var(--hot);
+  font-family: var(--mono);
+  font-size: 12px;
+}
 .chip.bad { color: var(--error); border-color: var(--error); }
 
 /* Coordinates: a fat value bar over a 2 px confidence strip. */

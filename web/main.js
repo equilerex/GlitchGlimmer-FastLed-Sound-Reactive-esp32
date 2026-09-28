@@ -7,6 +7,7 @@ import { SURFACES } from './viz/surface.js';
 import { SHAPES } from './viz/path.js';
 import { BenchStrip } from './viz/BenchStrip.js';
 import { loadHw, resetHw, bindView } from './viz/hwStore.js';
+import { countMismatch } from './viz/counts.js';
 
 const app = createApp({
   data() {
@@ -18,10 +19,15 @@ const app = createApp({
       boundView: null,
       bench: null,
       benchCounts: null,
+      // The counts each mode's view last reported, compared by countNotice.
+      countsByMode: { live: null, recording: null },
       hwLoaded: false
     };
   },
   computed: {
+    countNotice() {
+      return countMismatch(this.countsByMode.live, this.countsByMode.recording);
+    },
     // The ladder moods (floaty, calm, dancy, energetic, intense) only describe
     // loudness, which the coordinates show directly. Only the structural moods say
     // something the coordinates do not.
@@ -334,10 +340,9 @@ const app = createApp({
         });
       } else if (view.counts.length !== this.benchCounts.length ||
                  view.counts.some((c, i) => c !== this.benchCounts[i])) {
-        // The live engine's counts come from Config.h, the recording manifest's
-        // from web/data/manifest.json — two different sources that only agree by
-        // convention. If they ever diverge, rebuild rather than let the bench go
-        // on rendering the previous mode's pixel counts.
+        // The live engine and the recording manifest report counts from two
+        // builds. If they diverge, countNotice says so on the page, and the
+        // bench is rebuilt rather than left on the previous mode's counts.
         this.bench = new BenchStrip(document.getElementById('bench'), view.counts);
         this.benchCounts = view.counts.slice();
       }
@@ -354,6 +359,8 @@ const app = createApp({
         this.boundView.onGeometryChange = null;
         this.boundView.onPathCommit = null;
       }
+
+      if (this.s.mode in this.countsByMode) this.countsByMode[this.s.mode] = view.counts.slice();
 
       this.boundView = view;
       this.syncView = bindView(view, this.bench, this.s.hw, this.s);

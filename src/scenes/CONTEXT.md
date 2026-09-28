@@ -6,7 +6,7 @@ updated: 2026-09-21
 
 ## What this is
 
-Scene selection and the layer compositor. `SceneRegistry` holds one scene per catalog animation, `SceneDirector` decides when to switch and what to add on top, `SceneState` is the per-strip running state, `LayerManager` and `LayerPool` composite the accents.
+Scene selection and the layer compositor. `SceneRegistry` holds one scene per catalog animation, `SceneDirector` decides when to switch and what to add on top, `SceneState` is the per-strip running state, `LayerManager` composites the accents.
 
 ## Why it's built this way
 

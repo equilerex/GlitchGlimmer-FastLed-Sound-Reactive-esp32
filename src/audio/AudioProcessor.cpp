@@ -37,9 +37,20 @@ void AudioProcessor::begin() {
         .data_out_num = I2S_PIN_NO_CHANGE,
         .data_in_num = I2S_SD
     };
-    i2s_driver_install(I2S_PORT, &i2s_config, 0, nullptr);
-    i2s_set_pin(I2S_PORT, &pin_config);
-    i2s_zero_dma_buffer(I2S_PORT);
+    esp_err_t err = i2s_driver_install(I2S_PORT, &i2s_config, 0, nullptr);
+    if (err != ESP_OK) {
+        Serial.printf("I2S driver install failed: %d\n", err);
+        return;
+    }
+    err = i2s_set_pin(I2S_PORT, &pin_config);
+    if (err != ESP_OK) {
+        Serial.printf("I2S set pin failed: %d\n", err);
+        return;
+    }
+    err = i2s_zero_dma_buffer(I2S_PORT);
+    if (err != ESP_OK) {
+        Serial.printf("I2S zero DMA buffer failed: %d\n", err);
+    }
     #else
     Serial.println("Microphone disabled; skipping I2S initialization");
     // Keep analysis deterministic when no capture source is present. The
@@ -206,8 +217,16 @@ void AudioProcessor::clearStructure() {
     buildupLatched = false;
 
     slowLevel        = 0.0f;
+    fastLevel        = 0.0f;
+    slowBassLevel    = 0.0f;
+    fastBassLevel    = 0.0f;
+    slowTrebleLevel  = 0.0f;
+    fastTrebleLevel  = 0.0f;
+    slowTilt         = 0.0f;
     slowSeeded       = false;
     structuralLastMs = 0;
+    buildupPeakMs    = 0;
+    chopSinceMs      = 0;
 
     buildupActive         = false;
     buildupSince          = 0;
@@ -220,8 +239,13 @@ void AudioProcessor::clearStructure() {
     descentLastExceededMs = 0;
     descentFromLevel      = 0.0f;
 
-    quietSince = 0;
-    quietHeld  = false;
+    quietSince      = 0;
+    quietLastSeenMs = 0;
+    quietHeld       = false;
+
+    for (int b = 0; b < 8; ++b) previousSubBands[b] = 0.0f;
+    memset(subBandHistory, 0, sizeof(subBandHistory));
+    subBandHistIdx = 0;
 
     for (int i = 0; i < TEASE_WINDOW; ++i) levelRing[i] = 0.0f;
     levelRingCount = 0;
@@ -266,21 +290,23 @@ void AudioProcessor::updateAutocorrBeat(float novelty) {
         return;
     }
 
-    const int kMinLag = 26; // ~199 BPM (26 * 11.6ms = 302ms)
-    const int kMaxLag = 86; // ~60 BPM (86 * 11.6ms = 998ms)
+    const float frameSec = float(NUM_SAMPLES) / float(SAMPLE_RATE);
+    const int kMinLag = int(60.0f / (200.0f * frameSec) + 0.5f); // ~200 BPM
+    const int kMaxLag = int(60.0f / (60.0f * frameSec) + 0.5f);  // ~60 BPM
     const int kCompareLen = 96;
 
     if (onsetCount < kMaxLag + kCompareLen) {
         return;
     }
 
-    float scores[61] = {};
+    float scores[128] = {};
     float bestScore = -1.0f;
     int bestLag = 0;
     float sumScore = 0.0f;
     int scoreCount = 0;
+    const float centerLag = 60.0f / (120.0f * frameSec);
 
-    for (int lag = kMinLag; lag <= kMaxLag; ++lag) {
+    for (int lag = kMinLag; lag <= kMaxLag && (lag - kMinLag < 128); ++lag) {
         float r = 0.0f;
         for (int i = 0; i < kCompareLen; ++i) {
             int idx0 = (onsetIndex - 1 - i + ONSET_HISTORY_LEN * 2) % ONSET_HISTORY_LEN;
@@ -288,7 +314,7 @@ void AudioProcessor::updateAutocorrBeat(float novelty) {
             r += onsetHistory[idx0] * onsetHistory[idxLag];
         }
 
-        const float diff = float(lag - 43);
+        const float diff = float(lag) - centerLag;
         const float weight = 1.0f - 0.35f * (diff * diff) / (diff * diff + 250.0f);
         const float score = r * weight;
         scores[lag - kMinLag] = score;
@@ -303,14 +329,15 @@ void AudioProcessor::updateAutocorrBeat(float novelty) {
     }
 
     // Octave disambiguation: check if half-lag (double tempo) has a substantial peak.
-    // In 4/4 music, a 2-beat period (60-80 BPM, lag 60-86) will always show high autocorrelation.
-    // If the 1-beat period (120-160 BPM, lag 30-43) also has a strong peak, the 1-beat period is the true tempo.
-    if (bestLag >= 52) {
+    // In 4/4 music, a 2-beat period (60-80 BPM) will always show high autocorrelation.
+    // If the 1-beat period (120-160 BPM) also has a strong peak, the 1-beat period is the true tempo.
+    const int kOctaveThresholdLag = int(60.0f / (100.0f * frameSec) + 0.5f);
+    if (bestLag >= kOctaveThresholdLag) {
         int halfLag = (bestLag + 1) / 2;
-        if (halfLag >= kMinLag && halfLag <= kMaxLag) {
+        if (halfLag >= kMinLag && halfLag <= kMaxLag && (halfLag - kMinLag < 128)) {
             float halfScore = scores[halfLag - kMinLag];
             if (halfLag - 1 >= kMinLag) halfScore = fmaxf(halfScore, scores[halfLag - 1 - kMinLag]);
-            if (halfLag + 1 <= kMaxLag) halfScore = fmaxf(halfScore, scores[halfLag + 1 - kMinLag]);
+            if (halfLag + 1 <= kMaxLag && (halfLag + 1 - kMinLag < 128)) halfScore = fmaxf(halfScore, scores[halfLag + 1 - kMinLag]);
             if (halfScore >= 0.50f * bestScore) {
                 bestLag = halfLag;
                 bestScore = halfScore;
@@ -333,7 +360,7 @@ void AudioProcessor::updateAutocorrBeat(float novelty) {
 
 // Perform FFT and compute audio features
 AudioFeatures AudioProcessor::analyzeAudio() {
-    AudioFeatures features;
+    AudioFeatures features{};
     features.waveform = buffer;
     features.waveformSize = NUM_SAMPLES;
 
@@ -349,10 +376,6 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     float avg = sum / NUM_SAMPLES;
     volume = sqrtf(sumSq / NUM_SAMPLES);
     peak = maxV;
-    loudness = gainSmoothing * loudness + (1 - gainSmoothing) * (volume * 100.0f);
-
-    // These live in members because they are stateful between frames, but they are
-    // also what every consumer reads, so they have to reach the returned struct.
     loudness = gainSmoothing * loudness + (1 - gainSmoothing) * (volume * 100.0f);
 
     // These live in members because they are stateful between frames, but they are
@@ -442,6 +465,36 @@ AudioFeatures AudioProcessor::analyzeAudio() {
     }
     features.energy= eTotal;
     features.spectrumCentroid = eTotal>0? (cSum/eTotal): 0.0f;
+
+    // 8 log-spaced sub-bands (Sub-bass, Bass, Low-mid, Mid, High-mid, Presence, Brilliance, Air)
+    static const int kSubBandEdges[9] = { 20, 60, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+    float subBandSums[8] = {};
+    for (int b = 0; b < 8; ++b) {
+        int binLo = (kSubBandEdges[b] * NUM_SAMPLES) / SAMPLE_RATE;
+        int binHi = (kSubBandEdges[b + 1] * NUM_SAMPLES) / SAMPLE_RATE;
+        if (binLo < 1) binLo = 1;
+        if (binHi >= half) binHi = half - 1;
+        float bEnergy = 0.0f;
+        for (int i = binLo; i <= binHi; ++i) {
+            bEnergy += vReal[i];
+        }
+        subBandSums[b] = bEnergy;
+    }
+
+    float subBandFlux = 0.0f;
+    for (int b = 0; b < 8; ++b) {
+        const float share = (eTotal > 1e-6f) ? (subBandSums[b] / eTotal) : 0.0f;
+        features.subBands[b] = share;
+        subBandFlux += fmaxf(0.0f, share - previousSubBands[b]);
+        previousSubBands[b] = share;
+        subBandHistory[subBandHistIdx][b] = uint8_t(fminf(255.0f, share * 255.0f));
+    }
+    subBandHistIdx = (subBandHistIdx + 1) & 63;
+
+    features.spectralNovelty = subBandFlux;
+    const float lowEnergy = features.subBands[0] + features.subBands[1];
+    const float highEnergy = features.subBands[5] + features.subBands[6] + features.subBands[7];
+    features.spectralTilt = lowEnergy - highEnergy;
 
     const float spectralFlatness =
         (magBins > 0 && eTotal > 1e-6f)
@@ -845,8 +898,14 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // the first frame is a displacement against real audio rather than against a
     // zero the follower then climbs away from.
     if (!slowSeeded) {
-        slowLevel  = level;
-        slowSeeded = true;
+        slowLevel       = level;
+        fastLevel       = level;
+        slowBassLevel   = features.bassLevel;
+        fastBassLevel   = features.bassLevel;
+        slowTrebleLevel = features.trebleLevel;
+        fastTrebleLevel = features.trebleLevel;
+        slowTilt        = features.spectralTilt;
+        slowSeeded      = true;
     }
     if (structuralLastMs == 0) structuralLastMs = now;
     float dt = float(now - structuralLastMs) * 0.001f;
@@ -854,10 +913,43 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // whole way and a stall between frames cannot either. Same guard the mood's
     // dynamics window uses, for the same reason.
     if (dt > 0.1f) dt = 0.1f;
-    if (dt > 0.0f) slowLevel += (level - slowLevel) * (1.0f - expf(-dt / BUILDUP_TAU_SEC));
+    if (dt > 0.0f) {
+        const float alpha     = 1.0f - expf(-dt / BUILDUP_TAU_SEC);
+        const float alphaFast = 1.0f - expf(-dt / DROP_FAST_TAU_SEC);
+        const float alphaBass = 1.0f - expf(-dt / DROP_BASS_TAU_SEC);
+        slowLevel       += (level - slowLevel) * alpha;
+        fastLevel       += (level - fastLevel) * alphaFast;
+        slowBassLevel   += (features.bassLevel - slowBassLevel) * alphaBass;
+        fastBassLevel   += (features.bassLevel - fastBassLevel) * alphaFast;
+        slowTrebleLevel += (features.trebleLevel - slowTrebleLevel) * alpha;
+        fastTrebleLevel += (features.trebleLevel - fastTrebleLevel) * alphaFast;
+        slowTilt        += (features.spectralTilt - slowTilt) * alpha;
+    }
     structuralLastMs = now;
 
-    const float displacement = level - slowLevel;
+    // Transition vector deltas: level surge/cut, bass slam/thinning, tilt shift
+    features.deltaIntensity = fastLevel - slowLevel;
+    features.deltaWeight    = fastBassLevel - slowBassLevel;
+    features.deltaTilt      = features.spectralTilt - slowTilt;
+    features.contrastMagnitude = sqrtf(features.deltaIntensity * features.deltaIntensity +
+                                       features.deltaWeight * features.deltaWeight +
+                                       features.deltaTilt * features.deltaTilt);
+
+    // Spectral contrast (low-end explosion vs high-end release)
+    const float bassContrast = features.bassLevel - fastBassLevel;
+    const float trebContrast = fastTrebleLevel - features.trebleLevel;
+    features.spectralContrast = fmaxf(0.0f, bassContrast) + fmaxf(0.0f, trebContrast * 0.5f);
+
+    const float displacement     = level - slowLevel;
+    const float bassDisplacement = features.bassLevel - slowBassLevel;
+    const float trebDisplacement = features.trebleLevel - slowTrebleLevel;
+
+    // Climax detection: all macro bands equalizing near peak with high activity
+    const float bandMin = fminf(features.bassLevel, fminf(features.midLevel, features.trebleLevel));
+    const float bandMax = fmaxf(features.bassLevel, fmaxf(features.midLevel, features.trebleLevel));
+    const bool bandsEqualized = (bandMin >= 0.65f) && (bandMax - bandMin <= 0.30f) && (level >= 0.80f);
+    features.buildupClimax = bandsEqualized || (features.trebleLevel >= 0.85f && features.music.activity.value >= 0.40f);
+    if (features.buildupClimax) buildupPeakMs = now;
 
     // ==== BUILDUP and DESCENT ====
     //
@@ -874,9 +966,33 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // movement that stops ends its own displacement as the mean catches up.
     const unsigned long kStructureHangoverMs = 350;
 
-    if (displacement < BUILDUP_LEVEL) buildupLatched = false;
+    // Buildup: directional energy climb, spectral riser (bass withdrawal), OR treble riser
+    // Must NOT trigger from static loud levels (bandsEqualized) or during an active drop payoff
+    const bool energyBuildup = (displacement >= BUILDUP_LEVEL);
+    const bool spectralRiser = (slowBassLevel >= 0.35f) &&
+                               (slowBassLevel - features.bassLevel >= 0.20f) &&
+                               (features.midLevel >= 0.60f || features.trebleLevel >= 0.60f) &&
+                               (level >= 0.50f);
+    const bool trebleRiser   = (trebDisplacement >= 0.20f);
+    const bool inDropPayoff   = episodes.isActive(SIG_DROP);
 
-    if (displacement >= BUILDUP_LEVEL && !buildupLatched) {
+    const bool isBuildupExceeded = !inDropPayoff && (energyBuildup || spectralRiser || trebleRiser);
+
+    // Climax is only valid when an active buildup has reached peak saturation
+    features.buildupClimax = buildupActive && (bandsEqualized || (features.trebleLevel >= 0.85f && features.music.activity.value >= 0.40f));
+    if (features.buildupClimax) buildupPeakMs = now;
+
+    // Pre-drop chop / beat disruption while in buildup
+    if ((buildupActive || (buildupPeakMs != 0 && now - buildupPeakMs <= 2000)) && !inDropPayoff) {
+        if (features.bassLevel < 0.30f || (fastBassLevel - features.bassLevel >= 0.25f)) {
+            chopSinceMs = now;
+        }
+    }
+
+    if (!isBuildupExceeded) buildupLatched = false;
+    if (inDropPayoff) buildupLatched = true;
+
+    if (isBuildupExceeded && !buildupLatched) {
         buildupLastExceededMs = now;
         if (buildupHoldSince == 0) {
             buildupHoldSince = now;
@@ -885,7 +1001,7 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
             buildupFromLevel = level;
         }
         if (now - buildupHoldSince >= BUILDUP_HOLD_MS &&
-            (level - buildupFromLevel >= BUILDUP_CLIMB || displacement >= BUILDUP_LEVEL * 1.5f)) {
+            (level - buildupFromLevel >= BUILDUP_CLIMB || displacement >= BUILDUP_LEVEL * 1.5f || spectralRiser || trebleRiser)) {
             if (!buildupActive) buildupSince = now;
             buildupActive = true;
         }
@@ -929,7 +1045,8 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // makes. See the field's comment in AudioFeatures.
     // A sustained buildup on a plateau has a displacement near zero or slightly
     // negative, and a reader tests only whether this is above zero, so it is floored.
-    features.buildup = buildupActive ? fmaxf(displacement, 0.01f) : 0.0f;
+    const float riserDisplacement = fmaxf(displacement, (slowBassLevel - features.bassLevel));
+    features.buildup = buildupActive ? fmaxf(riserDisplacement, 0.01f) : 0.0f;
     features.descent = descentActive ? -displacement : 0.0f;
 
     // ==== DROP ====
@@ -945,24 +1062,44 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     // arriving in the middle of a loud passage. It reads the slow mean rather than
     // the instantaneous level, so a single quiet block inside a loud passage is not
     // a breakdown.
-    if (slowLevel < DROP_QUIET_LEVEL) {
+    const bool isQuiet = (slowLevel < DROP_QUIET_LEVEL) ||
+                         (slowBassLevel < DROP_QUIET_BASS_LEVEL) ||
+                         (fastBassLevel < DROP_QUIET_BASS_LEVEL);
+    if (isQuiet) {
         if (!quietHeld) {
             quietHeld  = true;
             quietSince = now;
         }
+        quietLastSeenMs = now;
     } else {
-        quietHeld = false;
+        if (now - quietLastSeenMs > 350) {
+            quietHeld = false;
+        }
     }
 
-    const bool armed = quietHeld && (now - quietSince >= DROP_ARM_MS);
-    if (armed &&
-        displacement >= DROP_SCALE &&
-        features.bassLevel   >= DROP_BAND_LEVEL &&
-        features.midLevel    >= DROP_BAND_LEVEL &&
-        features.trebleLevel >= DROP_BAND_LEVEL &&
-        now - lastDropMs >= DROP_COOLDOWN_MS) {
+    const bool quietArmed   = quietHeld && (now - quietSince >= DROP_ARM_MS);
+    const bool buildupArmed = (buildupActive && (now - buildupSince >= 2500)) ||
+                              (buildupPeakMs != 0 && (now - buildupPeakMs <= 1500));
+    const bool chopArmed    = (chopSinceMs != 0 && (now - chopSinceMs <= 1500));
+
+    // A drop can arm from quiet breakdown, from an active buildup climax, or from a pre-drop chop.
+    // It cannot re-arm while already inside an active drop payoff window.
+    const bool armed = !episodes.isActive(SIG_DROP) && (quietArmed || buildupArmed || chopArmed);
+
+    const float bassJump = features.bassLevel - fastBassLevel;
+    const bool slam = (displacement >= DROP_SCALE) ||
+                      (bassDisplacement >= DROP_BASS_SCALE && features.bassLevel >= DROP_BAND_LEVEL) ||
+                      (bassJump >= DROP_JUMP_SCALE && features.bassLevel >= DROP_BAND_LEVEL) ||
+                      ((buildupArmed || chopArmed) && bassJump >= 0.25f && features.bassLevel >= 0.60f);
+    const bool breadth = (features.bassLevel >= DROP_BAND_LEVEL) &&
+                         (features.midLevel >= DROP_MID_LEVEL);
+
+    if (armed && slam && breadth && (now - lastDropMs >= DROP_COOLDOWN_MS)) {
         features.dropDetected = true;
         lastDropMs = now;
+        quietHeld     = false;
+        buildupPeakMs = 0;
+        chopSinceMs   = 0;
 
         // The arrival releases the buildup or descent it ended, so both stop here
         // and the animations reading features.buildup stop with them. Before this a
@@ -1010,7 +1147,10 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
                   mean > TEASE_MEAN_LOW && mean < TEASE_MEAN_HIGH;
     }
 
-    const bool postDrop = lastDropMs != 0 && now - lastDropMs < TEASE_POST_DROP_MS;
+    const bool postDrop = !inDropPayoff &&
+                          (lastDropMs != 0) &&
+                          (now - lastDropMs < TEASE_POST_DROP_MS) &&
+                          (features.bassLevel < 0.35f || level < 0.50f);
     const bool hush     = level < TEASE_LOW_LEVEL &&
                           (features.buildup > 0.0f ||
                            features.dynamics > TEASE_HUSH_DYNAMICS);
@@ -1076,6 +1216,7 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     StructuralEpisodes::Inputs in;
     in.now              = now;
     in.level            = level;
+    in.bassLevel        = features.bassLevel;
     in.displacement     = displacement;
     in.buildupActive    = buildupActive;
     in.buildupHoldSince = buildupHoldSince;

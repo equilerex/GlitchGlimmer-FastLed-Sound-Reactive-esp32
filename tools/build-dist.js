@@ -33,6 +33,9 @@ fs.cpSync(source, destination, {
   recursive: true,
   filter: (entry) => {
     const parts = entry.split(path.sep);
+    // web/package.json only tells Node that web/ holds ES modules, for the tests.
+    // The browser never reads it, so it stays out of the bundle.
+    if (entry === path.join(source, 'package.json')) return false;
     return !parts.includes('.obj') && !parts.includes('local') && path.basename(entry) !== 'build.json';
   },
 });
