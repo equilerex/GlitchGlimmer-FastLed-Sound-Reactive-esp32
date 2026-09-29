@@ -133,7 +133,7 @@ void LayerManager::renderLayers(uint8_t globalFade) {
 
 // Instantiate a new layer and add to the active list
 bool LayerManager::addLayer(VisualLayer* raw, LayerType type, unsigned long duration,
-                            LayerClass cls) {
+                            LayerClass cls, LayerWhy why) {
     if (cls == LayerClass::AUTO) {
         cls = duration == 0 ? LayerClass::SCENE : LayerClass::ACCENT;
     }
@@ -170,6 +170,7 @@ bool LayerManager::addLayer(VisualLayer* raw, LayerType type, unsigned long dura
     inst.type = type;
     inst.active = true;
     inst.cls = cls;
+    inst.why = why;
     layers.emplace_back(std::move(inst));
     return true;
 }
@@ -246,7 +247,8 @@ void LayerManager::releaseManual() {
 }
 
 // Implementation for addLayerByType with optional duration
-bool LayerManager::addLayerByType(LayerType t, unsigned long duration, LayerClass cls) {
+bool LayerManager::addLayerByType(LayerType t, unsigned long duration, LayerClass cls,
+                                  LayerWhy why) {
     VisualLayer* layer = nullptr;
     
     // Factory function to create the appropriate layer based on type
@@ -325,13 +327,13 @@ bool LayerManager::addLayerByType(LayerType t, unsigned long duration, LayerClas
             break;
     }
     
-    return layer ? addLayer(layer, t, duration, cls) : false;
+    return layer ? addLayer(layer, t, duration, cls, why) : false;
 }
 
 bool LayerManager::addOwnedLayerByType(LayerType t, LayerClass cls, int signal,
                                        uint32_t episodeId, float gain,
                                        unsigned long duration) {
-    if (!addLayerByType(t, duration, cls)) return false;
+    if (!addLayerByType(t, duration, cls, LayerWhy::EPISODE)) return false;
     // addLayer() appends, and an eviction only ever shortens the list first, so the
     // new instance is the last one whichever way the count moved.
     LayerInstance& inst = layers.back();
@@ -371,6 +373,23 @@ void LayerManager::syncOwned(const AudioFeatures& f) {
             inst.releaseStartMs = ts;
         }
     }
+}
+
+LayerWhy LayerManager::getLayerWhy(int index) const {
+    return index >= 0 && index < static_cast<int>(layers.size())
+        ? layers[size_t(index)].why : LayerWhy::SCENE;
+}
+
+const char* LayerManager::whyToString(LayerWhy why) {
+    switch (why) {
+        case LayerWhy::SCENE:   return "scene";
+        case LayerWhy::EPISODE: return "episode";
+        case LayerWhy::EDGE:    return "edge";
+        case LayerWhy::MOOD:    return "mood";
+        case LayerWhy::BEAT:    return "beat";
+        case LayerWhy::SHIFT:   return "shift";
+    }
+    return "?";
 }
 
 LayerClass LayerManager::getLayerClass(int index) const {

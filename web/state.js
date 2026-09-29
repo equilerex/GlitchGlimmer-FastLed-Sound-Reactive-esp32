@@ -50,6 +50,30 @@ export const COORD_INFO = {
     base: 'Time-domain RMS sample volume vs adaptive silence noise floor follower (tracking quietest blocks over 10s).',
     formula: 'Schmitt trigger. Opens when block RMS > 2.5 * noiseFloor + 0.001. Closes after a 350 ms hangover when block RMS <= 1.5 * noiseFloor + 0.0005. gateGain slews toward that flag at 0.04 per block.',
     desc: 'Acoustic presence gate: smoothly transitions between quiet background room ambience (0) and active sound/music playback (1).'
+  },
+  tilt: {
+    label: 'Tilt',
+    base: 'Eight log-spaced sub-band shares of the spectrum (subBands).',
+    formula: '0.5 + 0.5 * (share of 2 kHz and up minus share of 20 to 250 Hz). 0 is bass-heavy, 1 is bright.',
+    desc: 'Band balance: low for dark, low-end heavy music, high for airy or thin-bottomed music. Room-coloured, so compare against your own calibration.'
+  },
+  evenness: {
+    label: 'Evenness',
+    base: 'The same eight sub-band shares.',
+    formula: 'Entropy of the shares over ln 8. 1 is every band equally full.',
+    desc: 'How full the mix is across the range. Per band, where texture is per bin and reads noise.'
+  },
+  punch: {
+    label: 'Punch',
+    base: 'Rise of the sub-bass plus bass share from one block to the next.',
+    formula: 'max(0, lowShare - previousLowShare) over its own decaying maximum (0.995 per block).',
+    desc: 'The kick attack: high for a struck low end, low for a rolling or sustained bassline. Hypothesis grade, the recordings decide whether it stays.'
+  },
+  body: {
+    label: 'Body',
+    base: 'Sub-band shares 2 to 4 (250 Hz to 2 kHz).',
+    formula: 'Sum of the three shares.',
+    desc: 'Where guitars, keys and vocals sit. High for melodic, organic music.'
   }
 };
 
@@ -130,7 +154,6 @@ export const state = reactive({
     lit: 0,
     litSum: 0,
     sceneChanges: 0,
-    moodChanges: 0,
     coords: {
       intensity: { value: 0, conf: 0, trend: 0 },
       activity: { value: 0, conf: 0, trend: 0 },
@@ -140,7 +163,17 @@ export const state = reactive({
       tempo: { value: 0, conf: 0, trend: 0 },
       texture: { value: 0, conf: 0, trend: 0 },
       presence: { value: 0, conf: 0, trend: 0 },
+      tilt: { value: 0, conf: 0, trend: 0 },
+      evenness: { value: 0, conf: 0, trend: 0 },
+      punch: { value: 0, conf: 0, trend: 0 },
+      body: { value: 0, conf: 0, trend: 0 },
     },
+    // One entry per mood row in src/audio/Moods.h, read from the firmware. The
+    // page holds no mood names. [{ name, strength, inSelector, tone }]
+    moods: [],
+    // The selector as the firmware reports it: why the running scene is up, the
+    // drop base's hold and the bucket. See readSelection in live.js.
+    selection: { reason: '', drop: { holding: false, shiftSeen: false, minLeftMs: 0, capLeftMs: 0 }, bucket: [] },
     sampleFrame: 0,
     sampleTimeMs: 0,
     dtSeconds: 0,

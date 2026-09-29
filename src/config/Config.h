@@ -205,10 +205,9 @@
 
 // ==== Structural detection ====
 //
-// Five moods name the shape of a passage rather than how loud it is, and each
-// answers a question the ladder cannot. They are evaluated before the ladder,
-// because a passage can be structurally a drop at any rung. SILENT, DROP and
-// TEASE are the ones that are events rather than levels, so their thresholds are
+// Five episodes name the shape of a passage rather than its character, and each
+// answers a question the moods cannot. A passage can be structurally a drop at
+// any level. Drop and tease are events rather than levels, so their thresholds are
 // about displacement and tension rather than about loudness.
 //
 // Every window here is in milliseconds rather than in blocks. The device analyses
@@ -288,9 +287,8 @@
 // The two are mirror images deliberately, including in their numbers, because
 // they are the same shape with the sign flipped and there is no reason for a
 // climb and a fall to be judged on different terms. The one asymmetry is in the
-// classifier rather than here: BUILDUP needs the ladder below ENERGETIC, since a
-// climb from the top is just loud music, and DESCENT needs it above CALM, since a
-// fall from the bottom is just quiet.
+// detector rather than here: a climb from the top of the range is just loud
+// music, and a fall from the bottom is just quiet.
 //
 // Barely reachable in the twelve seconds after a drop, because TEASE claims that
 // window and is evaluated first. What it catches is a wind-down that is not a
@@ -332,10 +330,6 @@
 #define DROP_ARM_MS          250
 // At most one drop every five seconds, preventing re-triggering inside the payoff.
 #define DROP_COOLDOWN_MS     5000
-// How long the mood reads DROP after one fires. dropDetected is a single block's
-// pulse, which the confirmation window would reject before it could ever be shown,
-// so MoodHistory adopts it at once and holds the display for this long.
-#define DROP_PIN_MS          3000
 
 // Episode lifecycle (StructuralEpisodes). A detector flag says a condition holds
 // right now and an episode says a section began, went on and ended, so these are
@@ -372,10 +366,9 @@
 // and any one of three triggers is enough. A breakdown after a drop, a hush before
 // one, and a pulse that will not sustain are all the same thing to a listener.
 //
-// No cooldown and no hold of its own. The mood system already has both, at
-// confirmMs and minHoldMs, and a second pair here would open a dead zone where a
-// genuinely teasing passage is not reported at all. That is the failure mode the
-// ladder exists to remove.
+// No cooldown and no hold of its own. The episode lifecycle already has both, and a
+// second pair here would open a dead zone where a genuinely teasing passage is
+// not reported at all.
 //
 // The first cut of these numbers is a guess from the shape of a track rather than
 // from a measurement, and is the most likely thing here to need retuning once
@@ -397,8 +390,7 @@
 
 // WEIRD: two of three, each a rate of change or a band membership rather than a
 // level, so a stable passage scores zero whatever its spectrum is. A quiet
-// drifting ambient passage has to stay CALM rather than becoming this, which is
-// why the classifier also requires the ladder to be at DANCY or above.
+// drifting ambient passage must not become this.
 //
 // The centroid test is a distance from the middle of the window it has covered,
 // as a share of that window. The maximum such a distance can be is 0.5, since the

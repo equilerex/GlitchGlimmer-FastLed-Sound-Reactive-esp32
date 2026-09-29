@@ -1,70 +1,8 @@
 #include "SceneRegistry.h"
 #include "SceneState.h"
-#include "../animations/AnimationProfile.h"
+#include "../animations/AnimationFit.h"
 #include <Arduino.h>
 #include <cmath>
-
-namespace {
-
-// Where each mood sits on the catalog's 0..1 intensity axis.
-//
-// A ladder mood's target is the middle of its rung, so the four edges and this
-// table are two views of one scale: the edges partition level, and the midpoints
-// are what a scene is ranked against. That the table is the midpoints is
-// load-bearing and not a preference. The values here were once hand-picked against
-// an eight-entry catalog to make the five rungs land on five scenes, and the picks
-// they produced were FLOATY over CALM, so crossing level 0.20 dropped the scene's
-// intensity while the level rose, and CALM to DANCY was a step of 0.44 where the
-// others were under 0.18. The rung targets are derived from the edges now, so the
-// spacing follows the ladder by construction and a catalog that grows cannot
-// reorder them.
-//
-// A structural mood is not on the ladder, so it takes a target of its own rather
-// than a midpoint. It still needs one, so a structural mood with no scene tagged
-// for it picks something instead of being skipped. Skipping is for an empty
-// catalog, not for an unserved mood.
-float targetIntensity(MoodType mood) {
-    switch (mood) {
-        case SILENT:    return 0.05f;
-        case FLOATY:    return 0.10f;
-        case CALM:      return 0.30f;
-        case DANCY:     return 0.50f;
-        case ENERGETIC: return 0.70f;
-        case INTENSE:   return 0.90f;
-        // Structural states are not one of the five names, so these are positions
-        // rather than midpoints. A structural state is meant to be answered by a
-        // scene tagged for it, so its target is the fallback for when none is.
-        case BUILDUP:   return 0.60f;
-        // Between the two rungs a descent travels rather than beside its mirror.
-        // BUILDUP's 0.60 would be the symmetric choice, and it would also make the
-        // two movements select the same scene at every level, which would leave the
-        // pair indistinguishable in the one place they differ: their direction.
-        case DESCENT:   return 0.66f;
-        case WEIRD:     return 0.78f;
-        case DROP:      return 0.95f;
-        case MOOD_COUNT: break;
-    }
-    return 0.5f;
-}
-
-}  // namespace
-
-// The layer set a scene composites, by the band its animation's intensity sits in.
-//
-// Every scene used to carry the same two layers, so two scenes at different
-// intensities composited the same way and the only thing between them was the base
-// animation underneath. The band decides which accent suits it: quiet scenes are
-// kept clean so the base animation can breathe, while moderate to high intensity
-// bands composite active accents, leaving room for reactive injections.
-//
-// Cost is bounded by kMaxLayers in addLayer, which refuses past the fourth.
-std::vector<LayerType> layersForIntensity(float intensity) {
-    // No BACKGROUND (the noise-floor mist) in any band. It is a quiet-passage layer
-    // and scene layers live for the whole scene, so listing it here kept a fill on
-    // nearly every scene at almost every moment.
-    if (intensity < 0.75f) return {};
-    return { LayerType::HIGHLIGHT };
-}
 
 void SceneRegistry::registerDefaultScenes() {
     scenes.clear();
@@ -73,137 +11,151 @@ void SceneRegistry::registerDefaultScenes() {
         // animation, so it has nothing to build a scene around.
         if (entry.type == AnimationType::NONE) continue;
 
+        const AnimationFitRow& row = animationFit(entry.type);
         SceneDefinition scene;
         scene.baseAnimation = entry.type;
-        // The base animation is the motion, so the layers supply the field underneath
-        // it and the accent on top. The set is the band's rather than the same two for
-        // every scene, which is what stops two scenes at different intensities from
-        // compositing identically.
-        scene.layerTypes = layersForIntensity(entry.intensity);
-        // A structural tag is copied, a ladder tag is not. See
-        // SceneDefinition::structuralMoods for why a ladder tag here would be
-        // worse than useless.
-        if (entry.mood != MOOD_COUNT && ladderRank(entry.mood) < 0) {
-            scene.structuralMoods.push_back(entry.mood);
+        for (LayerType t : row.layers) {
+            if (t != kNoLayer) scene.layerTypes.push_back(t);
         }
         scene.name = String(entry.name);
-        scene.mood = entry.mood;
-        scene.role = animationProfile(entry.type).role;
+        scene.role = row.role;
         scene.intensity = entry.intensity;
+        scene.fit = &row.fit;
         scenes.push_back(scene);
     }
+
+    for (int m = 0; m < MN_COUNT; ++m) {
+        moodServed[m] = false;
+        for (const SceneDefinition& s : scenes) {
+            if (s.fitOf(uint8_t(m)) > 0.0f) { moodServed[m] = true; break; }
+        }
+    }
 }
 
-const SceneDefinition& SceneRegistry::pickSceneByMood(const SceneState& current, MoodType mood) const {
-    // A structural mood names the shape of a passage rather than its loudness, so
-    // intensity cannot rank its candidates and a scene written for it wins.
-    std::vector<const SceneDefinition*> candidates;
-    if (ladderRank(mood) < 0) {
-        for (const auto& s : scenes) {
-            if (s.isTaggedFor(mood)) candidates.push_back(&s);
-        }
-        if (candidates.size() == 1 && candidates.front() == current.activeScene) {
-            candidates.clear();
-        }
+float SceneRegistry::moodTerm(const FitList& fit, const MusicState& music, float toneWeight) const {
+    // The ballast keeps an average defined when a family has no mood at all, and
+    // collapses it to 0.5 for every scene then, so the other family, the episode
+    // and the recency terms decide instead of a division by nothing.
+    const float ballast = 0.05f;
+    float sum[2] = {0.0f, 0.0f};
+    float weighted[2] = {0.0f, 0.0f};
+    for (int m = 0; m < MN_COUNT; ++m) {
+        if (!moodServed[m] || music.mood[m] <= 0.0f) continue;
+        const int f = kMoodTable[m].tone ? 1 : 0;
+        sum[f] += music.mood[m];
+        weighted[f] += music.mood[m] * fit.of(uint8_t(m));
     }
-
-    // Otherwise intensity is the axis, and the whole catalog competes. This used
-    // to be a mood match with a uniform draw over the whole catalog as its
-    // fallback, which is where the "Calm" label met an intense scene: the
-    // classifier's dead bands returned UNKNOWN, UNKNOWN matched nothing, and the
-    // fallback chose at random.
-    if (candidates.empty()) {
-        for (const auto& s : scenes) candidates.push_back(&s);
-    }
-
-    // Only reachable from a registry that was never registered, since
-    // registerDefaultScenes() is the only thing that fills the vector. Every
-    // caller needs a reference to bind, so there is nothing better to return.
-    if (candidates.empty()) return scenes.front();
-
-    // The scene already running is not a transition. SceneState::beginScene would
-    // reset the clock and nothing on screen would change, while the next real
-    // transition is pushed out by a full scene duration. Only dropped while
-    // another candidate remains, so a single match still returns.
-    if (candidates.size() > 1 && current.activeScene != nullptr) {
-        candidates.erase(std::remove(candidates.begin(), candidates.end(), current.activeScene),
-                         candidates.end());
-    }
-
-    // Nearest intensity, then tempo, then catalog order. Every tie-break is a
-    // number rather than a draw, so the same state always returns the same scene
-    // and both this and the no-self-pick rule can be asserted on.
-    const float target = targetIntensity(mood);
-    // preferredTempo is 0..1 and bpm is 60..180, so this is the same /130 the
-    // scene clock uses. Comparing them raw would make the tie-break a constant,
-    // which is a silent way of making it do nothing.
-    const float tempo = current.lastMood.bpm / 130.0f;
-    const SceneDefinition* best       = nullptr;
-    float                  bestGap     = 0.0f;
-    float                  bestTempoGap = 0.0f;
-
-    for (const SceneDefinition* s : candidates) {
-        const AnimationMeta& meta = animationCatalog[static_cast<size_t>(s->baseAnimation)];
-        const float gap      = std::fabs(meta.intensity - target);
-        const float tempoGap = std::fabs(meta.preferredTempo - tempo);
-        const bool  better   = best == nullptr || gap < bestGap ||
-                               (gap == bestGap && tempoGap < bestTempoGap);
-        if (better) {
-            best         = s;
-            bestGap      = gap;
-            bestTempoGap = tempoGap;
-        }
-    }
-
-    return *best;
+    const float character = (weighted[0] + 0.5f * ballast) / (sum[0] + ballast);
+    const float tone = (weighted[1] + 0.5f * ballast) / (sum[1] + ballast);
+    const float w = toneWeight < 0.0f ? 0.0f : (toneWeight > 1.0f ? 1.0f : toneWeight);
+    return (1.0f - w) * character + w * tone;
 }
 
-float SceneRegistry::sceneDistance(const SceneState& current, const SceneDefinition& scene,
-                                   const MusicState& music) const {
-    float d = profileDistance(animationProfile(scene.baseAnimation), music);
-    // A scene left within the last few picks is nudged away, newest strongest. The
-    // running scene is exempt: it is the incumbent and gets its own edge from the
-    // director's margin, not from being penalised here.
-    if (current.activeScene != &scene) {
-        for (int i = 0; i < SceneState::kRecent; ++i) {
-            if (current.recent[i] == static_cast<int>(scene.baseAnimation)) {
-                d += 0.10f - 0.03f * i;
-                break;
+void SceneRegistry::score(const SceneState& current, const MusicState& music,
+                          const SelectionParams& params, std::vector<SceneScore>& out) const {
+    out.assign(scenes.size(), SceneScore());
+
+    for (size_t i = 0; i < scenes.size(); ++i) {
+        const SceneDefinition& s = scenes[i];
+        SceneScore& o = out[i];
+
+        o.mood = scenes[i].fit ? moodTerm(*scenes[i].fit, music, params.toneWeight) : 0.5f;
+
+        if (music.buildup) o.episode += params.episodeWeight * s.fitOf(FK_BUILDUP);
+        if (music.descent) o.episode += params.episodeWeight * s.fitOf(FK_DESCENT);
+
+        // A scene left within the last few picks is nudged away, newest strongest.
+        // The running scene is exempt: it is the incumbent.
+        if (current.activeScene != &s) {
+            for (int r = 0; r < SceneState::kRecent; ++r) {
+                if (current.recent[r] == static_cast<int>(s.baseAnimation)) {
+                    o.recency = 0.10f - 0.03f * r;
+                    break;
+                }
             }
         }
+        o.score = o.mood + o.episode - o.recency;
     }
-    return d;
 }
 
-const SceneDefinition& SceneRegistry::pickSceneByMusic(const SceneState& current,
-                                                       const MusicState& music,
-                                                       MoodType structural) const {
-    std::vector<const SceneDefinition*> candidates;
-    if (structural != MOOD_COUNT && ladderRank(structural) < 0) {
-        for (const auto& s : scenes) {
-            if (s.isTaggedFor(structural)) candidates.push_back(&s);
-        }
-    }
-    if (candidates.empty()) {
-        for (const auto& s : scenes) candidates.push_back(&s);
-    }
-    if (candidates.empty()) return scenes.front();
+void SceneRegistry::buildBucket(std::vector<SceneScore>& scores, const SelectionParams& params,
+                                std::vector<int>& bucket) const {
+    bucket.clear();
+    for (auto& s : scores) s.inBucket = false;
+    if (scores.empty()) return;
 
-    if (candidates.size() > 1 && current.activeScene != nullptr) {
-        candidates.erase(std::remove(candidates.begin(), candidates.end(), current.activeScene),
-                         candidates.end());
-    }
+    std::vector<int> ranked(scores.size());
+    for (size_t i = 0; i < ranked.size(); ++i) ranked[i] = int(i);
+    // Best first, ties to catalog order, so the same scores give the same bucket.
+    std::stable_sort(ranked.begin(), ranked.end(), [&](int a, int b) {
+        return scores[a].score > scores[b].score;
+    });
 
+    const int lo = std::max(1, std::min(params.bucketMin, params.bucketMax));
+    const int hi = std::max(lo, params.bucketMax);
+    const float floorScore = scores[ranked.front()].score - params.bucketMargin;
+    int n = 0;
+    while (n < int(ranked.size()) && n < hi &&
+           (n < lo || scores[ranked[n]].score >= floorScore)) {
+        ++n;
+    }
+    for (int i = 0; i < n; ++i) {
+        bucket.push_back(ranked[i]);
+        scores[ranked[i]].inBucket = true;
+    }
+}
+
+const SceneDefinition& SceneRegistry::drawFromBucket(const SceneState& current,
+                                                     const std::vector<SceneScore>& scores,
+                                                     const std::vector<int>& bucket,
+                                                     uint32_t& rng) const {
+    // Only reachable from a registry that was never registered, or a bucket built
+    // from nothing. Every caller needs a reference to bind.
+    if (bucket.empty()) return scenes.front();
+
+    // The scene already running is not a transition. Dropped only while another
+    // candidate remains, so a bucket of one still returns.
+    std::vector<int> pool;
+    for (int idx : bucket) {
+        if (&scenes[idx] != current.activeScene) pool.push_back(idx);
+    }
+    if (pool.empty()) pool = bucket;
+
+    float total = 0.0f;
+    for (int idx : pool) total += std::max(scores[idx].score, 0.01f);
+    float pick = (float(nextRandom(rng) & 0xFFFFFF) / float(0x1000000)) * total;
+    for (int idx : pool) {
+        pick -= std::max(scores[idx].score, 0.01f);
+        if (pick < 0.0f) return scenes[idx];
+    }
+    return scenes[pool.back()];
+}
+
+const SceneDefinition& SceneRegistry::pickDropBase(const SceneState& current,
+                                                   const std::vector<SceneScore>& scores) const {
     const SceneDefinition* best = nullptr;
-    float bestDist = 0.0f;
-    for (const SceneDefinition* s : candidates) {
-        const float d = sceneDistance(current, *s, music);
-        if (best == nullptr || d < bestDist) {
-            best = s;
-            bestDist = d;
+    float bestScore = 0.0f;
+    for (size_t i = 0; i < scenes.size() && i < scores.size(); ++i) {
+        if (!scenes[i].isDropAnimation()) continue;
+        if (&scenes[i] == current.activeScene) continue;
+        if (best == nullptr || scores[i].mood > bestScore) {
+            best = &scenes[i];
+            bestScore = scores[i].mood;
         }
     }
-    return *best;
+    if (best != nullptr) return *best;
+    // Only the running scene is a drop animation, or none is. Keep the running one.
+    if (current.activeScene != nullptr) return *current.activeScene;
+    return scenes.front();
+}
+
+const SceneDefinition& SceneRegistry::pickBase(const SceneState& current, const MusicState& music,
+                                               const SelectionParams& params, uint32_t& rng) const {
+    std::vector<SceneScore> scores;
+    std::vector<int> bucket;
+    score(current, music, params, scores);
+    buildBucket(scores, params, bucket);
+    return drawFromBucket(current, scores, bucket, rng);
 }
 
 const SceneDefinition& SceneRegistry::get(size_t index) const {

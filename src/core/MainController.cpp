@@ -37,7 +37,6 @@ MainController::MainController(CommunicationService& comm)
 {
     // Initialize all pointers to nullptr first
     audioHistory    = nullptr;
-    moodHistory     = nullptr;
     audioProcessor  = nullptr;
     ledController   = nullptr;
     encoderInput    = nullptr;
@@ -56,7 +55,6 @@ MainController::~MainController() {
     delete encoderInput;
     delete ledController;
     delete audioProcessor;
-    delete moodHistory;
     delete audioHistory;
 }
 
@@ -71,13 +69,6 @@ void MainController::begin() {
     audioHistory = new AudioHistoryTracker();
     if (!audioHistory) { 
         Serial.println("Failed to create AudioHistoryTracker"); 
-        allComponentsInitialized = false;
-    }
-
-    Serial.println("Creating MoodHistory..."); Serial.flush();
-    moodHistory = new MoodHistory();
-    if (!moodHistory) { 
-        Serial.println("Failed to create MoodHistory"); 
         allComponentsInitialized = false;
     }
 
@@ -104,8 +95,8 @@ void MainController::begin() {
 
     // Create LED controller with safer construction
     Serial.println("Creating LEDStripController..."); Serial.flush();
-    if (moodHistory && audioHistory) {
-        ledController = new LEDStripController(audioFeatures, *moodHistory, *audioHistory);
+    if (audioHistory) {
+        ledController = new LEDStripController(audioFeatures, *audioHistory);
         if (!ledController) { 
             Serial.println("Failed to create LEDStripController"); 
             allComponentsInitialized = false;

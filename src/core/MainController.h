@@ -12,7 +12,6 @@
 // Forward declarations (already present, kept for clarity)
 class AudioProcessor;
 class AudioHistoryTracker;
-class MoodHistory;
 class LEDStripController;
 class EncoderInput;
 class ButtonInput;
@@ -29,7 +28,6 @@ private:
     AudioFeatures      audioFeatures;
     // Change these members to pointers
     AudioHistoryTracker* audioHistory;
-    MoodHistory*         moodHistory;
     AudioProcessor*     audioProcessor;
     LEDStripController* ledController;
     TFT_eSPI            tft; // Keep as object

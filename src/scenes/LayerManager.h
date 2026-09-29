@@ -29,6 +29,12 @@ enum class LayerClass : uint8_t {
     AUTO    = 255
 };
 
+// Why a layer is up, so the emulator can say. SCENE is the scene's own fixed list,
+// EPISODE a layer bound to an open episode, EDGE an accent on the start or end of a
+// buildup or descent, MOOD a live layer chosen by fit against the current moods,
+// BEAT the beat pop, SHIFT the accent on a joint jump in the mood strengths.
+enum class LayerWhy : uint8_t { SCENE = 0, EPISODE, EDGE, MOOD, BEAT, SHIFT };
+
 // LayerManager: manages and composites multiple visual layers onto the LED buffer
 class LayerManager {
 public:
@@ -39,6 +45,7 @@ public:
         LayerType type;
         bool active;
         LayerClass cls = LayerClass::ACCENT;
+        LayerWhy why = LayerWhy::SCENE;
         // Set for a layer that lives exactly as long as one structural episode. The
         // signal is a StructSignal and the id is the firmware's episodeId, so a layer
         // can tell its own episode from the next one of the same signal.
@@ -65,7 +72,8 @@ public:
     bool addLayer(VisualLayer* raw,
                   LayerType type = LayerType::OVERLAY,
                   unsigned long duration = 0,
-                  LayerClass cls = LayerClass::AUTO);
+                  LayerClass cls = LayerClass::AUTO,
+                  LayerWhy why = LayerWhy::SCENE);
 
     int activeCount() const;                           // currently live layers
     bool hasActiveLayerOfType(LayerType t) const;      // check for type
@@ -75,7 +83,8 @@ public:
     unsigned long getLayerElapsedMs(int index) const;
 
     bool addLayerByType(LayerType t, unsigned long duration = 0,
-                        LayerClass cls = LayerClass::AUTO);  // instantiates layer by enum with optional duration
+                        LayerClass cls = LayerClass::AUTO,
+                        LayerWhy why = LayerWhy::SCENE);  // instantiates layer by enum with optional duration
 
     // A layer bound to one episode. It has no duration of its own: updateLayers()
     // starts its release the moment the firmware's episode for `signal` is no longer
@@ -86,6 +95,8 @@ public:
     bool hasOwned(int signal, uint32_t episodeId) const;  // present and not releasing
     void releaseOwned(int signal);                         // release everything a signal owns
     LayerClass getLayerClass(int index) const;
+    LayerWhy getLayerWhy(int index) const;
+    static const char* whyToString(LayerWhy why);
     int  getLayerOwnerSignal(int index) const;
     bool isLayerReleasing(int index) const;
 
@@ -94,6 +105,16 @@ public:
     // the one edge on the first of them.
     uint32_t impactFiredFor() const { return impactId; }
     void     markImpactFired(uint32_t episodeId) { impactId = episodeId; }
+
+    // The director's per-strip memory: when it last popped on a beat, when it last
+    // filled a slot from the mood fits, and the last episode edge and mood jump this
+    // strip has answered. Here and not in the director because one director serves
+    // every strip, and the first strip would otherwise spend a cooldown the others
+    // never saw.
+    unsigned long lastBeatMs = 0;
+    unsigned long lastLiveMs = 0;
+    uint32_t      edgeSeenSeq = 0;
+    uint32_t      jumpSeenSeq = 0;
 
     // How long a released layer takes to fade out.
     static const unsigned long kReleaseMs = 400;

@@ -1567,3 +1567,24 @@ button[aria-pressed="true"] {
    1 to 100 does not shift its neighbours. */
 .beat-pill b { display: inline-block; min-width: 8ch; text-align: center; white-space: nowrap; }
 .struct-state { display: inline-block; min-width: 8ch; text-align: center; white-space: nowrap; }
+
+.bucket-list { display: flex; flex-direction: column; gap: 3px; padding: 4px 0 2px; }
+.bucket-row { display: grid; grid-template-columns: 1.6em 1fr auto; gap: 8px; align-items: baseline; font-size: 12px; color: var(--ink-2); }
+.bucket-row.running { color: var(--ink); font-weight: 600; }
+.bucket-rank { text-align: right; opacity: 0.6; }
+.bucket-score { font-variant-numeric: tabular-nums; }
+
+.mood-strip { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 4px; }
+.mood-chip { position: relative; display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 8px; min-width: 92px;
+  border: 1px solid var(--line, rgba(255,255,255,0.12)); border-radius: 4px; overflow: hidden; font-size: 11px; color: var(--ink-2); }
+.mood-chip.faint { opacity: 0.45; }
+.mood-chip.off { opacity: 0.25; border-style: dashed; }
+.mood-chip.on { color: var(--ink); border-color: var(--ink-2); }
+.mood-chip-fill { position: absolute; inset: 0 auto 0 0; background: currentColor; opacity: 0.14; pointer-events: none; }
+.mood-chip-name, .mood-chip-val { position: relative; }
+.mood-chip-val { margin-left: auto; font-variant-numeric: tabular-nums; }
+.fit-match { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; color: var(--ink-2); }
+.fit-item.hit { color: var(--ink); }
+.fit-item.miss { opacity: 0.55; }
+.mood-family { margin-top: 4px; font-size: 11px; font-weight: 600; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.mood-family small { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: 0.7; }

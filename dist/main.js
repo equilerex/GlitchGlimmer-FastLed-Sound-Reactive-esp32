@@ -29,13 +29,40 @@ const app = createApp({
     countNotice() {
       return countMismatch(this.countsByMode.live, this.countsByMode.recording);
     },
-    // Floaty, calm, dancy, energetic and intense only describe loudness, which
-    // the coordinates show directly. Only a structural state says something
-    // the coordinates do not. Do not describe those five names as a ladder.
+    // The one thing that takes the base is a confirmed drop, and only while its
+    // hold lasts. Every other episode adds a layer and leaves the base to the moods.
     structureLabel() {
-      const mood = this.s.mode === 'live' ? this.s.live.mood : this.s.recording.mood;
-      const structural = ['Silent', 'Buildup', 'DROP', 'Weeeeird', 'Descent'];
-      return structural.indexOf(mood) >= 0 ? mood : 'Steady';
+      if (this.s.mode !== 'live') return 'Steady';
+      const sel = this.s.live.selection;
+      return sel && sel.drop.holding ? 'drop' : 'Steady';
+    },
+    dropHoldText() {
+      const sel = this.s.live.selection;
+      if (!sel || !sel.drop.holding) return '';
+      const sec = (ms) => (ms / 1000).toFixed(1) + 's';
+      const minPart = sel.drop.minLeftMs > 0 ? 'minimum ' + sec(sel.drop.minLeftMs) + ' left' : 'minimum passed';
+      return minPart + (sel.drop.shiftSeen ? ', shift seen' : '') + ', cap in ' + sec(sel.drop.capLeftMs);
+    },
+    // What the running scene was written for, beside what the music has of it now.
+    // Moods come from the firmware's strengths, episodes from its episode state.
+    fitMatch() {
+      const meta = this.currentSceneMeta;
+      if (this.s.mode !== 'live' || !meta) return [];
+      const moods = this.s.live.moods || [];
+      return meta.fits.map((f) => {
+        const m = moods.find((x) => x.name === f.name);
+        if (m) return { name: f.name, fit: f.value, kind: 'mood', strength: m.strength };
+        return { name: f.name, fit: f.value, kind: 'episode', state: this.episodeState(f.name) };
+      });
+    },
+    // Where the running scene ranks: its score and place in the bucket, or that it
+    // is outside it.
+    sceneMatchText() {
+      const sel = this.s.live.selection;
+      if (this.s.mode !== 'live' || !sel) return '';
+      const rank = sel.bucket.findIndex((b) => b.running);
+      if (rank < 0) return 'outside the bucket';
+      return 'score ' + sel.bucket[rank].score.toFixed(2) + ', ' + (rank + 1) + ' of ' + sel.bucket.length + ' in the bucket';
     },
     visibleEvents() {
       const events = this.s.live.events || [];
@@ -44,6 +71,10 @@ const app = createApp({
     weightScenes() {
       const att = this.s.live.attention;
       return att ? attentionRows(att.scenes, att.ms, 6) : [];
+    },
+    weightTones() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.tones, att.ms, 6) : [];
     },
     weightMoods() {
       const att = this.s.live.attention;
@@ -65,12 +96,36 @@ const app = createApp({
       const zoom = Number.isFinite(this.s.hw.zoom) ? this.s.hw.zoom : 1;
       return Math.round((zoom - 1) * 100);
     },
-    // The big word is the predicted mood name. The scene's catalog tag is not that:
-    // Lava Lamp 2 is tagged Tease and role Bed, so the banner used to say
-    // "Tease · Bed" for as long as that scene was up.
+    // The big word is the moods the firmware measures, not anything about the
+    // running scene.
+    // The strongest one or two moods from the firmware's mood strengths, which
+    // read the music's character and not its loudness.
+    topCharacter() {
+      if (this.s.mode !== 'live') return null;
+      return (this.s.live.moods || [])
+        .filter((m) => m.inSelector && !m.tone && m.strength >= 0.15)
+        .sort((a, b) => b.strength - a.strength)[0] || null;
+    },
+    topTone() {
+      if (this.s.mode !== 'live') return null;
+      return (this.s.live.moods || [])
+        .filter((m) => m.inSelector && m.tone && m.strength >= 0.15)
+        .sort((a, b) => b.strength - a.strength)[0] || null;
+    },
+    characterMoods() {
+      return (this.s.live.moods || []).filter((m) => !m.tone);
+    },
+    toneMoods() {
+      return (this.s.live.moods || []).filter((m) => m.tone);
+    },
+    // The big text: what the music does, then the colour of its sound.
     bannerMood() {
       if (this.s.mode !== 'live') return '';
-      return this.s.live.predicted || this.s.live.mood || '';
+      const parts = [];
+      if (this.topCharacter) parts.push(this.topCharacter.name + ' ' + Math.round(this.topCharacter.strength * 100) + '%');
+      if (this.topTone) parts.push(this.topTone.name + ' ' + Math.round(this.topTone.strength * 100) + '%');
+      if (parts.length) return parts.join(' · ');
+      return this.s.live.moods && this.s.live.moods.length ? 'No mood' : '';
     },
     currentSceneMeta() {
       if (this.s.mode !== 'live' || !this.s.live.sceneCatalog) return null;
@@ -81,27 +136,16 @@ const app = createApp({
       const curName = this.s.live.scene;
       return this.s.live.sceneCatalog.find((sc) => sc.name === curName) || null;
     },
+    // The scene picker, grouped by each scene's best fit, in the firmware's own
+    // order: the moods, then buildup, descent and drop.
     groupedSceneCatalog() {
       const catalog = this.s.live.sceneCatalog || [];
-      const structural = [];
-      const energetic = [];
-      const calm = [];
-
+      const groups = new Map();
       for (const sc of catalog) {
-        const m = (sc.mood || '').toUpperCase();
-        if (['DROP', 'BUILDUP', 'DESCENT', 'WEEEEIRD', 'WEIRD'].includes(m)) {
-          structural.push(sc);
-        } else if (['INTENSE', 'ENERGETIC', 'DANCY'].includes(m)) {
-          energetic.push(sc);
-        } else {
-          calm.push(sc);
-        }
+        if (!groups.has(sc.primaryKey)) groups.set(sc.primaryKey, { key: sc.primaryKey, label: sc.primary, scenes: [] });
+        groups.get(sc.primaryKey).scenes.push(sc);
       }
-      return [
-        { label: '💥 Structural Moments', scenes: structural },
-        { label: '🔥 High Energy & Groove', scenes: energetic },
-        { label: '🌿 Ambient & Chill', scenes: calm },
-      ];
+      return Array.from(groups.values()).sort((a, b) => a.key - b.key);
     }
   },
   methods: {

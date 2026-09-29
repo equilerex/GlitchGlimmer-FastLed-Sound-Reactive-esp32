@@ -4,6 +4,7 @@
 #include <arduinoFFT.h>
 #include "AudioFeatures.h"
 #include "StructuralEpisodes.h"
+#include "Moods.h"
 #include "../config/Config.h"
 
 // AudioProcessor: captures audio via I2S and performs FFT-based feature extraction
@@ -102,6 +103,13 @@ private:
     MusicCoordTracker weightTracker;
     MusicCoordTracker pulseTracker;
     MusicCoordTracker textureTracker;
+    MusicCoordTracker tiltTracker;
+    MusicCoordTracker evennessTracker;
+    MusicCoordTracker punchTracker;
+    MusicCoordTracker bodyTracker;
+    MoodModel moodModel;
+    float previousLowShare = 0.0f;
+    float punchReference = 0.0f;
     float previousSpectrum[NUM_SAMPLES / 2] = {};
     float fluxReference = 0.0f;
     bool fluxSeeded = false;
@@ -172,7 +180,7 @@ private:
 
     // DROP's preceding quiet. A drop follows a breakdown, so the passage has to
     // have been quiet for DROP_ARM_MS before a slam counts, and at most one drop
-    // is reported per DROP_COOLDOWN_MS so the mood cannot park there.
+    // is reported per DROP_COOLDOWN_MS so a drop cannot re-trigger inside its payoff.
     unsigned long quietSince      = 0;
     unsigned long quietLastSeenMs = 0;
     bool          quietHeld       = false;
@@ -218,6 +226,8 @@ private:
 public:
     const StructuralEpisodes& structuralEpisodes() const { return episodes; }
     StructuralEpisodes&       structuralEpisodesForTuning() { return episodes; }
+    const MoodModel&          moods() const { return moodModel; }
+    MoodModel&                moodsForTuning() { return moodModel; }
 
     AudioProcessor();            // Construct and initialize FFT resources
     ~AudioProcessor();           // Clean up allocated resources

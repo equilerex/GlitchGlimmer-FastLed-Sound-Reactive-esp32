@@ -8,10 +8,11 @@ export function emptyAttention() {
   return {
     scenes: {},
     moods: {},
+    tones: {},
     layers: {},
     ms: 0,
     prevScene: '',
-    prevMood: '',
+    prevOn: [],
     prevLayers: [],
   };
 }
@@ -19,10 +20,11 @@ export function emptyAttention() {
 export function resetAttention(att) {
   att.scenes = {};
   att.moods = {};
+  att.tones = {};
   att.layers = {};
   att.ms = 0;
   att.prevScene = '';
-  att.prevMood = '';
+  att.prevOn = [];
   att.prevLayers = [];
 }
 
@@ -39,15 +41,34 @@ function bump(bucket, name, dt, started) {
 // `layers` is the names present on this frame. A start is a name that was not
 // present on the previous frame. Time is the frame's dt, ignored when it is
 // missing or a stall, so one hitch does not become the heaviest row.
+//
+// Moods overlap, so a mood's time is the frame's dt weighted by its strength, and
+// the shares of all moods can add up to more than the session. A mood starts when
+// its strength crosses ON going up.
+const ON = 0.3;
+const PRESENT = 0.05;
 export function noteAttention(att, sample) {
   const dt = sample.dtMs;
   if (!(dt > 0) || dt > STALL_MS) return;
   const scene = sample.scene || '';
-  const mood = sample.mood || '';
+  const moods = sample.moods || [];
   const layers = sample.layers || [];
   att.ms += dt;
   if (scene) bump(att.scenes, scene, dt, scene !== att.prevScene);
-  if (mood) bump(att.moods, mood, dt, mood !== att.prevMood);
+  const on = [];
+  for (let i = 0; i < moods.length; i++) {
+    const m = moods[i];
+    if (!m.inSelector || m.strength < PRESENT) continue;
+    const isOn = m.strength >= ON;
+    // Tone moods are always partly true, so they would take most of the time if
+    // they shared a list with the character moods. They get their own.
+    if (m.tone) {
+      bump(att.tones, m.name, dt * m.strength, isOn && att.prevOn.indexOf(m.name) < 0);
+    } else {
+      bump(att.moods, m.name, dt * m.strength, isOn && att.prevOn.indexOf(m.name) < 0);
+    }
+    if (isOn) on.push(m.name);
+  }
   const seen = new Set(att.prevLayers);
   for (let i = 0; i < layers.length; i++) {
     const name = layers[i];
@@ -55,7 +76,7 @@ export function noteAttention(att, sample) {
     bump(att.layers, name, dt, !seen.has(name));
   }
   att.prevScene = scene;
-  att.prevMood = mood;
+  att.prevOn = on;
   att.prevLayers = layers.slice();
 }
 

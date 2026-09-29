@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <cmath>
 
+#include "Moods.h"
+
 // A coordinate is deliberately not a mood or a rank. Confidence says whether
 // the value can be estimated; it must not be inferred from value == 0.
 struct MusicCoord {
@@ -20,6 +22,15 @@ struct MusicState {
     MusicCoord tempo;
     MusicCoord texture;
     MusicCoord presence;
+    // Band-balance and low-end readings behind the moods. Tilt is 0 for a
+    // bass-heavy spectrum and 1 for a bright one.
+    MusicCoord tilt;
+    MusicCoord evenness;
+    MusicCoord punch;
+    MusicCoord body;
+
+    // Degree to which the music has each mood, 0..1, smoothed. Measured only.
+    float mood[MN_COUNT] = {};
 
     bool buildup = false;
     bool descent = false;
@@ -65,3 +76,24 @@ struct MusicCoordTracker {
         output.trend = dtSeconds > 1e-5f ? (fast - slow) / dtSeconds : 0.0f;
     }
 };
+
+// The readings the moods are measured from, taken from a finished music state.
+// Loudness is not one of them. Presence is the level test itself, so its
+// confidence is 1 and a quiet passage can still be Quiet. Shared by the analyser
+// and the replay, so a diagnosis reads exactly what the firmware read.
+inline MoodReadings moodReadingsOf(const MusicState& m, float bpm, float dynamics, float gateGain) {
+    const float gate = gateGain < 0.0f ? 0.0f : (gateGain > 1.0f ? 1.0f : gateGain);
+    MoodReadings r;
+    r.value[RD_PULSE]      = m.pulse.value;      r.confidence[RD_PULSE]      = m.pulse.confidence;
+    r.value[RD_ACTIVITY]   = m.activity.value;   r.confidence[RD_ACTIVITY]   = m.activity.confidence;
+    r.value[RD_TEXTURE]    = m.texture.value;    r.confidence[RD_TEXTURE]    = m.texture.confidence;
+    r.value[RD_BRIGHTNESS] = m.brightness.value; r.confidence[RD_BRIGHTNESS] = m.brightness.confidence;
+    r.value[RD_TEMPO]      = bpm;                r.confidence[RD_TEMPO]      = m.tempo.confidence;
+    r.value[RD_PUNCH]      = m.punch.value;      r.confidence[RD_PUNCH]      = m.punch.confidence;
+    r.value[RD_BODY]       = m.body.value;       r.confidence[RD_BODY]       = m.body.confidence;
+    r.value[RD_DYNAMICS]   = dynamics;           r.confidence[RD_DYNAMICS]   = gate;
+    r.value[RD_PRESENCE]   = gateGain;           r.confidence[RD_PRESENCE]   = 1.0f;
+    r.value[RD_TILT]       = m.tilt.value;       r.confidence[RD_TILT]       = m.tilt.confidence;
+    r.value[RD_EVENNESS]   = m.evenness.value;   r.confidence[RD_EVENNESS]   = m.evenness.confidence;
+    return r;
+}

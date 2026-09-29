@@ -3,171 +3,345 @@
 /*--------------------------------------------------------------------
  *  Includes – only the headers that give COMPLETE definitions
  *------------------------------------------------------------------*/
+#include <vector>
 #include "../audio/AudioFeatures.h"
-#include "../scenes/MoodHistory.h"     // gives MoodSnapshot
+#include "../config/Config.h"
 #include "../scenes/SceneRegistry.h"   // gives SceneDefinition
 #include "../scenes/SceneState.h"      // gives SceneState
-#include "../scenes/LayerManager.h"    // needed for maybeInjectReactiveLayer
+#include "../scenes/LayerManager.h"    // needed for feedLayers
+#include "../animations/AnimationFit.h"
 
 /*--------------------------------------------------------------------
- *  Forward declarations – good style when we only need a pointer/ref
+ *  Why the running scene is up. Shown by the emulator.
  *------------------------------------------------------------------*/
-struct SceneDefinition;   // already defined via SceneRegistry, but explicit
-struct MoodSnapshot;      // comes from MoodHistory
-
-/*--------------------------------------------------------------------
- *  Lightweight POD used when we only care about a few mood fields
- *------------------------------------------------------------------*/
-struct MoodInfo {
-    float energy       = 0.0f;
-    float tempo        = 0.0f;
-    float dynamics     = 0.0f;
-    bool  beatDetected = false;
+enum SceneReason : uint8_t {
+    REASON_START = 0,    // the first pick
+    REASON_ROTATION,     // the scene ran its ideal duration and the bucket was drawn again
+    REASON_EARLY,        // the scene sat outside the bucket long enough to be replaced
+    REASON_DROP,         // a confirmed drop took the base
+    REASON_DROP_END,     // the drop base ended and the bucket was drawn
+    REASON_FORCED,       // switchAllAnimations, the page's next button
+    REASON_LOCKED        // the page locked a scene
 };
 
 /*--------------------------------------------------------------------
- *  SceneDirector – decides which Scene runs and injects layers
+ *  SceneDirector – decides which Scene runs and feeds layers
+ *
+ *  The base scene follows the moods the firmware measures. Each frame every
+ *  scene is scored against them (SceneRegistry::score), the best few form the
+ *  bucket, and the scene is drawn from it. It rotates at the ideal duration,
+ *  changes early when it has left the bucket, and is replaced by a drop
+ *  animation only on the rising edge of a confirmed drop. Loudness chooses
+ *  nothing. See _architecture/plans/2026-09-28-base-layer-mood.md.
  *------------------------------------------------------------------*/
 class SceneDirector {
+public:
+    // Dials for the drop base, live in the emulator.
+    struct DropParams {
+        unsigned long holdMinMs = 4500;     // the drop base holds at least this long
+        unsigned long holdCapMs = 12000;    // and is forced to end by this
+        unsigned long spacingMs = DROP_COOLDOWN_MS;  // least between two drop bases
+    };
+
+    // What the emulator reads about the drop base.
+    struct DropHoldStatus {
+        bool          holding = false;
+        bool          shiftSeen = false;
+        unsigned long minLeftMs = 0;
+        unsigned long capLeftMs = 0;
+    };
+
 private:
     SceneState*    state    = nullptr;   // owned elsewhere
-    MoodHistory&   mood;
     SceneRegistry& registry;
     unsigned long  lastScenePrint = 0;
-    // Cooldown stamps for the accent layers. Members and not function statics, so two
-    // directors do not share a cooldown and a fresh one starts clear. The structural
-    // layers have none: the firmware's episodes say when they start and end.
-    unsigned long  lastBeat   = 0;
-    unsigned long  lastEnergy = 0;
 
-    // The scene that has been a better fit than the running one, and since when.
-    // A challenger has to stay ahead for kChallengeMs before it takes over, so a
-    // passage hovering between two looks does not flip between them.
-    const SceneDefinition* challenger = nullptr;
-    unsigned long          challengerSince = 0;
-    int                    lockedSceneIndex = -1;
+    SelectionParams selection;
+    DropParams      dropParams;
+    uint32_t        rng = 0x1F2E3D4Cu;
 
-    static constexpr float         kSwitchMargin = 0.12f;  // distance the challenger must win by
-    static constexpr unsigned long kChallengeMs  = 1500;   // how long it must keep winning
-    static constexpr unsigned long kEventDwellMs = 1500;   // least a scene runs before an event cuts it
+    // Recomputed every update, so the emulator can list them and the early-change
+    // rule can ask whether the running scene is in the bucket.
+    std::vector<SceneScore> scores;
+    std::vector<int>        bucket;
 
-    // The event that may replace the base scene. Only a drop or silence does.
-    // Buildup, descent and weird are layers. They are not moods.
-    static inline MoodType structuralOf(MoodType m) {
-        if (m == DROP || m == SILENT) return m;
-        return MOOD_COUNT;
+    MusicState     lastMusic;             // for the draws that are not made from update()
+    float          lastBpm = 0.0f;
+    float          lastLevel = 0.0f;
+    float          lastDynamics = 0.0f;
+
+    int            lockedSceneIndex = -1;
+    SceneReason    reason = REASON_START;
+    bool           reasonQuiet = false;
+
+    // How long the running scene has been out of the bucket.
+    bool           outOfBucket = false;
+    unsigned long  outSince = 0;
+
+    // The drop base.
+    bool           prevDropConfirmed = false;
+    bool           haveDropBase = false;
+    unsigned long  lastDropBaseMs = 0;
+    bool           dropHolding = false;
+    unsigned long  dropStartMs = 0;
+    bool           dropShiftSeen = false;
+    float          dropRefActivity = 0.0f;
+    float          dropRefPulse = 0.0f;
+    float          dropRefBpm = 0.0f;
+
+    // Episode edges. A new open buildup or descent is a start, its return to idle
+    // an end. `edgeSeq` counts frames that had an edge and each strip's manager
+    // remembers the last it answered.
+    bool           edgeOpen[2] = {false, false};
+    uint8_t        edgePrevState[2] = {EP_IDLE, EP_IDLE};
+    uint8_t        edgeMask = 0;            // bit 0/1 start of buildup/descent, bit 2/3 end
+    uint32_t       edgeSeq = 0;
+
+    // A joint jump in the mood strengths (concept 14). The strengths are compared
+    // with a slow copy of themselves.
+    float          moodSlow[MN_COUNT] = {};
+    bool           moodSlowSeeded = false;
+    unsigned long  moodSlowMs = 0;
+    bool           jumpPrev = false;
+    unsigned long  lastJumpMs = 0;
+    uint32_t       jumpSeq = 0;
+
+    static constexpr unsigned long kChallengeMs   = 1500;   // how long a scene may sit outside the bucket
+    static constexpr unsigned long kJumpCooldownMs = 2500;
+    static constexpr unsigned long kLiveCooldownMs = 6000;
+    static constexpr unsigned long kLiveDurationMs = 5000;
+    static constexpr float         kLiveMinScore = 0.60f;
+
+    static inline bool episodeOpen(const EpisodeStatus& e) {
+        return e.state == EP_ACTIVE || e.state == EP_FADING;
     }
 
-    inline const SceneDefinition& pick(MoodType structural) {
-        const MoodSnapshot& now = mood.getCurrentSnapshot();
-        if (now.music.initialized) {
-            return registry.pickSceneByMusic(*state, now.music, structural);
+    inline void switchTo(const SceneDefinition& next, SceneReason why) {
+        state->beginScene(&next, lastBpm, lastLevel, lastDynamics);
+        reason = why;
+        reasonQuiet = lastMusic.mood[MN_QUIET] >= 0.5f;
+        outOfBucket = false;
+    }
+
+    inline void remember(const AudioFeatures& f) {
+        lastMusic = f.music;
+        lastBpm = f.bpm;
+        lastLevel = f.level;
+        lastDynamics = f.dynamics;
+    }
+
+    inline void rescore() {
+        registry.score(*state, lastMusic, selection, scores);
+        registry.buildBucket(scores, selection, bucket);
+    }
+
+    inline void drawBase(SceneReason why) {
+        switchTo(registry.drawFromBucket(*state, scores, bucket, rng), why);
+    }
+
+    // The drop base looks at the sound as it was when the drop was confirmed.
+    inline void startDropBase(const AudioFeatures& f, unsigned long t) {
+        switchTo(registry.pickDropBase(*state, scores), REASON_DROP);
+        dropHolding = true;
+        dropStartMs = t;
+        haveDropBase = true;
+        lastDropBaseMs = t;
+        dropShiftSeen = false;
+        dropRefActivity = f.music.activity.value;
+        dropRefPulse = f.music.pulse.value;
+        dropRefBpm = f.bpm;
+    }
+
+    // A drastic shift is a joint change across readings (concept 14): the sound
+    // cuts off, the rhythm breaks, or the tempo moves.
+    inline bool dropShift(const AudioFeatures& f) const {
+        const bool cutOff = f.gateGain < 0.4f ||
+            (dropRefActivity > 0.3f && f.music.activity.value < dropRefActivity * 0.35f);
+        const bool broke = dropRefPulse > 0.4f && f.music.pulse.value < dropRefPulse * 0.5f;
+        const bool moved = dropRefBpm > 1.0f && f.bpm > 1.0f && fabsf(f.bpm - dropRefBpm) > 15.0f;
+        return cutOff || broke || moved;
+    }
+
+    inline void trackEdges(const AudioFeatures& f) {
+        edgeMask = 0;
+        const uint8_t sig[2] = {SIG_BUILDUP, SIG_DESCENT};
+        for (int i = 0; i < 2; ++i) {
+            const EpisodeStatus& e = f.episode[sig[i]];
+            if (episodeOpen(e) && !edgeOpen[i]) {
+                edgeOpen[i] = true;
+                edgeMask |= uint8_t(1u << i);
+            } else if (e.state == EP_IDLE && edgePrevState[i] != EP_IDLE && edgeOpen[i]) {
+                edgeOpen[i] = false;
+                // An episode a drop ended already has the drop's own layers, and one
+                // the gate ended is silence, which needs no accent.
+                if (e.lastEndReason != END_DROP && e.lastEndReason != END_GATE) {
+                    edgeMask |= uint8_t(4u << i);
+                }
+            } else if (e.state == EP_IDLE) {
+                edgeOpen[i] = false;
+            }
+            edgePrevState[i] = e.state;
         }
-        return registry.pickSceneByMood(*state, mood.getCurrentMood());
+        if (edgeMask != 0) ++edgeSeq;
     }
 
-    inline void switchTo(const SceneDefinition& next) {
-        state->beginScene(&next, mood.getCurrentSnapshot(), mood.getCurrentMood());
-        challenger = nullptr;
+    inline void trackMoodJump(const AudioFeatures& f, unsigned long t) {
+        if (!moodSlowSeeded) {
+            for (int m = 0; m < MN_COUNT; ++m) moodSlow[m] = f.music.mood[m];
+            moodSlowSeeded = true;
+            moodSlowMs = t;
+            return;
+        }
+        float dt = float(t - moodSlowMs) * 0.001f;
+        moodSlowMs = t;
+        if (dt > 0.1f) dt = 0.1f;
+        const float alpha = 1.0f - expf(-dt / 1.5f);
+        float total = 0.0f;
+        int moved = 0;
+        for (int m = 0; m < MN_COUNT; ++m) {
+            const float d = fabsf(f.music.mood[m] - moodSlow[m]);
+            total += d;
+            if (d >= 0.20f) ++moved;
+            moodSlow[m] += (f.music.mood[m] - moodSlow[m]) * alpha;
+        }
+        const bool jump = total >= 0.60f && moved >= 2;
+        if (jump && !jumpPrev && t - lastJumpMs >= kJumpCooldownMs) {
+            lastJumpMs = t;
+            ++jumpSeq;
+        }
+        jumpPrev = jump;
     }
 
 public:
-    inline SceneDirector(MoodHistory& m, SceneRegistry& r)
-        : state(nullptr), mood(m), registry(r) {}
+    inline SceneDirector(SceneRegistry& r)
+        : state(nullptr), registry(r) {}
 
     /*-------------------- one-time wiring --------------------*/
     inline void attachState(SceneState* s) { state = s; }
 
     inline void begin() {
         if (!state) return;
-        switchTo(pick(structuralOf(mood.getCurrentMood())));
+        rescore();
+        drawBase(REASON_START);
     }
 
-    /*-------------------- helpers --------------------*/
-    static inline MoodInfo convertToMoodInfo(const MoodSnapshot& m) {
-        // Initialize each field individually to avoid brace-initialization errors
-        MoodInfo info;
-        info.energy = m.energy;
-        info.tempo = m.bpm;        // MoodInfo uses 'tempo' while MoodSnapshot uses 'bpm'
-        info.dynamics = m.dynamics;
-        info.beatDetected = m.beatDetected;
-        return info;
+    // Forget what was measured against audio that has stopped: the drop base, the
+    // episode edges and the slow copy of the mood strengths. Called with the
+    // analysis reset, on a change of input.
+    inline void reset() {
+        prevDropConfirmed = false;
+        haveDropBase = false;
+        dropHolding = false;
+        outOfBucket = false;
+        edgeOpen[0] = edgeOpen[1] = false;
+        edgePrevState[0] = edgePrevState[1] = EP_IDLE;
+        edgeMask = 0;
+        moodSlowSeeded = false;
+        jumpPrev = false;
+    }
+
+    /*-------------------- tuning and inspection --------------------*/
+    inline void seed(uint32_t value) { rng = value == 0 ? 0x1F2E3D4Cu : value; }
+    inline SelectionParams& selectionForTuning() { return selection; }
+    inline const SelectionParams& selectionParams() const { return selection; }
+    inline DropParams& dropForTuning() { return dropParams; }
+    inline const DropParams& dropParamsRef() const { return dropParams; }
+
+    inline const std::vector<SceneScore>& sceneScores() const { return scores; }
+    inline const std::vector<int>& bucketIndices() const { return bucket; }
+    inline SceneReason sceneReason() const { return reason; }
+    inline bool reasonWasQuiet() const { return reasonQuiet; }
+
+    inline const char* reasonText() const {
+        switch (reason) {
+            case REASON_START:    return reasonQuiet ? "start, quiet" : "start";
+            case REASON_ROTATION: return reasonQuiet ? "rotation, quiet" : "rotation";
+            case REASON_EARLY:    return reasonQuiet ? "left the bucket, quiet" : "left the bucket";
+            case REASON_DROP:     return "drop";
+            case REASON_DROP_END: return reasonQuiet ? "drop ended, quiet" : "drop ended";
+            case REASON_FORCED:   return "next";
+            case REASON_LOCKED:   return "locked";
+        }
+        return "";
+    }
+
+    inline DropHoldStatus dropHold() const {
+        DropHoldStatus s;
+        s.holding = dropHolding;
+        if (dropHolding && state) {
+            const unsigned long el = millis() - dropStartMs;
+            s.shiftSeen = dropShiftSeen;
+            s.minLeftMs = el >= dropParams.holdMinMs ? 0 : dropParams.holdMinMs - el;
+            s.capLeftMs = el >= dropParams.holdCapMs ? 0 : dropParams.holdCapMs - el;
+        }
+        return s;
     }
 
     /*-------------------- regular update --------------------*/
-    inline void update() {
+    // Reads the frame's features. It never advances anything the controller owns.
+    inline void update(const AudioFeatures& f) {
         if (!state) return;
+        remember(f);
+        rescore();
+        trackEdges(f);
+        trackMoodJump(f, millis());
+
         if (lockedSceneIndex >= 0) {
-            challenger = nullptr;
-            return;
-        }
-
-        // No mood.update() here, and no AudioFeatures argument to take one with.
-        // `mood` is a reference to LEDStripController's own MoodHistory, and
-        // LEDStripController::update() already advanced it a few lines earlier,
-        // so this second call pushed the same snapshot twice per frame. The
-        // argument is gone rather than ignored so the double update cannot come
-        // back by accident.
-        const MoodSnapshot& now = mood.getCurrentSnapshot();
-
-        // Snapshots built by hand carry no musical coordinates, so the mood
-        // name stays the selector for them.
-        if (!now.music.initialized) {
-            if (state->shouldTransition(now, mood.getCurrentMood())) {
-                const SceneDefinition& nxt =
-                    registry.pickSceneByMood(*state, mood.getCurrentMood());
-                state->beginScene(&nxt, now, mood.getCurrentMood());
-            }
+            outOfBucket = false;
             return;
         }
 
         const unsigned long t  = millis();
         const unsigned long el = t - state->sceneStartMillis;
-        const MoodType structural = structuralOf(mood.getCurrentMood());
 
-        // A drop or a silence is a moment the classifier has already confirmed
-        // and held, so it cuts in after a short dwell. A scene already written
-        // for that moment is left alone. A buildup or a descent does not cut.
-        if (structural != MOOD_COUNT && structural != state->startMood &&
-            el > kEventDwellMs && state->activeScene &&
-            !state->activeScene->isTaggedFor(structural)) {
-            switchTo(pick(structural));
+        // The drop. Only a confirmed drop changes the base, on its rising edge, and
+        // not twice inside the spacing. While the window is open and unconfirmed the
+        // drop adds layers and the base stays.
+        const bool rising = f.dropConfirmed && !prevDropConfirmed;
+        prevDropConfirmed = f.dropConfirmed;
+        if (rising && !dropHolding &&
+            (!haveDropBase || t - lastDropBaseMs >= dropParams.spacingMs)) {
+            startDropBase(f, t);
+            return;
+        }
+
+        if (dropHolding) {
+            const unsigned long held = t - dropStartMs;
+            if (dropShift(f)) dropShiftSeen = true;
+            if (held >= dropParams.holdCapMs ||
+                (dropShiftSeen && held >= dropParams.holdMinMs)) {
+                dropHolding = false;
+                drawBase(REASON_DROP_END);
+            }
             return;
         }
 
         if (el <= (unsigned long)state->sceneMinDurationMs) {
-            challenger = nullptr;
+            outOfBucket = false;
             return;
         }
 
-        // Past the minimum, the running scene is judged against the best other on
-        // the same distance. It must lose by a margin, for a sustained time.
-        const SceneDefinition& best = registry.pickSceneByMusic(*state, now.music, structural);
-        const float incumbent = state->activeScene
-            ? registry.sceneDistance(*state, *state->activeScene, now.music) : 1e9f;
-        const float rival = registry.sceneDistance(*state, best, now.music);
-
-        if (incumbent - rival >= kSwitchMargin) {
-            if (challenger != &best) {
-                challenger = &best;
-                challengerSince = t;
-            } else if (t - challengerSince >= kChallengeMs) {
-                switchTo(best);
+        // Past the minimum. A scene that has left the bucket is replaced once it
+        // has stayed out for kChallengeMs.
+        const int running = registry.findIndex(state->activeScene);
+        const bool inBucket = running >= 0 && running < int(scores.size()) && scores[running].inBucket;
+        if (!inBucket) {
+            if (!outOfBucket) {
+                outOfBucket = true;
+                outSince = t;
+            } else if (t - outSince >= kChallengeMs) {
+                drawBase(REASON_EARLY);
                 return;
             }
         } else {
-            challenger = nullptr;
+            outOfBucket = false;
         }
 
-        // A scene that is still the best fit may stay, but not forever.
-        if (el > (unsigned long)(state->sceneIdealDurationMs * 2.0f)) switchTo(best);
+        // A scene that is still in the bucket may stay, but not forever.
+        if (el > (unsigned long)state->sceneIdealDurationMs) drawBase(REASON_ROTATION);
     }
 
     /*-------------------- episode layers --------------------*/
-    static inline bool episodeOpen(const EpisodeStatus& e) {
-        return e.state == EP_ACTIVE || e.state == EP_FADING;
-    }
-
     // Attach the layer an open episode wants, once. The drop onset is the exception:
     // its one-shots run their own attack, hold and decay and are not bound to
     // anything, so they are fired once per episode per strip and left to expire.
@@ -216,55 +390,64 @@ public:
         }
     }
 
-    /*-------------------- reactive layer injection --------------------*/
-    inline void maybeInjectReactiveLayer(LayerManager& lm,
-                                         const AudioFeatures& af,
-                                         unsigned long now)
-    {
+    /*-------------------- edge, beat, shift and mood layers --------------------*/
+    // What the director adds to one strip each frame, on top of the scene's fixed
+    // layers. One meaning per layer: MOOD_ARC is tease, DYNAMICS_FLICKER_STORM is
+    // anomaly, HIGHLIGHT with ENERGY is the drop onset, a glow wipe opens a
+    // buildup or descent and a sparkle closes it.
+    inline void feedLayers(LayerManager& lm, const AudioFeatures& af, unsigned long now) {
         constexpr int MAX_LAYERS = 4;
 
         // Structural layers first, and ahead of the cap test: a full manager makes
         // room for a layer that outranks something in it, so an episode is answered
         // even when the scene already has its layers up.
-        //
-        // Each is bound to the firmware's episode. It is attached while the episode
-        // is open and released by the manager when the firmware ends it, so nothing
-        // here has a timer or a cooldown, and a layer lost to a scene change comes
-        // back on the next frame for as long as its episode is still open.
         attachEpisodeLayers(lm, af);
+
+        // The edges of a buildup or a descent, once per strip.
+        if (lm.edgeSeenSeq != edgeSeq) {
+            lm.edgeSeenSeq = edgeSeq;
+            for (int bit = 0; bit < 2; ++bit) {
+                if (edgeMask & (1u << bit)) {
+                    lm.addLayerByType(LayerType::CENTROID_GLOW_WIPE, 700, LayerClass::ACCENT, LayerWhy::EDGE);
+                }
+                if (edgeMask & (4u << bit)) {
+                    lm.addLayerByType(LayerType::TRANSITION, 600, LayerClass::ACCENT, LayerWhy::EDGE);
+                }
+            }
+        }
+
+        // A joint jump in the mood strengths, in place of the contrast accent that
+        // read the level.
+        if (lm.jumpSeenSeq != jumpSeq) {
+            lm.jumpSeenSeq = jumpSeq;
+            lm.addLayerByType(LayerType::HIGHLIGHT, 450, LayerClass::ACCENT, LayerWhy::SHIFT);
+        }
+
         if (lm.activeCount() >= MAX_LAYERS) return;
 
-        // A beat accent. Trusted only when the tracker has a solid lock (>= 0.70 confidence),
-        // punchy transient 450ms pop that expires promptly.
-        if (af.beatDetected && af.beatConfidence >= 0.70f && now - lastBeat > 1500) {
-            if (random(100) < 50) {
-                lm.addLayerByType(LayerType::REACTIVE, 450);
+        // A beat accent. Trusted only when the tracker has a solid lock (>= 0.70
+        // confidence), a punchy 450 ms pop that expires promptly. No coin flip: the
+        // lock is the gate.
+        if (af.beatDetected && af.beatConfidence >= 0.70f && now - lm.lastBeatMs > 1500) {
+            lm.addLayerByType(LayerType::REACTIVE, 450, LayerClass::ACCENT, LayerWhy::BEAT);
+            lm.lastBeatMs = now;
+        }
+
+        // A free slot goes to the live layer that fits the moods best, when one fits
+        // well enough and it is not already up.
+        if (lm.activeCount() < MAX_LAYERS - 1 && now - lm.lastLiveMs > kLiveCooldownMs) {
+            int best = -1;
+            float bestScore = kLiveMinScore;
+            for (int i = 0; i < kLiveLayerFitCount; ++i) {
+                if (lm.hasActiveLayerOfType(kLiveLayerFits[i].type)) continue;
+                const float s = registry.moodTerm(kLiveLayerFits[i].fit, af.music, selection.toneWeight);
+                if (s > bestScore) { bestScore = s; best = i; }
             }
-            lastBeat = now;
-        }
-        // High-energy dynamic surge: level > 0.85 with dynamic range > 0.35, brief 1200ms flare
-        if (af.level > 0.85f && af.dynamics > 0.35f && now - lastEnergy > 4000) {
-            if (random(100) < 40) {
-                lm.addLayerByType(LayerType::OVERLAY, 1200, LayerClass::OVERLAY);
+            if (best >= 0) {
+                lm.addLayerByType(kLiveLayerFits[best].type, kLiveDurationMs,
+                                  LayerClass::ACCENT, LayerWhy::MOOD);
             }
-            lastEnergy = now;
-        }
-
-        // Directional contrast response: lighter -> intense surge or bass slam
-        if (af.contrastMagnitude >= 0.40f && (af.deltaIntensity >= 0.25f || af.deltaWeight >= 0.30f) && now - lastEnergy > 2000) {
-            lm.addLayerByType(LayerType::HIGHLIGHT, 450, LayerClass::ACCENT);
-            lastEnergy = now;
-        }
-
-        // Peak tension climax: all bands saturated and fluctuating
-        if (af.buildupClimax && now - lastEnergy > 1200) {
-            lm.addLayerByType(LayerType::DYNAMICS_FLICKER_STORM, 800, LayerClass::ACCENT);
-            lastEnergy = now;
-        }
-
-        // Rare mood arc sweep across scene
-        if (random(1000) < 2 && now - lastBeat > 6000) {
-            lm.addLayerByType(LayerType::MOOD_ARC, 4000);
+            lm.lastLiveMs = now;
         }
     }
 
@@ -278,14 +461,16 @@ public:
     }
     inline void forceNextScene() {
         if (!state) return;
-        switchTo(pick(structuralOf(mood.getCurrentMood())));
+        rescore();
+        drawBase(REASON_FORCED);
     }
 
     /*-------------------- scene lock / freeze --------------------*/
     inline void lockScene(int index) {
         if (index >= 0 && index < static_cast<int>(registry.count())) {
             lockedSceneIndex = index;
-            switchTo(registry.get(index));
+            dropHolding = false;
+            switchTo(registry.get(index), REASON_LOCKED);
         } else {
             unlockScene();
         }
@@ -296,7 +481,7 @@ public:
             state->sceneStartMillis = millis();
         }
         lockedSceneIndex = -1;
-        challenger = nullptr;
+        outOfBucket = false;
     }
 
     inline int getLockedSceneIndex() const {

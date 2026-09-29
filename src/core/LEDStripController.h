@@ -38,7 +38,6 @@
 #include "../animations/Animation.h"
 #include "../animations/AnimationCatalog.h"
 #include "../scenes/LayerManager.h"
-#include "../scenes/MoodHistory.h"
 #include "../scenes/SceneRegistry.h"
 #include "../scenes/SceneDirector.h"
 
@@ -139,12 +138,10 @@ struct LEDStrip {
 class LEDStripController {
 public:
     inline LEDStripController(AudioFeatures& af,
-                              MoodHistory&   mh,
                               AudioHistoryTracker& ah)
     : audio(af),
-      moodHistory(mh),
       audioHistory(ah),
-      sceneDirector(moodHistory, sceneRegistry)
+      sceneDirector(sceneRegistry)
     {
     }
 
@@ -206,8 +203,7 @@ public:
         // No fade here. renderLayers() already fades each strip's own buffer, and
         // FastLED.leds() addresses only the first registered controller -- so this
         // decayed strip 0 twice per frame and never touched any other strip.
-        moodHistory.update(audio);
-        sceneDirector.update();
+        sceneDirector.update(audio);
         FastLED.setBrightness(memoryCritical ? HEAP_CRITICAL_BRIGHTNESS : DEFAULT_BRIGHTNESS);
 
         const SceneDefinition* scenePtr = sceneDirector.getActiveScene();
@@ -218,7 +214,7 @@ public:
                 strips[i].setAnimation(scene.baseAnimation, audio);
                 strips[i].setScene(scene);                        // rebuild only on change
                 if (!memoryCritical) {
-                    sceneDirector.maybeInjectReactiveLayer(strips[i].layers(), audio, millis());
+                    sceneDirector.feedLayers(strips[i].layers(), audio, millis());
                 }
                 strips[i].update(audio, audioHistory.getHistory());
             }
@@ -263,9 +259,33 @@ public:
         if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return "";
         return sceneRegistry.get(index).name.c_str();
     }
-    inline const char* getSceneMoodByIndex(int index) const {
-        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return "";
-        return moodToString(sceneRegistry.get(index).mood);
+    // The scene's fit list, as pairs of key and fit. Keys 0 to MN_COUNT - 1 are
+    // moods, then FK_BUILDUP, FK_DESCENT and FK_DROP. Entries with no fit are not
+    // counted.
+    inline int getSceneFitCount(int index) const {
+        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return 0;
+        const FitList* fit = sceneRegistry.get(index).fit;
+        int n = 0;
+        for (int i = 0; fit && i < kMaxFits; ++i) if (fit->e[i].fit > 0.0f) ++n;
+        return n;
+    }
+    inline int getSceneFitKey(int index, int entry) const {
+        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return -1;
+        const FitList* fit = sceneRegistry.get(index).fit;
+        for (int i = 0, seen = 0; fit && i < kMaxFits; ++i) {
+            if (fit->e[i].fit <= 0.0f) continue;
+            if (seen++ == entry) return fit->e[i].key;
+        }
+        return -1;
+    }
+    inline float getSceneFitValue(int index, int entry) const {
+        if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return 0.0f;
+        const FitList* fit = sceneRegistry.get(index).fit;
+        for (int i = 0, seen = 0; fit && i < kMaxFits; ++i) {
+            if (fit->e[i].fit <= 0.0f) continue;
+            if (seen++ == entry) return fit->e[i].fit;
+        }
+        return 0.0f;
     }
     inline const char* getSceneRoleByIndex(int index) const {
         if (index < 0 || index >= static_cast<int>(sceneRegistry.count())) return "";
@@ -313,10 +333,16 @@ public:
     // setters recompute the running scene's own thresholds, so a change lands on
     // the scene in front of the viewer rather than on the one after it.
     inline SceneState& sceneStateForTuning() { return sceneState; }
+    inline SceneDirector& sceneDirectorForTuning() { return sceneDirector; }
+    inline const SceneDirector& sceneDirectorView() const { return sceneDirector; }
+    inline const SceneRegistry& sceneRegistryView() const { return sceneRegistry; }
+    inline const char* getLayerWhy(int strip, int index) const {
+        return (strip >= 0 && strip < stripCount)
+            ? LayerManager::whyToString(strips[strip].layerMgr.getLayerWhy(index)) : "";
+    }
 
 private:
     AudioFeatures&       audio;
-    MoodHistory&         moodHistory;
     AudioHistoryTracker& audioHistory;
     SceneRegistry        sceneRegistry;
     SceneState           sceneState;      // owned here; SceneDirector only points at it
@@ -341,8 +367,6 @@ private:
             } else {
                 Serial.println(F("None"));
             }
-            Serial.print(F("Mood  : "));
-            Serial.println(moodHistory.getCurrentMoodName());
         }
 #endif
     }

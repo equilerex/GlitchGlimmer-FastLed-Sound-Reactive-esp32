@@ -153,6 +153,13 @@ void AudioProcessor::resetTracking() {
     weightTracker.reset();
     pulseTracker.reset();
     textureTracker.reset();
+    tiltTracker.reset();
+    evennessTracker.reset();
+    punchTracker.reset();
+    bodyTracker.reset();
+    moodModel.reset();
+    previousLowShare = 0.0f;
+    punchReference = 0.0f;
     memset(previousSpectrum, 0, sizeof(previousSpectrum));
     fluxReference = 0.0f;
     fluxSeeded = false;
@@ -851,6 +858,35 @@ void AudioProcessor::updateMusicState(AudioFeatures& features, float spectralFlu
     pulseTracker.update(pulse, pulseConfidence, dt);
     textureTracker.update(features.spectralFlatness, gateConfidence, dt);
 
+    // Band balance and the kick's attack, for the moods (concepts 3 and 15).
+    // Tilt is high-share minus low-share mapped to 0..1, so 0 is bass-heavy.
+    const float lowShare  = features.subBands[0] + features.subBands[1];
+    const float highShare = features.subBands[5] + features.subBands[6] + features.subBands[7];
+    const float tilt = constrain(0.5f + 0.5f * (highShare - lowShare), 0.0f, 1.0f);
+    // Evenness is the entropy of the eight shares over its maximum, so 1 is a
+    // spectrum with every band equally full. Per band, where flatness is per bin.
+    float shareSum = 0.0f;
+    for (int b = 0; b < 8; ++b) shareSum += features.subBands[b];
+    float entropy = 0.0f;
+    if (shareSum > 1e-6f) {
+        for (int b = 0; b < 8; ++b) {
+            const float p = features.subBands[b] / shareSum;
+            if (p > 1e-6f) entropy -= p * logf(p);
+        }
+    }
+    const float evenness = constrain(entropy / logf(8.0f), 0.0f, 1.0f);
+    const float body = constrain(features.subBands[2] + features.subBands[3] + features.subBands[4], 0.0f, 1.0f);
+    // Punch is the block-to-block rise of the low share over a decaying maximum
+    // of the same rise, the way activity is flux over a decaying maximum.
+    const float lowRise = fmaxf(0.0f, lowShare - previousLowShare);
+    previousLowShare = lowShare;
+    punchReference = fmaxf(punchReference * 0.995f, lowRise);
+    const float punch = punchReference > 1e-6f ? constrain(lowRise / punchReference, 0.0f, 1.0f) : 0.0f;
+    tiltTracker.update(tilt, gateConfidence, dt);
+    evennessTracker.update(evenness, gateConfidence, dt);
+    punchTracker.update(punch, gateConfidence, dt);
+    bodyTracker.update(body, gateConfidence, dt);
+
     features.music.intensity = intensityTracker.output;
     features.music.activity = activityTracker.output;
     features.music.brightness = brightnessTracker.output;
@@ -860,9 +896,19 @@ void AudioProcessor::updateMusicState(AudioFeatures& features, float spectralFlu
     features.music.tempo.confidence = pulseConfidence;
     features.music.tempo.trend = 0.0f;
     features.music.texture = textureTracker.output;
+    features.music.tilt = tiltTracker.output;
+    features.music.evenness = evennessTracker.output;
+    features.music.punch = punchTracker.output;
+    features.music.body = bodyTracker.output;
     features.music.presence.value = features.gateGain;
     features.music.presence.confidence = gateConfidence;
     features.music.presence.trend = 0.0f;
+
+    // Mood strengths, from the readings above. Loudness is not one of them.
+    const MoodReadings mr = moodReadingsOf(features.music, features.bpm, features.dynamics, features.gateGain);
+    moodModel.update(mr, dt);
+    for (int m = 0; m < MN_COUNT; ++m) features.music.mood[m] = moodModel.strength(m);
+
     features.music.buildup = features.buildup > 0.0f;
     features.music.descent = features.descent > 0.0f;
     features.music.dropDetected = features.dropDetected;
@@ -1162,8 +1208,7 @@ void AudioProcessor::updateStructure(AudioFeatures& features, unsigned long now)
     //
     // Two of three, and each is a rate of change or a band membership rather than a
     // level, so a stable passage scores zero whatever its spectrum is. That is the
-    // property that keeps a quiet drifting ambient passage at CALM instead of
-    // turning it into this, along with the ladder gate in the classifier.
+    // property that keeps a quiet drifting ambient passage from becoming this.
     //
     // Flatness is the value the noise floor already computes and used to discard.
     const float span = centHi - centLo;
