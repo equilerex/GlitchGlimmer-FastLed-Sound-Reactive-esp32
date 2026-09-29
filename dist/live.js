@@ -51,8 +51,8 @@ let isAudioPlaying = true;
 let currentTrackId = 'edm';
 
 const DEMO_URLS = {
-  //edm: 'audio/demo.mp3',
-  //jazz: 'audio/jazz.mp3',
+  edm: 'audio/demo.mp3',
+  jazz: 'audio/jazz.mp3',
 };
 
 const demo = { time: 0, bassPhase: 0, midPhase: 0, noise: 1 };
@@ -153,12 +153,25 @@ async function loadWasm() {
     for (let i = 0; i < count; ++i) {
       const namePtr = module._gg_scene_name_by_index(i);
       const name = namePtr ? module.UTF8ToString(namePtr) : `Scene ${i}`;
-      const moodPtr = module._gg_scene_mood_by_index ? module._gg_scene_mood_by_index(i) : 0;
-      const mood = moodPtr ? module.UTF8ToString(moodPtr) : '';
       const rolePtr = module._gg_scene_role_by_index ? module._gg_scene_role_by_index(i) : 0;
       const role = rolePtr ? module.UTF8ToString(rolePtr) : '';
       const intensity = module._gg_scene_intensity_by_index ? module._gg_scene_intensity_by_index(i) : 0;
-      catalog.push({ index: i, name, mood, role, intensity });
+      // The fit list, read from the firmware: moods, then buildup, descent and drop.
+      // The page ranks nothing with it. It is here so the catalog can show why a
+      // scene comes up, and to group the scene picker by each scene's best fit.
+      const fits = [];
+      const fitCount = module._gg_scene_fit_count ? module._gg_scene_fit_count(i) : 0;
+      for (let j = 0; j < fitCount; ++j) {
+        const key = module._gg_scene_fit_key(i, j);
+        fits.push({
+          key,
+          name: module.UTF8ToString(module._gg_fit_key_name(key)),
+          value: module._gg_scene_fit_value(i, j),
+        });
+      }
+      fits.sort((a, b) => b.value - a.value || a.key - b.key);
+      const primary = fits.length ? fits[0] : { key: 99, name: 'none', value: 0 };
+      catalog.push({ index: i, name, role, intensity, fits, primary: primary.name, primaryKey: primary.key });
     }
     state.live.sceneCatalog = catalog;
   }
@@ -472,7 +485,63 @@ function drainEpisodeEvents() {
   lastEventSeq = newest;
 }
 
+// The firmware's mood strengths, as received. The page holds no mood name.
+function readMoods() {
+  const out = [];
+  if (!wasm || !wasm._gg_mood_count) return out;
+  for (let i = 0, n = wasm._gg_mood_count(); i < n; ++i) {
+    out.push({
+      name: wasm.UTF8ToString(wasm._gg_mood_name_by_index(i)),
+      strength: wasm._gg_mood_strength(i),
+      inSelector: wasm._gg_mood_in_selector(i) > 0,
+      tone: wasm._gg_mood_is_tone(i) > 0,
+    });
+  }
+  return out;
+}
+
+// The name shown for "the mood": the strongest character mood the firmware measures,
+// or a dash. Tone moods (warm, heavy, bright, full, sparse) are always partly true
+// of any music, so they are shown beside it and never stand in for it.
+function strongestMoodName(moods) {
+  let best = null;
+  for (const m of moods) {
+    if (m.inSelector && !m.tone && m.strength >= 0.15 && (!best || m.strength > best.strength)) best = m;
+  }
+  return best ? best.name : '-';
+}
+
+// The selector, read back: why the running scene is up, the drop base's hold and
+// the bucket with the score of each member. Nothing is ranked here.
+function readSelection(catalog) {
+  const bucket = [];
+  const running = wasm._gg_current_scene_index ? wasm._gg_current_scene_index() : -1;
+  for (let r = 0, n = wasm._gg_bucket_count(); r < n; ++r) {
+    const index = wasm._gg_bucket_index(r);
+    bucket.push({
+      index,
+      name: catalog[index] ? catalog[index].name : `Scene ${index}`,
+      score: wasm._gg_scene_score(index, 3),
+      mood: wasm._gg_scene_score(index, 0),
+      episode: wasm._gg_scene_score(index, 1),
+      recency: wasm._gg_scene_score(index, 2),
+      running: index === running,
+    });
+  }
+  return {
+    reason: wasm.UTF8ToString(wasm._gg_scene_reason()),
+    drop: {
+      holding: wasm._gg_drop_hold(0) > 0,
+      shiftSeen: wasm._gg_drop_hold(1) > 0,
+      minLeftMs: wasm._gg_drop_hold(2),
+      capLeftMs: wasm._gg_drop_hold(3),
+    },
+    bucket,
+  };
+}
+
 function readFeatures() {
+  const moods = readMoods();
   // Read once per frame and share, rather than calling across the boundary again
   // for the trace. Each gg_feature call is a wasm invocation, and at 60 fps the
   // boundary crossing is not free.
@@ -482,7 +551,8 @@ function readFeatures() {
     const namePtr = wasm._gg_layer_name ? wasm._gg_layer_name(0, i) : 0;
     const name = namePtr ? wasm.UTF8ToString(namePtr) : 'Layer ' + i;
     const elapsed = wasm._gg_layer_elapsed_ms ? wasm._gg_layer_elapsed_ms(0, i) : 0;
-    layers.push({ name, elapsedMs: Math.round(elapsed) });
+    const whyPtr = wasm._gg_layer_why ? wasm._gg_layer_why(0, i) : 0;
+    layers.push({ name, elapsedMs: Math.round(elapsed), why: whyPtr ? wasm.UTF8ToString(whyPtr) : '' });
   }
 
   return {
@@ -547,6 +617,10 @@ function readFeatures() {
     arming: wasm._gg_feature(83),
     dropConfidence: wasm._gg_feature(84),
     dropConfirmed: wasm._gg_feature(85) > 0,
+    coordTilt: wasm._gg_feature(86), coordTiltConf: wasm._gg_feature(87), coordTiltTrend: wasm._gg_feature(88),
+    coordEvenness: wasm._gg_feature(89), coordEvennessConf: wasm._gg_feature(90), coordEvennessTrend: wasm._gg_feature(91),
+    coordPunch: wasm._gg_feature(92), coordPunchConf: wasm._gg_feature(93), coordPunchTrend: wasm._gg_feature(94),
+    coordBody: wasm._gg_feature(95), coordBodyConf: wasm._gg_feature(96), coordBodyTrend: wasm._gg_feature(97),
     average:  wasm._gg_average(),
     // Derived here from level with BRIGHTNESS_GAMMA (src/config/Config.h) so the
     // values the animations actually drive brightness from are visible.
@@ -554,29 +628,26 @@ function readFeatures() {
     hsvLevel: Math.pow(Math.max(0, wasm._gg_feature(10)), 0.25),
     centroid: wasm._gg_spectrum_centroid(),
     band:     wasm._gg_dominant_band(),
-    history:  wasm._gg_history_size(),
     layers:   layerCnt,
     layerDetails: layers,
     layers1:  wasm._gg_layer_count(1),
     sceneChanges: wasm._gg_scene_changes(),
-    moodChanges: wasm._gg_mood_changes(),
     elapsed:  wasm._gg_scene_elapsed_ms(),
     minMs:    wasm._gg_scene_min_ms(),
     idealMs:  wasm._gg_scene_ideal_ms(),
-    dynLow:   wasm._gg_mood_dynamics_low(),
-    dynHigh:  wasm._gg_mood_dynamics_high(),
-    dynActive: wasm._gg_mood_dynamics_active(),
     lit:      wasm._gg_lit_count(0),
     litSum:   Math.round(wasm._gg_lit_sum(0)),
     scene: wasm.UTF8ToString(wasm._gg_scene_name()),
     sceneIndex: wasm._gg_current_scene_index ? wasm._gg_current_scene_index() : -1,
     lockedScene: wasm._gg_locked_scene ? wasm._gg_locked_scene() : -1,
-    mood:  wasm.UTF8ToString(wasm._gg_mood_name()),
-    predicted: wasm.UTF8ToString(wasm._gg_mood_predicted_name()),
+    moods,
+    mood: strongestMoodName(moods),
+    selection: readSelection(state.live.sceneCatalog || []),
   };
 }
 
 import { state } from './state.js';
+import { noteAttention, attentionRows } from './attention.js';
 
 let lastSeen = {
   mood: '',
@@ -616,7 +687,7 @@ function updateHud(f) {
     state.live.selectedSceneIndex = f.sceneIndex;
   }
   state.live.mood = f.mood;
-  state.live.predicted = f.predicted;
+  state.live.selection = f.selection;
   state.live.bpm = f.bpm;
   state.live.beat = f.beat > 0;
   state.live.beatPhase = f.beatPhase !== undefined ? f.beatPhase : 0;
@@ -644,7 +715,6 @@ function updateHud(f) {
   state.live.lit = f.lit;
   state.live.litSum = f.litSum;
   state.live.sceneChanges = f.sceneChanges;
-  state.live.moodChanges = f.moodChanges;
 
   if (state.live.coords) {
     state.live.coords.intensity = { value: f.coordIntensity, conf: f.coordIntensityConf, trend: f.coordIntensityTrend };
@@ -655,6 +725,18 @@ function updateHud(f) {
     state.live.coords.tempo = { value: f.coordTempo, conf: f.coordTempoConf, trend: f.coordTempoTrend };
     state.live.coords.texture = { value: f.coordTexture, conf: f.coordTextureConf, trend: f.coordTextureTrend };
     state.live.coords.presence = { value: f.coordPresence, conf: f.coordPresenceConf, trend: f.coordPresenceTrend };
+    state.live.coords.tilt = { value: f.coordTilt, conf: f.coordTiltConf, trend: f.coordTiltTrend };
+    state.live.coords.evenness = { value: f.coordEvenness, conf: f.coordEvennessConf, trend: f.coordEvennessTrend };
+    state.live.coords.punch = { value: f.coordPunch, conf: f.coordPunchConf, trend: f.coordPunchTrend };
+    state.live.coords.body = { value: f.coordBody, conf: f.coordBodyConf, trend: f.coordBodyTrend };
+  }
+  {
+    const moods = state.live.moods;
+    while (moods.length < f.moods.length) {
+      const m = f.moods[moods.length];
+      moods.push({ name: m.name, strength: 0, inSelector: m.inSelector, tone: m.tone });
+    }
+    for (let i = 0; i < f.moods.length; ++i) moods[i].strength = f.moods[i].strength;
   }
   state.live.episodes = f.episodes;
   state.live.displacement = f.displacement;
@@ -684,7 +766,10 @@ function updateHud(f) {
     }
 
     if (lastSeen.mood && f.mood !== lastSeen.mood) {
-      pushLiveEvent('mood', `MOOD → ${f.mood}`, `pred: ${f.predicted}`);
+      const top = f.moods.filter((m) => m.inSelector && m.strength >= 0.05)
+        .sort((a, b) => b.strength - a.strength).slice(0, 3)
+        .map((m) => `${m.name} ${Math.round(m.strength * 100)}%`).join(' · ');
+      pushLiveEvent('mood', `MOOD → ${f.mood}`, top);
     }
     lastSeen.mood = f.mood;
 
@@ -708,8 +793,8 @@ function updateHud(f) {
           lastSeen.presenceConfirmed = hasPresence;
           lastSeen.lastGateEventTime = now;
           pushLiveEvent('gate', hasPresence ? 'SOUND DETECTED' : 'SOUND LOST', hasPresence
-            ? `silence gate opened: signal volume rose above 2x the noise floor (${f.noiseFloor.toFixed(4)})`
-            : `silence gate closed: signal volume fell below 1.5x the noise floor (${f.noiseFloor.toFixed(4)})`);
+            ? `silence gate opened: block RMS rose above 2.5x the noise floor plus 0.001 (${f.noiseFloor.toFixed(4)})`
+            : `silence gate closed: block RMS fell to 1.5x the noise floor plus 0.0005 (${f.noiseFloor.toFixed(4)}) and the hangover elapsed`);
         }
       }
     } else {
@@ -717,6 +802,16 @@ function updateHud(f) {
       lastSeen.presenceCandidateSince = now;
     }
   }
+
+  const layerNames = [];
+  const details = f.layerDetails || [];
+  for (let i = 0; i < details.length; i++) layerNames.push(details[i].name);
+  noteAttention(state.live.attention, {
+    dtMs: f.dtMs,
+    scene: f.scene,
+    moods: f.moods,
+    layers: layerNames,
+  });
 
   paintState(f);
 }
@@ -735,35 +830,34 @@ function updateHud(f) {
 // -----------------------------------------------------------------------------
 const STATE_GROUPS = [
   {
-    title: 'What the classifier reads',
+    title: 'Inputs',
     rows: [
       { name: 'loudness', key: 'loudness', max: 100, digits: 1,
-        note: 'Smoothed loudness (0..100). The older loudness value. The animations use level; only the legacy mood history still reads this.' },
+        note: 'Smoothed loudness (0..100). The older loudness value. The animations use level.' },
       { name: 'pixel level', key: 'pixelLevel', max: 1, digits: 2,
         note: 'level ^ BRIGHTNESS_GAMMA (0.5). The brightness curve most animations drive pixels from.' },
       { name: 'hsv level', key: 'hsvLevel', max: 1, digits: 2,
         note: 'sqrt(pixel level), which is level ^ 0.25. The value channel of HSV colours, used by the animations that pick a hue.' },
       { name: 'level', key: 'level', max: 1, digits: 2,
-        marks: [0.3, 0.4, 0.6, 0.8],
-        note: 'Loudness tested by the mood classifier (0..1).\n\n' +
+        note: 'Loudness, the gain reference (0..1).\n\n' +
               '• Base data: 512-sample time-domain block RMS amplitude envelope.\n' +
               '• Calculation: Dual EMA follower against a 20s rolling peak envelope and adaptive room noise floor: clamp((RMS - floor) / (peak - floor), 0, 1).\n' +
-              '• Meaning: Gain-invariant volume. The four markers (0.3, 0.4, 0.6, 0.8) indicate mood classification threshold boundaries.' },
+              '• Meaning: Gain-invariant volume. It keeps the other readings in scale. It does not choose the mood or the scene.' },
       { name: 'energy', key: 'energy', max: 3000, digits: 0,
         note: 'Raw spectral energy sum.\n\n' +
               '• Base data: 256-bin FFT spectrum calculated from 512 samples.\n' +
               '• Calculation: Direct unscaled sum of 255 FFT magnitude bins: sum(|X[k]|).\n' +
               '• Meaning: Absolute energy that scales with analog mic gain (~100s in quiet rooms, ~1000s in loud music).' },
-      { name: 'dynamics', key: 'dynamics', max: 1, digits: 2, marks: [], movingMarks: true,
+      { name: 'dynamics', key: 'dynamics', max: 1, digits: 2,
         note: 'Dynamic range score (0..1).\n\n' +
               '• Base data: Sliding historical window of recent level readings.\n' +
               '• Calculation: (max(level) - min(level)) / max(level).\n' +
-              '• Meaning: Distinguishes compressed, wall-of-sound audio from expressive, high-contrast passages. Moving markers indicate classifier cut points at 30% and 70% of measured range.' },
-      { name: 'bpm', key: 'bpm', max: 600, digits: 0, marks: [80, 100],
+              '• Meaning: Distinguishes compressed, wall-of-sound audio from expressive, high-contrast passages. The Intense mood reads it between 0.5 and 0.7.' },
+      { name: 'bpm', key: 'bpm', max: 600, digits: 0,
         note: 'Estimated musical tempo.\n\n' +
               '• Base data: Detected beat onset timestamps from level and bass flux threshold crossings.\n' +
               '• Calculation: Derived from median inter-beat interval: 60000 / median(interval_ms).\n' +
-              '• Meaning: Track BPM. Markers at 80 and 100 BPM split low, mid, and fast tempo moods.' },
+              '• Meaning: Track BPM. The moods read it as ranges, for example Flowing 110 to 128 and Rushing 160 and up.' },
       { name: 'volume', key: 'volume', max: 0.5, sqrt: true, digits: 4,
         note: 'Raw physical RMS sample amplitude.\n\n' +
               '• Base data: 512 raw PCM input samples.\n' +
@@ -792,7 +886,7 @@ const STATE_GROUPS = [
       { name: 'signal present', key: 'presence', max: 1, digits: 0,
         note: 'Binary silence gate state.\n\n' +
               '• Base data: Block RMS volume vs adaptive noise floor.\n' +
-              '• Calculation: Schmitt trigger with hysteresis: 1 when RMS > 2.0 * noiseFloor, dropping to 0 when RMS < 1.5 * noiseFloor.\n' +
+              '• Calculation: Schmitt trigger. Opens when block RMS > 2.5 * noiseFloor + 0.001. Closes, after a 350 ms hangover, when block RMS <= 1.5 * noiseFloor + 0.0005.\n' +
               '• Meaning: 1 = deliberate sound or music present; 0 = quiet room silence.' },
       { name: 'gate gain', key: 'gateGain', max: 1, digits: 3,
         note: 'Silence gate smoothing gain multiplier.\n\n' +
@@ -897,18 +991,8 @@ const STATE_GROUPS = [
       { name: 'scene changes', key: 'sceneChanges', digits: 0,
         note: 'Scene transition counter.\n\n' +
               '• Base data: Scene manager transition events.\n' +
-              '• Calculation: Cumulative count of scene switches triggered by timers, mood changes, or beat cadence.\n' +
+              '• Calculation: Cumulative count of scene switches: rotation, a scene leaving the bucket, or a drop.\n' +
               '• Meaning: Scene rotation activity.' },
-      { name: 'mood changes', key: 'moodChanges', digits: 0,
-        note: 'Mood transition counter.\n\n' +
-              '• Base data: Mood classifier state machine.\n' +
-              '• Calculation: Total count of mood shifts committed by the classifier.\n' +
-              '• Meaning: Reads 0 if mood has held constant for the entire session.' },
-      { name: 'mood history', key: 'history', max: 150, digits: 0,
-        note: 'Mood history buffer occupancy.\n\n' +
-              '• Base data: Circular buffer of past classified moods.\n' +
-              '• Calculation: Number of entries currently stored in the 150-slot transition history ring.\n' +
-              '• Meaning: Memory depth of recent musical mood trajectory.' },
     ],
   },
 ];
@@ -954,22 +1038,9 @@ function appendRow(parent, row) {
       meter.append(mark);
     }
 
-    // Marks whose position is not known until the firmware reports it, so they
-    // are kept on the cell and placed in paintState.
-    let moving = null;
-    if (row.movingMarks) {
-      moving = [];
-      for (let i = 0; i < 2; ++i) {
-        const mark = document.createElement('span');
-        mark.className = 'meter-mark';
-        meter.append(mark);
-        moving.push(mark);
-      }
-    }
-
     el.append(name, meter, num);
     parent.append(el);
-    cells.set(row.name, { fill, num, meter, moving, nameEl: name });
+    cells.set(row.name, { fill, num, meter, nameEl: name });
   }
 
   if (row.note) {
@@ -1009,6 +1080,12 @@ export async function copyDiagnostics(button) {
     `  - Presence: ${(l.coords.presence.value * 100).toFixed(0)}% (conf ${(l.coords.presence.conf * 100).toFixed(0)}%, trend ${l.coords.presence.trend >= 0 ? '+' : ''}${l.coords.presence.trend.toFixed(2)})`
   ].join('\n') : '';
 
+  const weightLine = (bucket) => {
+    const rows = attentionRows(l.attention ? l.attention[bucket] : {}, l.attention ? l.attention.ms : 0, 4);
+    return rows.length
+      ? rows.map(r => `${r.name} ${r.pct}% (${r.starts})`).join(', ')
+      : 'none';
+  };
   const recentEvents = (l.events && l.events.length > 0)
     ? l.events.slice(0, 6).map(ev => `  - ${ev.time}: ${ev.label}${ev.detail ? ` (${ev.detail})` : ''}`).join('\n')
     : '  - none';
@@ -1017,13 +1094,14 @@ export async function copyDiagnostics(button) {
     `### GlitchGlimmer Telemetry Diagnostics`,
     `- **Clock**: Source: ${l.source}${l.demoTrack ? ` (${l.demoTrack})` : ''} | Time: ${timeSec}s | Frame: ${l.sampleFrame} | dt: ${dtMs}ms (${fps} FPS)`,
     `- **Scene**: ${l.scene} [${l.sceneFrozen ? 'FROZEN' : 'AUTO'}] (elapsed ${l.sceneElapsed} / min ${l.sceneMin} / ideal ${l.sceneIdeal}) | Layers (${l.layers ? l.layers.length : 0}): ${layersStr}`,
-    `- **Mood**: ${l.mood} | Predicted: ${l.predicted}`,
+    `- **Moods**: ${(l.moods || []).filter((m) => m.inSelector && m.strength >= 0.05).sort((a, b) => b.strength - a.strength).slice(0, 4).map((m) => `${m.name} ${Math.round(m.strength * 100)}%`).join(' · ') || 'none'} | Scene picked by: ${l.selection ? l.selection.reason : ''}${l.selection && l.selection.drop.holding ? ' (drop base holding)' : ''}`,
     `- **Audio Levels**: Vol: ${l.volume.toFixed(4)} | Peak: ${l.peak.toFixed(4)} | NoiseFloor: ${l.noiseFloor.toFixed(4)} | Gate: ${l.presence ? 'OPEN' : 'SHUT'} (gain ${l.gateGain.toFixed(2)}) | Energy: ${Math.round(l.energy)} | Level: ${(l.level * 100).toFixed(0)}% | Dynamics: ${(l.dynamics * 100).toFixed(0)}%`,
     `- **Rhythm**: BPM: ${l.bpm > 0 ? Math.round(l.bpm) : '—'} | Beat: ${l.beat ? 1 : 0} | Phase: ${((l.beatPhase || 0) * 100).toFixed(0)}% | Confidence: ${((l.beatConfidence || 0) * 100).toFixed(0)}%`,
     `- **Bands**: Bass: ${(l.bass * 100).toFixed(0)}% (drive ${(l.bassLevel * 100).toFixed(0)}%) | Mid: ${(l.mid * 100).toFixed(0)}% (drive ${(l.midLevel * 100).toFixed(0)}%) | Treble: ${(l.treble * 100).toFixed(0)}% (drive ${(l.trebleLevel * 100).toFixed(0)}%) | Centroid: ${l.centroid.toFixed(0)} | Flatness: ${(l.spectralFlatness * 100).toFixed(0)}%`,
     `- **8D Coordinates**:`,
     coordsStr,
     `- **Structure**: Buildup: ${l.buildup.toFixed(3)} (${formatAgo(l.lastSeenTimes?.buildup)}) | Descent: ${l.descent.toFixed(3)} (${formatAgo(l.lastSeenTimes?.descent)}) | Drop: ${l.dropDetected ? 1 : 0} (${formatAgo(l.lastSeenTimes?.drop)}) | Tease: ${l.teaseDetected ? 1 : 0} (${formatAgo(l.lastSeenTimes?.tease)}) | Anomaly: ${l.anomaly.toFixed(0)}`,
+    `- **Weight**: Moods: ${weightLine('moods')} | Scenes: ${weightLine('scenes')} | Layers: ${weightLine('layers')}`,
     `- **Recent Events**:`,
     recentEvents
   ];
@@ -1232,7 +1310,7 @@ function selftestStep() {
 //  in localStorage because a setting that took a minute of listening to find
 //  should survive a reload.
 // -----------------------------------------------------------------------------
-const TUNING_STORAGE_KEY = 'gg-tuning-v1';
+const TUNING_STORAGE_KEY = 'gg-tuning-v2';
 
 const asSeconds = (v) => (v / 1000).toFixed(2) + 's';
 const asRate = (v) => v.toFixed(2) + '/s';
@@ -1244,31 +1322,44 @@ const TUNING = [
     format: asSeconds },
   { index: 2, name: 'scene ideal span', min: 0, max: 30000, step: 500, value: 5000,
     format: asSeconds },
-  { index: 3, name: 'mood hold', min: 0, max: 10000, step: 100, value: 2000,
-    format: asSeconds },
-  { index: 4, name: 'mood confirm', min: 0, max: 3000, step: 50, value: 500,
-    format: asSeconds },
-  { index: 5, name: 'mood smoothing', min: 0.01, max: 0.3, step: 0.005, value: 0.05,
-    format: (v) => v.toFixed(3) },
-  { index: 6, name: 'dynamics window opens', min: 0.1, max: 6, step: 0.1, value: 1.5,
-    format: asRate },
-  { index: 7, name: 'dynamics window closes', min: 0.05, max: 6, step: 0.05, value: 0.3,
-    format: asRate },
-  { index: 8, name: 'dynamics signal decay', min: 0, max: 0.02, step: 0.00001, value: 0.0005,
+  { index: 3, name: 'dynamics signal decay', min: 0, max: 0.02, step: 0.00001, value: 0.0005,
     format: (v) => v.toFixed(5) + '/block' },
-  { index: 9, name: 'input gain smoothing', min: 0, max: 0.99, step: 0.01, value: 0.85,
+  { index: 4, name: 'input gain smoothing', min: 0, max: 0.99, step: 0.01, value: 0.85,
     format: (v) => v.toFixed(2) },
-  { index: 10, name: 'dynamics signal growth', min: 0, max: 1, step: 0.01, value: 0.5,
+  { index: 5, name: 'dynamics signal growth', min: 0, max: 1, step: 0.01, value: 0.5,
     format: (v) => v.toFixed(2) + '/block' },
   // The structural windows. Starting guesses, since the only real capture is 2.3 s.
   // The firmware decides what each one means and the page only sends the number.
-  { index: 11, name: 'section window', min: 1000, max: 10000, step: 250, value: 4000,
+  { index: 6, name: 'section window', min: 1000, max: 10000, step: 250, value: 4000,
     format: asSeconds },
-  { index: 12, name: 'tease window', min: 1000, max: 10000, step: 250, value: 4000,
+  { index: 7, name: 'tease window', min: 1000, max: 10000, step: 250, value: 4000,
     format: asSeconds },
-  { index: 13, name: 'drop safety bound', min: 10000, max: 120000, step: 5000, value: 60000,
+  { index: 8, name: 'drop safety bound', min: 10000, max: 120000, step: 5000, value: 60000,
     format: asSeconds },
-  { index: 14, name: 'drop hold fraction', min: 0.2, max: 1, step: 0.05, value: 0.6,
+  { index: 9, name: 'drop hold fraction', min: 0.2, max: 1, step: 0.05, value: 0.6,
+    format: (v) => v.toFixed(2) },
+  // The selector. What the base scene is drawn from and how the drop base holds.
+  { index: 10, name: 'bucket margin', min: 0, max: 0.5, step: 0.01, value: 0.10,
+    format: (v) => v.toFixed(2) },
+  { index: 11, name: 'bucket minimum', min: 1, max: 6, step: 1, value: 2,
+    format: (v) => v.toFixed(0) },
+  { index: 12, name: 'bucket maximum', min: 1, max: 12, step: 1, value: 5,
+    format: (v) => v.toFixed(0) },
+  { index: 13, name: 'episode weight', min: 0, max: 0.6, step: 0.01, value: 0.15,
+    format: (v) => v.toFixed(2) },
+  { index: 14, name: 'drop hold minimum', min: 500, max: 15000, step: 100, value: 4500,
+    format: asSeconds },
+  { index: 15, name: 'drop hold cap', min: 2000, max: 40000, step: 500, value: 12000,
+    format: asSeconds },
+  { index: 16, name: 'drop base spacing', min: 1000, max: 60000, step: 500, value: 5000,
+    format: asSeconds },
+  // How much of a scene's mood term comes from the tone moods (warm, heavy, bright,
+  // full, sparse). They are always partly true, so they shade the score.
+  { index: 17, name: 'tone weight', min: 0, max: 1, step: 0.05, value: 0.30,
+    format: (v) => v.toFixed(2) },
+  // How much a near miss counts in a mood: 0 needs every condition, 1 is their average.
+  // Without it a mood with five conditions reads near zero beside one with a single one.
+  { index: 18, name: 'mood partial credit', min: 0, max: 1, step: 0.05, value: 0.35,
     format: (v) => v.toFixed(2) },
 ];
 
@@ -1318,6 +1409,224 @@ function resetTuning() {
   for (const dial of TUNING) dial.value = dial.default;
   saveTuning();
   applyTuning();
+}
+
+// Mood dials. Built from the firmware's own parameter table, so a breakpoint
+// added in src/audio/Moods.h appears here with no page edit. Values are not
+// persisted: Copy mood table writes them as C++ to paste into the header, and the
+// header is the record.
+function buildMoodTuning() {
+  if (!wasm || !wasm._gg_mood_param_count) return;
+  const box = document.createElement('div');
+  box.className = 'state-group';
+  const head = document.createElement('h3');
+  head.textContent = 'Mood tuning';
+  box.append(head);
+
+  // The room calibration comes first because every mood that reads tilt,
+  // brightness, texture, evenness or body is read against it. Those readings are
+  // coloured by the room and the microphone, so the firmware reads them as 0.5 =
+  // what this device usually hears. Measure this music plays a few seconds of a
+  // typical track and takes the mean and spread of each. Kept in localStorage per
+  // device, and `Copy mood table` writes it out for the header.
+  if (wasm._gg_room_param_count) buildRoomCalibration(box);
+
+  const rows = [];
+  for (let i = 0, n = wasm._gg_mood_param_count(); i < n; ++i) {
+    const name = wasm.UTF8ToString(wasm._gg_mood_param_name(i));
+    const isTime = name.endsWith('time constant s');
+    const isTempo = name.includes(' tempo ');
+    const digits = isTempo ? 0 : 3;
+    const row = document.createElement('label');
+    row.className = 'tune-row';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'tune-name';
+    nameEl.textContent = name;
+    const input = document.createElement('input');
+    input.type = 'range';
+    const cur = wasm._gg_mood_param(i);
+    input.min = isTime ? 0.1 : (isTempo ? 40 : 0);
+    input.max = isTime ? 10 : (isTempo ? 220 : 1);
+    input.step = isTime ? 0.1 : (isTempo ? 1 : 0.005);
+    input.value = cur;
+    const readout = document.createElement('span');
+    readout.className = 'tune-value';
+    readout.textContent = Number(cur).toFixed(digits);
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      wasm._gg_set_mood_param(i, v);
+      readout.textContent = v.toFixed(digits);
+    });
+    rows.push({ input, readout, digits });
+    row.append(nameEl, input, readout);
+    box.append(row);
+  }
+
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.textContent = 'Copy mood table';
+  copy.title = 'Writes the current values as the rows of kMoodTable in src/audio/Moods.h.';
+  copy.addEventListener('click', async () => {
+    const text = wasm.UTF8ToString(wasm._gg_mood_table_text());
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.textContent = 'Copied';
+    } catch (err) {
+      console.log('[gg] mood table not copied:', err);
+      copy.textContent = 'Copy failed';
+    }
+    setTimeout(() => { copy.textContent = 'Copy mood table'; }, 1500);
+  });
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.textContent = 'Reset moods';
+  reset.addEventListener('click', () => {
+    wasm._gg_mood_params_reset();
+    rows.forEach((r, i) => {
+      const v = wasm._gg_mood_param(i);
+      r.input.value = v;
+      r.readout.textContent = Number(v).toFixed(r.digits);
+    });
+  });
+  box.append(copy, reset);
+  (document.getElementById('tuning-host') || document.getElementById('live-state')).append(box);
+}
+
+const ROOM_STORAGE_KEY = 'gg-room-v1';
+
+function saveRoom() {
+  try {
+    const values = [];
+    for (let i = 0, n = wasm._gg_room_param_count(); i < n; ++i) values.push(wasm._gg_room_param(i));
+    localStorage.setItem(ROOM_STORAGE_KEY, JSON.stringify(values));
+  } catch (err) {
+    console.log('[gg] room calibration not saved:', err);
+  }
+}
+
+function buildRoomCalibration(host) {
+  const head = document.createElement('h3');
+  head.textContent = 'Room calibration';
+  host.append(head);
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(ROOM_STORAGE_KEY) || 'null');
+    if (Array.isArray(saved) && saved.length === wasm._gg_room_param_count()) {
+      saved.forEach((v, i) => { if (typeof v === 'number' && isFinite(v)) wasm._gg_set_room_param(i, v); });
+    }
+  } catch (err) {
+    console.log('[gg] room calibration not restored:', err);
+  }
+
+  const note = document.createElement('p');
+  note.className = 'state-note';
+  note.textContent =
+    'Activity, punch, dynamics, texture, brightness, tilt, evenness and body depend on ' +
+    'the room, the microphone and the music, so the moods read them against what this ' +
+    'device usually hears (0.5 is that). The firmware measures it itself from the first ' +
+    '20 s of music after each change of input. To set it yourself, play typical music, ' +
+    'press Measure, press again to finish. Ten seconds or more. Yours is kept.';
+  host.append(note);
+
+  const status = document.createElement('p');
+  status.className = 'state-note room-status';
+  host.append(status);
+  const ROOM_STATUS = [
+    'Using the defaults, waiting for music to measure.',
+    null,
+    'Measured by the firmware from the first 20 s of this music. Fixed since.',
+    'Set by you. The firmware will not overwrite it.',
+  ];
+  const paintStatus = () => {
+    const mode = wasm._gg_room_status();
+    status.textContent = mode === 1
+      ? 'Measuring the music, ' + Math.round(wasm._gg_room_auto_seconds()) + ' of 20 s.'
+      : ROOM_STATUS[mode];
+  };
+  paintStatus();
+  setInterval(() => {
+    paintStatus();
+    // The firmware moves the calibration itself when it measures, so the sliders follow it.
+    if (wasm._gg_room_status() !== 3) sliders.forEach((r, i) => {
+      if (document.activeElement !== r.input) {
+        const v = wasm._gg_room_param(i);
+        r.input.value = v;
+        r.readout.textContent = v.toFixed(3);
+      }
+    });
+  }, 1000);
+
+  const sliders = [];
+  const refresh = () => {
+    sliders.forEach((r, i) => {
+      const v = wasm._gg_room_param(i);
+      r.input.value = v;
+      r.readout.textContent = v.toFixed(3);
+    });
+  };
+  for (let i = 0, n = wasm._gg_room_param_count(); i < n; ++i) {
+    const name = wasm.UTF8ToString(wasm._gg_room_param_name(i));
+    const isSpread = name.endsWith('spread');
+    const row = document.createElement('label');
+    row.className = 'tune-row';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'tune-name';
+    nameEl.textContent = name;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = isSpread ? 0.002 : 0;
+    input.max = isSpread ? 0.3 : 1;
+    input.step = 0.001;
+    input.value = wasm._gg_room_param(i);
+    const readout = document.createElement('span');
+    readout.className = 'tune-value';
+    readout.textContent = Number(input.value).toFixed(3);
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      wasm._gg_set_room_param(i, v);
+      readout.textContent = v.toFixed(3);
+      saveRoom();
+    });
+    sliders.push({ input, readout });
+    row.append(nameEl, input, readout);
+    host.append(row);
+  }
+
+  const measure = document.createElement('button');
+  measure.type = 'button';
+  measure.textContent = 'Measure this music';
+  let timer = null;
+  let startedAt = 0;
+  measure.addEventListener('click', () => {
+    if (timer === null) {
+      wasm._gg_room_measure(1);
+      startedAt = performance.now();
+      measure.textContent = 'Measuring 0 s, press to finish';
+      timer = setInterval(() => {
+        measure.textContent = 'Measuring ' + Math.round((performance.now() - startedAt) / 1000) + ' s, press to finish';
+      }, 500);
+    } else {
+      clearInterval(timer);
+      timer = null;
+      const frames = wasm._gg_room_measure(0);
+      if (frames < 30) {
+        measure.textContent = 'Too short, needs music playing. Measure this music';
+      } else {
+        refresh();
+        saveRoom();
+        measure.textContent = 'Measured ' + frames + ' frames. Measure again';
+      }
+    }
+  });
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.textContent = 'Reset room';
+  reset.addEventListener('click', () => {
+    wasm._gg_room_reset();
+    try { localStorage.removeItem(ROOM_STORAGE_KEY); } catch (err) { /* nothing to clear */ }
+    refresh();
+  });
+  host.append(measure, reset);
 }
 
 function buildState() {
@@ -1427,20 +1736,19 @@ function buildState() {
   tuningNote.textContent =
     'These are live: the firmware reads them on the next frame, so a scene in ' +
     'front of you responds to a change to its own clock rather than waiting for ' +
-    'the next one. Mood hold is the minimum time a mood stays before the ' +
-    'classifier may leave it, and mood confirm is how long a competing mood has ' +
-    'to last to replace it, which is what stops a signal sitting on a threshold ' +
-    'from alternating. Smoothing is how much of each frame the classifier takes ' +
-    'into its running average, so a larger number is twitchier. The two dynamics ' +
-    'window dials set how fast the classifier tracks the range it measures ' +
-    'dynamics against, slow for a room that should not shift, fast for a set that ' +
-    'changes a lot. Signal decay controls how quickly the raw dynamics span closes ' +
+    'the next one. Bucket margin, minimum and maximum set which scenes may be ' +
+    'drawn: the ones within the margin of the best score, at least the minimum and ' +
+    'at most the maximum. Episode weight is how much an open buildup or descent ' +
+    'adds to the scenes that have an entry for it. The drop hold minimum, cap and ' +
+    'spacing set how long a confirmed drop keeps its animation and how soon a ' +
+    'second one may take it. Signal decay controls how quickly the raw dynamics span closes ' +
     'when the loudness stays level; lower values let it float longer. Input gain ' +
     'smoothing controls how quickly the loudness estimate follows the microphone; ' +
     'lower values respond faster. The two signal controls set how quickly the raw ' +
     'dynamics span grows and closes.';
   tuningBox.append(tuningNote);
   (document.getElementById('tuning-host') || host).append(tuningBox);
+  buildMoodTuning();
 
   clockCell = cells.get(clockRow.name);
   stateBuilt = true;
@@ -1485,25 +1793,8 @@ function paintState(f) {
     }
   }
 
-  // The dynamics cut points move with the range the classifier has measured, so
-  // they are placed from the firmware's own values rather than from a constant.
-  // When the range is too narrow to split, the firmware drops the dynamics clause
-  // entirely, and a pair of lines through noise would claim a comparison that is
-  // not happening, so they are hidden instead.
-  const dynCell = cells.get('dynamics');
-  if (dynCell && dynCell.moving) {
-    const [lo, hi] = dynCell.moving;
-    const shown = f.dynActive > 0;
-    lo.hidden = !shown;
-    hi.hidden = !shown;
-    if (shown) {
-      lo.style.left = Math.min(100, f.dynLow * 100).toFixed(3) + '%';
-      hi.style.left = Math.min(100, f.dynHigh * 100).toFixed(3) + '%';
-    }
-  }
-
   // The clock rescales per scene: its ideal duration is recomputed by
-  // calculateIdealDuration from the mood at the moment the scene began, so a
+  // calculateIdealDuration from the reading at the moment the scene began, so a
   // fixed maximum would either clip a long scene or compress a short one.
   if (clockCell) {
     const span = Math.max(16000, f.idealMs * 1.3, f.elapsed * 1.05);

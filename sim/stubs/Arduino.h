@@ -152,8 +152,9 @@ struct SimSerial {
 extern SimSerial Serial;
 
 // -----------------------------------------------------------------------------
-//  ESP. getFreeHeap() is the loop's health gate and Debug.h's low-memory
-//  report, getMinFreeHeap() is Debug.h's heap dump.
+//  ESP. getFreeHeap() feeds Debug.h's low-memory report. The loop's gate is
+//  MemoryGuard, which the harness drives with its own readings.
+//  getMinFreeHeap() is Debug.h's heap dump.
 // -----------------------------------------------------------------------------
 struct SimEsp {
     uint32_t getFreeHeap() const;

@@ -11,44 +11,6 @@
 #include "../core/Debug.h"
 #include "SettingIconRenderer.h"
 
-class SettingIconWidget : public Widget {
-    String icon;
-    String value;
-    float pulse;
-    uint16_t primary;
-    uint16_t secondary;
-public:
-    SettingIconWidget(const String& icon, const String& value, float pulse, uint16_t primary, uint16_t secondary)
-        : icon(icon), value(value), pulse(pulse), primary(primary), secondary(secondary) {}
-
-    void draw(TFT_eSPI& tft, int x, int y, int w, int h) override {
-        int centerX = tft.width() / 2;
-        int iconY = tft.height() / 2 - 20;
-        int valueY = tft.height() / 2 + 20;
-
-        // Draw icon using SettingIconRenderer
-        SettingIconRenderer::draw(icon, tft, centerX, iconY, 18 * pulse, primary);
-
-        // Draw value
-        tft.setTextSize(2 * pulse);
-        tft.setTextColor(primary, TFT_BLACK);
-        int valWidth = tft.textWidth(value);
-        tft.setCursor(centerX - valWidth / 2, valueY);
-        tft.print(value);
-
-        // Draw hint text
-        tft.setTextSize(1);
-        tft.setTextColor(secondary, TFT_BLACK);
-        String hint = "press knob for more";
-        int hintWidth = tft.textWidth(hint);
-        tft.setCursor(centerX - hintWidth / 2, tft.height() - 16);
-        tft.print(hint);
-    }
-
-    int getMinWidth() const override { return 120; }
-    int getMinHeight() const override { return 80; }
-};
-
 class DisplayManager {
 private:
     TFT_eSPI& _tft;
@@ -63,8 +25,6 @@ private:
     std::unique_ptr<AcronymValueWidget> bpmWidget;
     std::unique_ptr<AcronymValueWidget> powerValWidget;
     std::unique_ptr<WaveformWidget> waveformWidget;
-    // Add pointer for SettingIconWidget if used persistently
-    std::unique_ptr<SettingIconWidget> settingIconWidget;
 
     // Setting screen state
     bool showSettingScreen = false;
@@ -101,6 +61,8 @@ public:
     void showSetting(const String& name, int value);
     void drawSettingScreen();
     void showError(const String& message);
+    // One line when heap pressure is not OK. A null label clears it.
+    void showMemoryPressure(const char* label);
     void setCurrentAnimation(const String& name);
     void clearError();
     bool hasError() const { return errorState; }

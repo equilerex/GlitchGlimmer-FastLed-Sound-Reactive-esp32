@@ -19,7 +19,7 @@ Layers are accents on a catalog base, not scenes of their own. They sat next to 
 
 ## Gotchas
 
-`AlienSquirtTrailLayer` is unused, is not a `VisualLayer`, and has no `LayerType`. `VisualLayers.h` is one header of many classes. That is safe because the methods are inline in the class. Pacifica is the opposite shape and does not belong here.
+`VisualLayers.h` is one header of many classes. That is safe because the methods are inline in the class. Pacifica is the opposite shape and does not belong here.
 
 ## Don't
 

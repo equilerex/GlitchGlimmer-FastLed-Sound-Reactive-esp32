@@ -4,6 +4,7 @@
 #include <arduinoFFT.h>
 #include "AudioFeatures.h"
 #include "StructuralEpisodes.h"
+#include "Moods.h"
 #include "../config/Config.h"
 
 // AudioProcessor: captures audio via I2S and performs FFT-based feature extraction
@@ -102,6 +103,13 @@ private:
     MusicCoordTracker weightTracker;
     MusicCoordTracker pulseTracker;
     MusicCoordTracker textureTracker;
+    MusicCoordTracker tiltTracker;
+    MusicCoordTracker evennessTracker;
+    MusicCoordTracker punchTracker;
+    MusicCoordTracker bodyTracker;
+    MoodModel moodModel;
+    float previousLowShare = 0.0f;
+    float punchReference = 0.0f;
     float previousSpectrum[NUM_SAMPLES / 2] = {};
     float fluxReference = 0.0f;
     bool fluxSeeded = false;
@@ -133,8 +141,21 @@ private:
     // two of them that could disagree. See BUILDUP_TAU_SEC for the time constant,
     // which is set by the ramp speed it has to be able to see.
     float         slowLevel       = 0.0f;
+    float         fastLevel       = 0.0f;
+    float         slowBassLevel   = 0.0f;
+    float         fastBassLevel   = 0.0f;
+    float         slowTrebleLevel = 0.0f;
+    float         fastTrebleLevel = 0.0f;
+    float         slowTilt        = 0.0f;
     bool          slowSeeded      = false;
     unsigned long structuralLastMs = 0;
+    unsigned long buildupPeakMs    = 0;
+    unsigned long chopSinceMs      = 0;
+
+    // 8-band log sub-band tracking
+    float         previousSubBands[8] = {};
+    uint8_t       subBandHistory[64][8] = {};
+    uint8_t       subBandHistIdx = 0;
 
     // BUILDUP. The displacement has to hold for BUILDUP_HOLD_MS before it counts,
     // and the climb is measured from the level at the moment the displacement
@@ -159,10 +180,11 @@ private:
 
     // DROP's preceding quiet. A drop follows a breakdown, so the passage has to
     // have been quiet for DROP_ARM_MS before a slam counts, and at most one drop
-    // is reported per DROP_COOLDOWN_MS so the mood cannot park there.
-    unsigned long quietSince = 0;
-    bool          quietHeld  = false;
-    unsigned long lastDropMs = 0;
+    // is reported per DROP_COOLDOWN_MS so a drop cannot re-trigger inside its payoff.
+    unsigned long quietSince      = 0;
+    unsigned long quietLastSeenMs = 0;
+    bool          quietHeld       = false;
+    unsigned long lastDropMs      = 0;
 
     // TEASE's fake-out test. A level whose mean stays mid while its variance is
     // high is a pulse that does not sustain, which is what teasing is. The ring is
@@ -204,9 +226,14 @@ private:
 public:
     const StructuralEpisodes& structuralEpisodes() const { return episodes; }
     StructuralEpisodes&       structuralEpisodesForTuning() { return episodes; }
+    const MoodModel&          moods() const { return moodModel; }
+    MoodModel&                moodsForTuning() { return moodModel; }
 
     AudioProcessor();            // Construct and initialize FFT resources
     ~AudioProcessor();           // Clean up allocated resources
+
+    AudioProcessor(const AudioProcessor&) = delete;
+    AudioProcessor& operator=(const AudioProcessor&) = delete;
 
     void begin();                // Initialize the I2S hardware for audio capture
     void captureAudio();         // Read raw audio samples into internal buffers

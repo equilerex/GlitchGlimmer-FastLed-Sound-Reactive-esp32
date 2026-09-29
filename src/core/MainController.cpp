@@ -1,7 +1,6 @@
 #include "MainController.h"
 #include "../audio/AudioProcessor.h"
 #include "../audio/AudioHistoryTracker.h"
-#include "../scenes/SceneDirector.h"
 #include "../core/LEDStripController.h"
 #include "../input/EncoderInput.h"
 #include "../input/ButtonInput.h"
@@ -34,13 +33,10 @@ CRGB ledStrip_4[LED_4_NUM]; // Definition for Strip 4
 extern SettingsManager settingsManager;
 
 MainController::MainController(CommunicationService& comm)
-    : commService(comm)
+    : commService(comm), shownPressure(MemoryPressure::OK)
 {
     // Initialize all pointers to nullptr first
     audioHistory    = nullptr;
-    moodHistory     = nullptr;
-    sceneRegistry   = nullptr;
-    sceneDirector   = nullptr;
     audioProcessor  = nullptr;
     ledController   = nullptr;
     encoderInput    = nullptr;
@@ -59,9 +55,6 @@ MainController::~MainController() {
     delete encoderInput;
     delete ledController;
     delete audioProcessor;
-    delete sceneDirector;
-    delete sceneRegistry;
-    delete moodHistory;
     delete audioHistory;
 }
 
@@ -76,13 +69,6 @@ void MainController::begin() {
     audioHistory = new AudioHistoryTracker();
     if (!audioHistory) { 
         Serial.println("Failed to create AudioHistoryTracker"); 
-        allComponentsInitialized = false;
-    }
-
-    Serial.println("Creating MoodHistory..."); Serial.flush();
-    moodHistory = new MoodHistory();
-    if (!moodHistory) { 
-        Serial.println("Failed to create MoodHistory"); 
         allComponentsInitialized = false;
     }
 
@@ -107,31 +93,10 @@ void MainController::begin() {
         allComponentsInitialized = false;
     }
 
-    // Create scene management components
-    Serial.println("Creating SceneRegistry..."); Serial.flush();
-    sceneRegistry = new SceneRegistry();
-    if (!sceneRegistry) { 
-        Serial.println("Failed to create SceneRegistry"); 
-        allComponentsInitialized = false;
-    }
-
-    // Only create SceneDirector if dependencies exist
-    Serial.println("Creating SceneDirector..."); Serial.flush();
-    if (moodHistory && sceneRegistry) {
-        sceneDirector = new SceneDirector(*moodHistory, *sceneRegistry);
-        if (!sceneDirector) { 
-            Serial.println("Failed to create SceneDirector"); 
-            allComponentsInitialized = false;
-        }
-    } else {
-        Serial.println("Cannot create SceneDirector due to missing dependencies");
-        allComponentsInitialized = false;
-    }
-
     // Create LED controller with safer construction
     Serial.println("Creating LEDStripController..."); Serial.flush();
-    if (moodHistory && audioHistory) {
-        ledController = new LEDStripController(audioFeatures, *moodHistory, *audioHistory);
+    if (audioHistory) {
+        ledController = new LEDStripController(audioFeatures, *audioHistory);
         if (!ledController) { 
             Serial.println("Failed to create LEDStripController"); 
             allComponentsInitialized = false;
@@ -176,12 +141,6 @@ void MainController::begin() {
         Serial.println("Initializing AudioProcessor..."); Serial.flush();
         audioProcessor->begin();
         Serial.println("AudioProcessor initialized"); Serial.flush();
-    }
-    
-    if (sceneDirector) {
-        Serial.println("Initializing SceneDirector..."); Serial.flush();
-        sceneDirector->begin();
-        Serial.println("SceneDirector initialized"); Serial.flush();
     }
     
     // Initialize display if available
@@ -291,7 +250,7 @@ void MainController::update() {
     // The ring holds 8 x 64 samples, about 11.6ms of audio, so reading it only
     // once per 33ms frame throws away most of the signal and leaves the FFT
     // analysing a stale slice.
-    if (audioProcessor && ESP.getFreeHeap() > 20 * 1024) {
+    if (audioProcessor) {
         audioProcessor->captureAudio();
     }
 
@@ -304,34 +263,10 @@ void MainController::update() {
     // Use local error tracking to isolate component failures
     bool hasErrors = false;
 
-    // Check heap health first
-    if (ESP.getFreeHeap() < 10 * 1024) {
-        // Memory is getting low, skip non-essential updates
-        Serial.println("Low memory detected, skipping non-essential updates");
-        
-        // Still update LEDs but nothing else
-        if (ledController) {
-            ledController->update();
-        }
-        
-        // Give time for memory to recover
-        yield();
-        return;
-    }
-
-    // Update Input Components
-    if (encoderInput) {
-        encoderInput->update();
-    }
-    
-    if (buttonInput) {
-        buttonInput->update();
-    }
-
-    // Process Audio - Critical component.
-    // Capture already happened above; this is the frame-rate analysis pass.
+    // Process Audio. Capture already happened above; this is the frame-rate
+    // analysis pass. It runs in every memory state: the LEDs are meaningless
+    // without it, and the analysis itself allocates nothing.
     if (audioProcessor) {
-        if (ESP.getFreeHeap() > 20 * 1024) { // Only process audio if we have enough memory
             audioFeatures = audioProcessor->analyzeAudio();
 
             #if !GG_HAS_MICROPHONE
@@ -349,7 +284,6 @@ void MainController::update() {
             if (audioHistory) {
                 audioHistory->addSnapshot(audioFeatures);
             }
-        }
     } else {
         // Only log error periodically to avoid overwhelming Serial
         static unsigned long lastAudioError = 0;
@@ -373,6 +307,8 @@ void MainController::update() {
         #endif
         
         if (ledBuffersValid) {
+            ledController->setMemoryCritical(
+                memoryGuard().pressure() == MemoryPressure::CRITICAL);
             ledController->update();
         } else {
             static unsigned long lastLEDBufferError = 0;
@@ -390,26 +326,39 @@ void MainController::update() {
         }
     }
 
-    // Update Display - Non-critical
-    if (displayManager) {
+    // Display and inputs stop below OK. The status line for the new state is
+    // drawn once, below, and is not this per-frame refresh.
+    if (memoryGuard().pressure() == MemoryPressure::OK) {
+        if (encoderInput) {
+            encoderInput->update();
+        }
+
+        if (buttonInput) {
+            buttonInput->update();
+        }
+
+        if (displayManager) {
         // Re-query the name only when the scene actually changes.
         // getCurrentSceneName() returns a String by value and this ran every
         // frame, so it built and discarded a heap-backed string per frame for a
         // name that changes every twenty seconds.
-        static String lastAnimName = "Unknown";
-        static int    lastSceneChangeCount = -1;
+            static String lastAnimName = "Unknown";
+            static int    lastSceneChangeCount = -1;
 
-        if (ledController) {
-            const int changes = ledController->getSceneChangeCount();
-            if (changes != lastSceneChangeCount) {
-                lastAnimName = ledController->getCurrentSceneName();
-                lastSceneChangeCount = changes;
+            if (ledController) {
+                const int changes = ledController->getSceneChangeCount();
+                if (changes != lastSceneChangeCount) {
+                    lastAnimName = ledController->getCurrentSceneName();
+                    lastSceneChangeCount = changes;
+                }
             }
-        }
 
-        displayManager->update(audioFeatures, lastAnimName);
+            displayManager->update(audioFeatures, lastAnimName);
+        }
     }
-    
+
+    noteMemoryOnScreen();
+
     // Log error summary only once per interval to avoid flooding Serial
     if (hasErrors) {
         static unsigned long lastSummaryError = 0;
@@ -421,4 +370,14 @@ void MainController::update() {
     
     // Always yield to prevent watchdog timeouts
     yield();
+}
+
+void MainController::noteMemoryOnScreen() {
+    const MemoryPressure pressure = memoryGuard().pressure();
+    if (pressure == shownPressure || displayManager == nullptr) return;
+    const char* label = pressure == MemoryPressure::OK
+        ? static_cast<const char*>(nullptr)
+        : memoryPressureName(pressure);
+    displayManager->showMemoryPressure(label);
+    shownPressure = pressure;
 }

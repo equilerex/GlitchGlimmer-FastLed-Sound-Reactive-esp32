@@ -221,6 +221,17 @@ void DisplayManager::drawSettingScreen() {
     _tft.print("press knob for more");
 }
 
+void DisplayManager::showMemoryPressure(const char* label) {
+    const int16_t y = _tft.height() - 12;
+    _tft.fillRect(0, y, 120, 12, TFT_BLACK);
+    if (label == nullptr) return;
+    _tft.setTextColor(TFT_RED, TFT_BLACK);
+    _tft.setTextSize(1);
+    _tft.setCursor(5, y + 2);
+    _tft.print("MEM ");
+    _tft.print(label);
+}
+
 void DisplayManager::showError(const String& message) {
     errorState = true;
     errorMessage = message;

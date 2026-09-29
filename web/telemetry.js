@@ -28,7 +28,6 @@ export class Trace {
     this.sceneSince = 0;
     this.moodSince = 0;
     this.fps = 0;
-    this.moodChanges = 0;
     this.range = new Map();  // key -> { lo, hi }, over every frame this session
   }
 
@@ -95,8 +94,8 @@ export class Trace {
   // The keys to skip are the ones that are not measurements: the timestamp, the
   // names, and the three scene-clock rows, which climb by design and are already
   // shown against their own markers.
-  static SKIP = new Set(['t', 'source', 'scene', 'mood', 'predicted',
-                         'elapsed', 'minMs', 'idealMs', 'moodChanges']);
+  static SKIP = new Set(['t', 'source', 'scene', 'mood',
+                         'elapsed', 'minMs', 'idealMs']);
 
   // Drop the recorded ranges. Called when the page changes which input it is
   // analysing. The ranges are the whole point of the snapshot, and a range is a
@@ -109,13 +108,6 @@ export class Trace {
   }
 
   track(sample) {
-    // A counter, not a measurement, so a min and max over it says nothing. Held
-    // as the latest value instead. It comes from the firmware and not from the
-    // event log below, because the log only records with ?debug=1 on and the
-    // count read 0 on a page opened without it, which looks like a frozen
-    // classifier rather than like an absent measurement.
-    if (typeof sample.moodChanges === 'number') this.moodChanges = sample.moodChanges;
-
     for (const key in sample) {
       if (Trace.SKIP.has(key)) continue;
       const v = sample[key];
@@ -141,7 +133,7 @@ export class Trace {
       scene: this.lastScene,
       mood: this.lastMood,
       sceneChanges: this.events.filter(e => e.kind === 'scene').length,
-      moodChanges: this.moodChanges ?? 0,
+      moodChanges: this.events.filter(e => e.kind === 'mood').length,
     };
     for (const [key, r] of this.range) out[key] = [round(r.lo), round(r.hi)];
     return out;

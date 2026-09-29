@@ -7,6 +7,8 @@ import { SURFACES } from './viz/surface.js';
 import { SHAPES } from './viz/path.js';
 import { BenchStrip } from './viz/BenchStrip.js';
 import { loadHw, resetHw, bindView } from './viz/hwStore.js';
+import { countMismatch } from './viz/counts.js';
+import { attentionRows, resetAttention } from './attention.js';
 
 const app = createApp({
   data() {
@@ -18,21 +20,69 @@ const app = createApp({
       boundView: null,
       bench: null,
       benchCounts: null,
+      // The counts each mode's view last reported, compared by countNotice.
+      countsByMode: { live: null, recording: null },
       hwLoaded: false
     };
   },
   computed: {
-    // The ladder moods (floaty, calm, dancy, energetic, intense) only describe
-    // loudness, which the coordinates show directly. Only the structural moods say
-    // something the coordinates do not.
+    countNotice() {
+      return countMismatch(this.countsByMode.live, this.countsByMode.recording);
+    },
+    // The one thing that takes the base is a confirmed drop, and only while its
+    // hold lasts. Every other episode adds a layer and leaves the base to the moods.
     structureLabel() {
-      const mood = this.s.mode === 'live' ? this.s.live.mood : this.s.recording.mood;
-      const structural = ['Silent', 'Tease', 'Buildup', 'DROP', 'Weeeeird', 'Descent'];
-      return structural.indexOf(mood) >= 0 ? mood : 'Steady';
+      if (this.s.mode !== 'live') return 'Steady';
+      const sel = this.s.live.selection;
+      return sel && sel.drop.holding ? 'drop' : 'Steady';
+    },
+    dropHoldText() {
+      const sel = this.s.live.selection;
+      if (!sel || !sel.drop.holding) return '';
+      const sec = (ms) => (ms / 1000).toFixed(1) + 's';
+      const minPart = sel.drop.minLeftMs > 0 ? 'minimum ' + sec(sel.drop.minLeftMs) + ' left' : 'minimum passed';
+      return minPart + (sel.drop.shiftSeen ? ', shift seen' : '') + ', cap in ' + sec(sel.drop.capLeftMs);
+    },
+    // What the running scene was written for, beside what the music has of it now.
+    // Moods come from the firmware's strengths, episodes from its episode state.
+    fitMatch() {
+      const meta = this.currentSceneMeta;
+      if (this.s.mode !== 'live' || !meta) return [];
+      const moods = this.s.live.moods || [];
+      return meta.fits.map((f) => {
+        const m = moods.find((x) => x.name === f.name);
+        if (m) return { name: f.name, fit: f.value, kind: 'mood', strength: m.strength };
+        return { name: f.name, fit: f.value, kind: 'episode', state: this.episodeState(f.name) };
+      });
+    },
+    // Where the running scene ranks: its score and place in the bucket, or that it
+    // is outside it.
+    sceneMatchText() {
+      const sel = this.s.live.selection;
+      if (this.s.mode !== 'live' || !sel) return '';
+      const rank = sel.bucket.findIndex((b) => b.running);
+      if (rank < 0) return 'outside the bucket';
+      return 'score ' + sel.bucket[rank].score.toFixed(2) + ', ' + (rank + 1) + ' of ' + sel.bucket.length + ' in the bucket';
     },
     visibleEvents() {
       const events = this.s.live.events || [];
       return this.s.live.hideGateEvents ? events.filter((ev) => ev.type !== 'gate') : events;
+    },
+    weightScenes() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.scenes, att.ms, 6) : [];
+    },
+    weightTones() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.tones, att.ms, 6) : [];
+    },
+    weightMoods() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.moods, att.ms, 6) : [];
+    },
+    weightLayers() {
+      const att = this.s.live.attention;
+      return att ? attentionRows(att.layers, att.ms, 6) : [];
     },
     profileNote() {
       const strip = this.s.hw.strips[this.s.hw.activeStrip];
@@ -46,6 +96,37 @@ const app = createApp({
       const zoom = Number.isFinite(this.s.hw.zoom) ? this.s.hw.zoom : 1;
       return Math.round((zoom - 1) * 100);
     },
+    // The big word is the moods the firmware measures, not anything about the
+    // running scene.
+    // The strongest one or two moods from the firmware's mood strengths, which
+    // read the music's character and not its loudness.
+    topCharacter() {
+      if (this.s.mode !== 'live') return null;
+      return (this.s.live.moods || [])
+        .filter((m) => m.inSelector && !m.tone && m.strength >= 0.15)
+        .sort((a, b) => b.strength - a.strength)[0] || null;
+    },
+    topTone() {
+      if (this.s.mode !== 'live') return null;
+      return (this.s.live.moods || [])
+        .filter((m) => m.inSelector && m.tone && m.strength >= 0.15)
+        .sort((a, b) => b.strength - a.strength)[0] || null;
+    },
+    characterMoods() {
+      return (this.s.live.moods || []).filter((m) => !m.tone);
+    },
+    toneMoods() {
+      return (this.s.live.moods || []).filter((m) => m.tone);
+    },
+    // The big text: what the music does, then the colour of its sound.
+    bannerMood() {
+      if (this.s.mode !== 'live') return '';
+      const parts = [];
+      if (this.topCharacter) parts.push(this.topCharacter.name + ' ' + Math.round(this.topCharacter.strength * 100) + '%');
+      if (this.topTone) parts.push(this.topTone.name + ' ' + Math.round(this.topTone.strength * 100) + '%');
+      if (parts.length) return parts.join(' · ');
+      return this.s.live.moods && this.s.live.moods.length ? 'No mood' : '';
+    },
     currentSceneMeta() {
       if (this.s.mode !== 'live' || !this.s.live.sceneCatalog) return null;
       const idx = this.s.live.selectedSceneIndex;
@@ -55,27 +136,16 @@ const app = createApp({
       const curName = this.s.live.scene;
       return this.s.live.sceneCatalog.find((sc) => sc.name === curName) || null;
     },
+    // The scene picker, grouped by each scene's best fit, in the firmware's own
+    // order: the moods, then buildup, descent and drop.
     groupedSceneCatalog() {
       const catalog = this.s.live.sceneCatalog || [];
-      const structural = [];
-      const energetic = [];
-      const calm = [];
-
+      const groups = new Map();
       for (const sc of catalog) {
-        const m = (sc.mood || '').toUpperCase();
-        if (['DROP', 'BUILDUP', 'TEASE', 'DESCENT', 'WEEEEIRD', 'WEIRD'].includes(m)) {
-          structural.push(sc);
-        } else if (['INTENSE', 'ENERGETIC', 'DANCY'].includes(m)) {
-          energetic.push(sc);
-        } else {
-          calm.push(sc);
-        }
+        if (!groups.has(sc.primaryKey)) groups.set(sc.primaryKey, { key: sc.primaryKey, label: sc.primary, scenes: [] });
+        groups.get(sc.primaryKey).scenes.push(sc);
       }
-      return [
-        { label: '💥 Structural Moments', scenes: structural },
-        { label: '🔥 High Energy & Groove', scenes: energetic },
-        { label: '🌿 Ambient & Chill', scenes: calm },
-      ];
+      return Array.from(groups.values()).sort((a, b) => a.key - b.key);
     }
   },
   methods: {
@@ -151,6 +221,7 @@ const app = createApp({
     },
     clearEvents() {
       this.s.live.events = [];
+      if (this.s.live.attention) resetAttention(this.s.live.attention);
     },
     coordLabel(name) {
       const info = COORD_INFO[name];
@@ -334,10 +405,9 @@ const app = createApp({
         });
       } else if (view.counts.length !== this.benchCounts.length ||
                  view.counts.some((c, i) => c !== this.benchCounts[i])) {
-        // The live engine's counts come from Config.h, the recording manifest's
-        // from web/data/manifest.json — two different sources that only agree by
-        // convention. If they ever diverge, rebuild rather than let the bench go
-        // on rendering the previous mode's pixel counts.
+        // The live engine and the recording manifest report counts from two
+        // builds. If they diverge, countNotice says so on the page, and the
+        // bench is rebuilt rather than left on the previous mode's counts.
         this.bench = new BenchStrip(document.getElementById('bench'), view.counts);
         this.benchCounts = view.counts.slice();
       }
@@ -354,6 +424,8 @@ const app = createApp({
         this.boundView.onGeometryChange = null;
         this.boundView.onPathCommit = null;
       }
+
+      if (this.s.mode in this.countsByMode) this.countsByMode[this.s.mode] = view.counts.slice();
 
       this.boundView = view;
       this.syncView = bindView(view, this.bench, this.s.hw, this.s);

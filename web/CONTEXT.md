@@ -12,7 +12,7 @@ itself is `viz/`, which has its own `CONTEXT.md`. Read that before touching anyt
 - `main.js`: the Vue app. Actions (`selectProfile`, `setDensity`, `applyShape`, `syncHw`), and the
   binding between the current `StripView` and the settings object.
   Everything the template calls or reads has to be defined here: `coordLabel`, `coordTooltip`, `clearEvents`, and the computed `visibleEvents` and `structureLabel`. An undefined name in a template expression throws on render and blanks the panel.
-  `structureLabel` shows the structural mood or `Steady`; the loudness-ladder names no longer mean anything to the selector.
+  `structureLabel` is `drop` while a confirmed drop holds the base and `Steady` otherwise. The board shows the two strongest mood strengths from the firmware, and the page holds no mood name.
 - `state.js`: the reactive state. `state.hw` starts as defaults and is overwritten from
   localStorage by `loadHw`. Defaults live here and in `viz/hwStore.js` `defaultHw`; keep them equal.
 - `live.js`, `app.js`: the live WASM player and the frame-dump player. Each builds its own

@@ -130,10 +130,10 @@ struct AudioFeatures {
 
     // ==== Structural detection ====
     //
-    // Five moods name the shape of a passage rather than how loud it is: SILENT,
-    // TEASE, BUILDUP, DROP and WEIRD. The ladder cannot report any of them,
-    // because a quiet drift and a hush before a drop are the same level and the
-    // difference is entirely in what came before. These fields carry that.
+    // Five episodes name the shape of a passage rather than its character: buildup,
+    // descent, drop, tease and anomaly. The moods cannot report them, because a
+    // quiet drift and a hush before a drop read alike and the difference is
+    // entirely in what came before. These fields carry that.
 
     // How far the gate has opened, 0..1. This is the one structural input that
     // already existed, since the gate has to ramp anyway to stop a signal on the
@@ -163,16 +163,14 @@ struct AudioFeatures {
     // of the one follower, since a displacement is signed and the two fields are
     // just its two halves named.
     //
-    // Barely reachable after a drop, because a drop pins the mood for three
-    // seconds and TEASE claims the twelve after it. What it catches instead is
-    // the long wind-down at the end of a track and the retreat out of a chorus,
-    // which the ladder can only report as a sequence of rungs going down, and
-    // which reads as a run of changes rather than as one movement.
+    // Barely reachable right after a drop, because TEASE claims the twelve seconds
+    // after it. What it catches instead is the long wind-down at the end of a
+    // track and the retreat out of a chorus, which is one movement.
     float descent = 0.0f;
 
     // One block's pulse, not a state. A slam is an edge, so anything that
-    // required it to persist would miss the thing it exists to catch. Moods
-    // display it by pinning for DROP_PIN_MS rather than by holding this true.
+    // required it to persist would miss the thing it exists to catch. The drop
+    // base follows dropConfirmed, which holds for the whole window.
     bool dropDetected = false;
 
     // Spectral flatness: the geometric mean of the magnitudes over their
@@ -221,4 +219,17 @@ struct AudioFeatures {
 
     float centroid = 0.0f;          //  ??
     float frequency = 0.0f;         //  frequency
+
+    // 8 log-spaced sub-band shares (Sub-bass, Bass, Low-mid, Mid, High-mid, Presence, Brilliance, Air)
+    float subBands[8] = {};
+    float spectralTilt = 0.0f;      // Low vs high balance (-1.0 to +1.0)
+    float spectralNovelty = 0.0f;   // Multi-band half-wave rectified onset flux
+
+    // Peak tension climax & contrast tracking
+    bool  buildupClimax = false;    // All bands equalized at peak and fluctuating
+    float spectralContrast = 0.0f;  // Instantaneous spectral shift / fingerprint inversion
+    float deltaIntensity = 0.0f;    // Fast vs slow level shift (+surge / -cut)
+    float deltaWeight = 0.0f;       // Fast vs slow bass shift (+slam / -thinning)
+    float deltaTilt = 0.0f;         // Fast vs slow spectral tilt shift (+bright / -dark)
+    float contrastMagnitude = 0.0f; // Total transition vector magnitude
 };

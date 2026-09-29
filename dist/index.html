@@ -178,11 +178,6 @@
       <div class="cockpit-item highlight scene-box">
         <div class="cockpit-label-row">
           <span class="cockpit-label">Current Scene</span>
-          <span class="scene-meta-pill"
-                v-if="s.mode === 'live' && currentSceneMeta"
-                :title="'Associated Mood: ' + currentSceneMeta.mood + ' | Role: ' + currentSceneMeta.role + ' | Target Intensity: ' + Math.round(currentSceneMeta.intensity * 100) + '%'">
-            {{ currentSceneMeta.mood }} · {{ currentSceneMeta.role }}
-          </span>
           <button v-if="s.mode === 'live'"
                   type="button"
                   class="scene-freeze-btn"
@@ -197,22 +192,16 @@
                   :class="{ frozen: s.live.sceneFrozen }"
                   :value="s.live.sceneFrozen ? s.live.selectedSceneIndex : -1"
                   @change="onSceneSelect($event)"
-                  title="Choose an animation to freeze (grouped by mood), or Auto for dynamic music engine">
+                  title="Choose an animation to freeze (grouped by the mood it fits best), or Auto for the mood-driven picker">
             <option :value="-1">Auto ({{ s.live.scene }})</option>
-            <optgroup v-for="grp in groupedSceneCatalog" :key="grp.label" :label="grp.label">
+            <optgroup v-for="grp in groupedSceneCatalog" :key="grp.key" :label="grp.label">
               <option v-for="sc in grp.scenes" :key="sc.index" :value="sc.index">
-                {{ sc.name }} — {{ sc.mood }} ({{ sc.role }})
+                {{ sc.name }} — {{ sc.fits.length ? Math.round(sc.fits[0].value * 100) + '%' : '' }} ({{ sc.role }})
               </option>
             </optgroup>
           </select>
         </div>
         <b class="cockpit-value" v-else>{{ s.recording.scene }}</b>
-      </div>
-      <div class="cockpit-item mood-item">
-        <span class="cockpit-label" title="The structural moment the analyser reports (tease, buildup, drop, descent, weird, silent) or steady. Scenes are picked from the music coordinates, not from a loudness ladder.">Structure</span>
-        <div class="cockpit-tags">
-          <span class="badge mood">{{ structureLabel }}</span>
-        </div>
       </div>
       <div class="cockpit-item layers-box" v-if="s.mode === 'live'">
         <span class="cockpit-label">Active Layers ({{ s.live.layers.length }})</span>
@@ -225,8 +214,8 @@
           <option v-for="l in s.live.layerCatalog" :key="l.index" :value="l.index">{{ l.name }}</option>
         </select>
         <div class="cockpit-layers" v-if="s.live.layers.length > 0">
-          <span v-for="(l, idx) in s.live.layers" :key="idx" class="badge layer" :title="'Active for ' + (l.elapsedMs / 1000).toFixed(1) + 's'">
-            {{ l.name }} <small>({{ (l.elapsedMs / 1000).toFixed(1) }}s)</small>
+          <span v-for="(l, idx) in s.live.layers" :key="idx" class="badge layer" :title="'Up because: ' + l.why + '. Active for ' + (l.elapsedMs / 1000).toFixed(1) + 's'">
+            {{ l.name }} <small>({{ l.why }}, {{ (l.elapsedMs / 1000).toFixed(1) }}s)</small>
           </span>
         </div>
         <span class="cockpit-empty" v-else>No overlay layers</span>
@@ -266,6 +255,7 @@
         <span class="topbar-spacer"></span>
         <div class="legend"><span id="t-power">&mdash;</span></div>
       </header>
+      <p class="count-notice" v-if="countNotice" role="status">{{ countNotice }}</p>
       <canvas id="bench" class="bench" aria-label="Pixel indices and values"></canvas>
       <div class="footer-readout-slot">
         <div class="inspector" v-if="s.hw.inspect">
@@ -340,12 +330,79 @@
         </div>
       </div>
 
-      <div class="mood-banner" v-if="currentSceneMeta"
-           :title="'Scene: ' + currentSceneMeta.name + ' | Target intensity ' + Math.round(currentSceneMeta.intensity * 100) + '%'">
-        <span class="mood-banner-mood">{{ currentSceneMeta.mood }}</span>
-        <span class="mood-banner-sep">·</span>
-        <span class="mood-banner-role">{{ currentSceneMeta.role }}</span>
-      </div>
+      <section class="now-board" v-if="bannerMood || s.live.scene" aria-label="Mood, scene and structure">
+        <div class="now-identity">
+          <div class="now-mood" :title="'The strongest moods measured from the music by the firmware (Mood strengths card). Loudness does not choose them.'">{{ bannerMood || '—' }}</div>
+          <div class="mood-family">Character <small>what the music does</small></div>
+          <div class="mood-strip" role="list" aria-label="Character moods, from the firmware">
+            <div class="mood-chip" v-for="m in characterMoods" :key="m.name" role="listitem"
+                 :class="{ on: m.strength >= 0.3, faint: m.strength < 0.05, off: !m.inSelector }"
+                 :title="m.name + ' ' + Math.round(m.strength * 100) + '%' + (m.inSelector ? '' : ' (cannot be measured yet)')">
+              <span class="mood-chip-fill" :style="{ width: Math.min(100, m.strength * 100) + '%' }"></span>
+              <span class="mood-chip-name">{{ m.name }}</span>
+              <span class="mood-chip-val">{{ Math.round(m.strength * 100) }}</span>
+            </div>
+          </div>
+          <div class="mood-family">Tone <small>the colour of the sound, always partly true</small></div>
+          <div class="mood-strip" role="list" aria-label="Tone moods, from the firmware">
+            <div class="mood-chip" v-for="m in toneMoods" :key="m.name" role="listitem"
+                 :class="{ on: m.strength >= 0.3, faint: m.strength < 0.05, off: !m.inSelector }"
+                 :title="m.name + ' ' + Math.round(m.strength * 100) + '%'">
+              <span class="mood-chip-fill" :style="{ width: Math.min(100, m.strength * 100) + '%' }"></span>
+              <span class="mood-chip-name">{{ m.name }}</span>
+              <span class="mood-chip-val">{{ Math.round(m.strength * 100) }}</span>
+            </div>
+          </div>
+          <div class="now-scene">
+            <span class="now-kicker">Scene</span>
+            <b>{{ s.live.scene || '—' }}</b>
+            <span class="now-tied" v-if="currentSceneMeta">{{ currentSceneMeta.role }}</span>
+            <span class="now-tied" v-if="s.live.selection && s.live.selection.reason">
+              up because: {{ s.live.selection.reason }}<template v-if="dropHoldText"> · {{ dropHoldText }}</template>
+            </span>
+            <span class="now-tied" v-if="sceneMatchText">{{ sceneMatchText }}</span>
+          </div>
+          <div class="fit-match" v-if="fitMatch.length"
+               title="What this scene was written for, and what the music has of it right now. A fit is how well the scene suits a mood, 0 to 100%. Music is that mood's strength now. A scene that fits moods the music does not have is out of place.">
+            <span class="now-kicker">Scene fits → music has</span>
+            <span class="fit-item" v-for="f in fitMatch" :key="f.name"
+                  :class="f.kind === 'mood' ? { hit: f.strength >= 0.3, miss: f.strength < 0.1 } : { hit: f.state === 'active' }">
+              {{ f.name }} <b>{{ Math.round(f.fit * 100) }}%</b> →
+              <template v-if="f.kind === 'mood'">{{ Math.round(f.strength * 100) }}%</template>
+              <template v-else>{{ f.state }}</template>
+            </span>
+          </div>
+          <div class="now-level" title="Gain reference. It keeps the other readings in scale. It does not choose the mood or the scene.">
+            <span class="now-kicker">Level</span>
+            <span class="meter"><span class="meter-fill" :style="{ width: Math.min(100, s.live.level * 100) + '%' }"></span></span>
+            <b>{{ (s.live.level * 100).toFixed(0) }}%</b>
+          </div>
+        </div>
+        <div class="now-structure">
+          <div class="struct-bar" :class="'is-' + sectionBarState()" role="img"
+               :aria-label="structureAria()"
+               title="Level against its own 10 s mean. Descent to the left, buildup to the right. Ticks are the holds a movement has to clear.">
+            <span class="struct-fill" :style="displacementFill()"></span>
+            <span class="struct-arming" :style="armingFill()"></span>
+            <span class="struct-tick" style="left: 31.25%"></span>
+            <span class="struct-tick" style="left: 68.75%"></span>
+            <span class="struct-zero"></span>
+          </div>
+          <div class="struct-axis">
+            <span>descent</span>
+            <span>{{ (s.live.displacement || 0).toFixed(2) }}</span>
+            <span>buildup</span>
+          </div>
+          <div class="now-states">
+            <div class="now-state" v-for="name in ['buildup', 'descent', 'drop', 'tease', 'anomaly']" :key="name"
+                 :class="'is-' + episodeState(name)" :title="structTip(name, 'state') + ' ' + episodeSummary(name)">
+              <span class="now-state-name">{{ name === 'drop' ? 'drop' : name }}</span>
+              <span class="now-state-val">{{ episodeState(name) }}</span>
+            </div>
+          </div>
+          <p class="now-takeover" v-if="structureLabel !== 'Steady'">Base taken by the {{ structureLabel }}</p>
+        </div>
+      </section>
 
       <!-- Demo & Custom Audio Track Player Controls -->
       <div class="audio-player-bar" v-if="s.live.source === 'demo'">
@@ -404,6 +461,36 @@
               <span class="ev-detail" v-if="ev.detail">{{ ev.detail }}</span>
             </div>
           </div>
+          <div class="weight-board" title="Share of this session. Moods and scenes partition the time. Layers stack, so their shares can add up past 100. Starts is how often the name appeared.">
+            <div class="weight-col">
+              <span class="weight-title">Character</span>
+              <div class="weight-row" v-for="row in weightMoods" :key="'m-' + row.name">
+                <span class="weight-name">{{ row.name }}</span>
+                <span class="weight-num">{{ row.pct }}% · {{ row.starts }}</span>
+              </div>
+            </div>
+            <div class="weight-col">
+              <span class="weight-title">Tone</span>
+              <div class="weight-row" v-for="row in weightTones" :key="'t-' + row.name">
+                <span class="weight-name">{{ row.name }}</span>
+                <span class="weight-num">{{ row.pct }}% · {{ row.starts }}</span>
+              </div>
+            </div>
+            <div class="weight-col">
+              <span class="weight-title">Scenes</span>
+              <div class="weight-row" v-for="row in weightScenes" :key="'s-' + row.name">
+                <span class="weight-name">{{ row.name }}</span>
+                <span class="weight-num">{{ row.pct }}% · {{ row.starts }}</span>
+              </div>
+            </div>
+            <div class="weight-col">
+              <span class="weight-title">Layers</span>
+              <div class="weight-row" v-for="row in weightLayers" :key="'l-' + row.name">
+                <span class="weight-name">{{ row.name }}</span>
+                <span class="weight-num">{{ row.pct }}% · {{ row.starts }}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -422,7 +509,7 @@
           </div>
         </div>
 
-        <div class="deck-card" title="TEMPO &amp; BEAT TELEMETRY&#10;&#10;• BPM &amp; Autocorrelation: Lag-based periodicity tracking over 192-block onset novelty history (60-198 BPM) weighted with a 120 BPM prior to suppress octave-skipping.&#10;• Beat Phase: Continuous 0..100% cyclical phase accumulator locked via PLL nudging on detected downbeats.&#10;• Confidence: Autocorrelation peak salience / SNR (0..100%).&#10;• Dynamics: Ratio of recent dynamic range: (peak - floor) / peak.&#10;• Noise Floor: Adaptive minimum RMS follower over last 10s.&#10;• Gate: Schmitt trigger (open > 2.0x floor, shut < 1.5x floor).">
+        <div class="deck-card" title="TEMPO &amp; BEAT TELEMETRY&#10;&#10;• BPM &amp; Autocorrelation: Lag-based periodicity tracking over 192-block onset novelty history (60-198 BPM) weighted with a 120 BPM prior to suppress octave-skipping.&#10;• Beat Phase: Continuous 0..100% cyclical phase accumulator locked via PLL nudging on detected downbeats.&#10;• Confidence: Autocorrelation peak salience / SNR (0..100%).&#10;• Dynamics: Ratio of recent dynamic range: (peak - floor) / peak.&#10;• Noise Floor: Adaptive minimum RMS follower over last 10s.&#10;• Gate: Schmitt trigger. Opens when block RMS > 2.5x floor + 0.001. Closes after a 350 ms hangover when block RMS &lt;= 1.5x floor + 0.0005.">
           <div class="card-head">
             <span class="card-title">Tempo & Beat</span>
             <div class="beat-pill">
@@ -470,33 +557,9 @@
           </div>
         </div>
 
-        <div class="deck-card structure-card"
-             title="STRUCTURE&#10;Each section is an episode decided by the firmware: it starts, runs, and ends with a duration and a reason. This card shows what the firmware reports.">
-          <div class="card-head">
-            <span class="card-title">Structure</span>
-          </div>
-          <div class="struct-bar" :class="'is-' + sectionBarState()" role="img"
-               :aria-label="structureAria()"
-               title="Signed displacement of the level from its own 10 s mean, scaled to +-0.4. Descent to the left, buildup to the right. The ticks are the thresholds a hold has to clear. The thin line shows the hold accumulating.">
-            <span class="struct-fill" :style="displacementFill()"></span>
-            <span class="struct-arming" :style="armingFill()"></span>
-            <span class="struct-tick" style="left: 31.25%"></span>
-            <span class="struct-tick" style="left: 68.75%"></span>
-            <span class="struct-zero"></span>
-          </div>
-          <div class="struct-axis"><span title="Left end: the level is 0.4 or more below its 10 s mean.">descent</span><span title="Displacement now: the level minus its own 10 s mean.">{{ (s.live.displacement || 0).toFixed(2) }}</span><span title="Right end: the level is 0.4 or more above its 10 s mean.">buildup</span></div>
-          <div class="struct-rows">
-            <div class="struct-row" v-for="name in ['buildup', 'descent', 'drop', 'tease', 'anomaly']" :key="name" :title="structTip(name, 'name')">
-              <span class="struct-name">{{ name === 'drop' ? 'drop window' : name }}</span>
-              <span class="struct-state" :class="'is-' + episodeState(name)" :title="structTip(name, 'state')">{{ episodeState(name) }}</span>
-              <span class="struct-text" :title="structTip(name, 'text')">{{ episodeSummary(name) }}<template v-if="name === 'drop' && episodeState('drop') !== 'idle'"> ({{ s.live.dropConfirmed ? 'confirmed' : 'provisional' }}, {{ (s.live.dropConfidence * 100).toFixed(0) }}%)</template></span>
-            </div>
-          </div>
-        </div>
-
         <div class="deck-card coords-card" title="8-dimensional music coordinates. Each coordinate is a normalized signal derived from the audio analysis pipeline; hover or focus a coordinate for its data source, formula, and musical meaning.">
           <div class="card-head">
-            <span class="card-title">Music Coordinates (8 dimensions)</span>
+            <span class="card-title">Music Coordinates (12 dimensions)</span>
             <span class="timing-tag" title="Elapsed audio time represented by this analysis block and its sample-clock frame number.">
               sample interval: {{ (s.live.dtSeconds * 1000).toFixed(1) }} ms &middot; frame {{ s.live.sampleFrame }}
             </span>
@@ -517,6 +580,35 @@
               </span>
               <span class="coord-val" :title="'confidence ' + (c.conf * 100).toFixed(0) + '%'">{{ (c.value * 100).toFixed(0) }}%<small> c{{ (c.conf * 100).toFixed(0) }}</small></span>
               <span class="health-strip" :class="c.conf >= 0.8 ? 'ok' : c.conf >= 0.5 ? 'warn' : 'bad'" :style="{ width: Math.min(100, Math.max(0, c.conf * 100)) + '%' }" :title="'confidence ' + (c.conf * 100).toFixed(0) + '%'"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="deck-card coords-card" title="How strongly the music has each mood, 0 to 100%. Computed in the firmware from the coordinates above. Greyed rows cannot be measured yet.">
+          <div class="card-head">
+            <span class="card-title">Mood strengths</span>
+          </div>
+          <div class="coords-grid">
+            <div class="coord-item" v-for="m in s.live.moods" :key="m.name" :style="{ opacity: m.inSelector ? 1 : 0.4 }">
+              <div class="coord-label"><span class="c-name">{{ m.name }}</span></div>
+              <span class="meter">
+                <span class="meter-fill" :style="{ width: Math.min(100, Math.max(0, m.strength * 100)) + '%' }"></span>
+              </span>
+              <span class="coord-val">{{ (m.strength * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="deck-card coords-card" title="The scenes the base is drawn from right now: the ones within the bucket margin of the best score, best first. Score is the mood fit, plus the episode bonus, minus the recency penalty. The running scene is marked.">
+          <div class="card-head">
+            <span class="card-title">Scene selection</span>
+            <span class="timing-tag" v-if="s.live.selection">up because: {{ s.live.selection.reason }}<template v-if="dropHoldText"> · {{ dropHoldText }}</template></span>
+          </div>
+          <div class="bucket-list" v-if="s.live.selection && s.live.selection.bucket.length">
+            <div class="bucket-row" v-for="(b, rank) in s.live.selection.bucket" :key="b.index" :class="{ running: b.running }">
+              <span class="bucket-rank">{{ rank + 1 }}</span>
+              <span class="bucket-name">{{ b.name }}<small v-if="b.running"> running</small></span>
+              <span class="bucket-score" :title="'mood fit ' + b.mood.toFixed(2) + ', episode +' + b.episode.toFixed(2) + ', recency -' + b.recency.toFixed(2)">{{ b.score.toFixed(2) }}</span>
             </div>
           </div>
         </div>

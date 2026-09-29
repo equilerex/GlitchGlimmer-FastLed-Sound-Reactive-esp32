@@ -27,6 +27,7 @@ public:
     struct Inputs {
         unsigned long now            = 0;
         float         level          = 0.0f;
+        float         bassLevel      = 0.0f;
         float         displacement   = 0.0f;
 
         bool          buildupActive  = false;
@@ -50,10 +51,18 @@ public:
 
     StructuralEpisodes() { clearEpisodes(); }
 
+    bool isOpen(int s) const {
+        return s >= 0 && s < SIG_COUNT && (ep[s].state == EP_ACTIVE || ep[s].state == EP_FADING);
+    }
+    bool isActive(int s) const {
+        return s >= 0 && s < SIG_COUNT && ep[s].state == EP_ACTIVE;
+    }
+
     // Run one block. Order matters and is the precedence: an onset is handled before
     // the flags, so the section it ends never gets a frame as merely fading.
     void update(const Inputs& in) {
-        unsigned long now = in.now < lastNow ? lastNow : in.now;
+        const bool advancing = (lastNow == 0) || (static_cast<long>(in.now - lastNow) >= 0);
+        unsigned long now = advancing ? in.now : lastNow;
         lastNow = now;
         displacement = in.displacement;
 
@@ -65,7 +74,7 @@ public:
 
         section(SIG_BUILDUP, in.buildupActive, in.buildupHoldSince, BUILDUP_HOLD_MS, now);
         section(SIG_DESCENT, in.descentActive, in.descentHoldSince, DESCENT_HOLD_MS, now);
-        dropWindow(in.level, now);
+        dropWindow(in.level, in.bassLevel, now);
 
         // An arrival resolves a tease, so the payoff is not itself read as tension.
         // The flag stays true for TEASE_POST_DROP_MS after a drop, and without this a
@@ -93,12 +102,19 @@ public:
         lastNow = 0;
         displacement = 0.0f;
         arming = 0.0f;
+        plateauSum     = 0.0f;
+        bassPlateauSum = 0.0f;
+        plateauCount   = 0;
+        plateauKnown   = false;
+        plateau        = 0.0f;
+        bassPlateau    = 0.0f;
     }
 
     // Write the state into a feature block. `now` is the same sample time update()
     // was given. Safe to call on a block the gate closed, where update() did not run.
-    void fill(AudioFeatures& f, unsigned long now) const {
-        if (now < lastNow) now = lastNow;
+    void fill(AudioFeatures& f, unsigned long in_now) const {
+        unsigned long now = in_now;
+        if (static_cast<long>(now - lastNow) < 0) now = lastNow;
         for (int s = 0; s < SIG_COUNT; ++s) {
             const Ep& e = ep[s];
             EpisodeStatus& o = f.episode[s];
@@ -145,7 +161,7 @@ private:
     };
 
     static unsigned long span(unsigned long from, unsigned long to) {
-        return to > from ? to - from : 0;
+        return (to - from < 0x80000000UL) ? (to - from) : 0;
     }
 
     Ep ep[SIG_COUNT];
@@ -162,9 +178,11 @@ private:
     float         dropPreparation   = 0.0f;
     float         dropArrivalScore  = 0.0f;
     float         plateauSum        = 0.0f;
+    float         bassPlateauSum    = 0.0f;
     int           plateauCount      = 0;
     bool          plateauKnown      = false;
     float         plateau           = 0.0f;
+    float         bassPlateau       = 0.0f;
     unsigned long lastPayoffMs      = 0;      // last frame at or above STRUCT_DROP_CONFIRM_LEVEL
 
     void push(uint8_t signal, uint8_t kind, unsigned long at, unsigned long duration,
@@ -311,9 +329,11 @@ private:
         dropOpen          = true;
         dropConfirmedFlag = dropPreparation >= STRUCT_DROP_PREP_CONFIRM;
         plateauSum        = 0.0f;
+        bassPlateauSum    = 0.0f;
         plateauCount      = 0;
         plateauKnown      = false;
         plateau           = 0.0f;
+        bassPlateau       = 0.0f;
         lastPayoffMs      = now;
         open(SIG_DROP, now, now);
         ep[SIG_DROP].lastActive = now;
@@ -330,8 +350,11 @@ private:
 
     // Is the music still behaving like the payoff it opened with? Always true until
     // there is a plateau to compare against.
-    bool payoffHolding(float level) const {
-        return !plateauKnown || level >= plateau * dropHoldFraction;
+    bool payoffHolding(float level, float bass) const {
+        if (!plateauKnown) return true;
+        const bool levelHolds = level >= plateau * dropHoldFraction;
+        const bool bassHolds  = (bassPlateau < 0.40f) || (bass >= fminf(0.25f, bassPlateau * 0.40f));
+        return levelHolds && bassHolds;
     }
 
     // Was the payoff sustained, so an onset with weak preparation is a drop and not
@@ -340,18 +363,20 @@ private:
         return plateauKnown && plateau >= STRUCT_DROP_CONFIRM_LEVEL;
     }
 
-    void dropWindow(float level, unsigned long now) {
+    void dropWindow(float level, float bass, unsigned long now) {
         if (!dropOpen) return;
         Ep& e = ep[SIG_DROP];
 
         if (level >= STRUCT_DROP_CONFIRM_LEVEL) lastPayoffMs = now;
 
         if (!plateauKnown) {
-            plateauSum += level;
+            plateauSum     += level;
+            bassPlateauSum += bass;
             ++plateauCount;
             if (span(e.start, now) >= STRUCT_DROP_PLATEAU_MS) {
                 plateauKnown = true;
-                plateau = plateauSum / float(plateauCount);
+                plateau      = plateauSum / float(plateauCount);
+                bassPlateau  = bassPlateauSum / float(plateauCount);
             }
         }
 
@@ -372,7 +397,7 @@ private:
             }
         }
 
-        if (payoffHolding(level)) {
+        if (payoffHolding(level, bass)) {
             e.state = EP_ACTIVE;
             e.lastActive = now;
         } else {

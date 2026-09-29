@@ -12,14 +12,12 @@
       "startFrame": 200,
       "file": "device.bin",
       "events": [
-        {"frame": 0, "scene": "Moonlight", "mood": "Floaty"},
-        {"frame": 72, "scene": "Plasma Drift", "mood": "Floaty"},
-        {"frame": 400, "scene": "Breathing", "mood": "Floaty"},
-        {"frame": 532, "scene": "Fire", "mood": "Intense"},
-        {"frame": 664, "scene": "Two Sin", "mood": "Dancy"},
-        {"frame": 800, "scene": "Lava Lamp 2", "mood": "Dancy"},
-        {"frame": 940, "scene": "Fire", "mood": "Intense"},
-        {"frame": 1080, "scene": "Plasma Drift", "mood": "Floaty"}
+        {"frame": 0, "scene": "Bass Pulse Storm", "mood": "Heavy"},
+        {"frame": 118, "scene": "Aurora Drift", "mood": "Heavy"},
+        {"frame": 246, "scene": "Confetti", "mood": "Bright"},
+        {"frame": 446, "scene": "Cosmic Chaos", "mood": "Bright"},
+        {"frame": 836, "scene": "Plasma Effect 2", "mood": "Intense"},
+        {"frame": 1046, "scene": "Lava Lamp 2", "mood": "Heavy"}
       ]
     },
     {
@@ -27,22 +25,18 @@
       "label": "Mood rotation",
       "note": "Four moods in rotation on the 0 to 1 scale the classifier's thresholds were written against, so the director has more than one scene to pick between.",
       "frames": 1200,
-      "startFrame": 150,
+      "startFrame": 367,
       "file": "moods.bin",
       "events": [
-        {"frame": 0, "scene": "Moonlight", "mood": "Silent"},
-        {"frame": 72, "scene": "Gradient Wash", "mood": "Silent"},
-        {"frame": 156, "scene": "Moonlight", "mood": "Silent"},
-        {"frame": 229, "scene": "Plasma Drift", "mood": "Floaty"},
-        {"frame": 302, "scene": "Breathing", "mood": "Floaty"},
-        {"frame": 422, "scene": "Fire", "mood": "Intense"},
-        {"frame": 542, "scene": "Plasma Drift", "mood": "Floaty"},
-        {"frame": 615, "scene": "Breathing", "mood": "Floaty"},
-        {"frame": 699, "scene": "Moonlight", "mood": "Silent"},
-        {"frame": 783, "scene": "Plasma Drift", "mood": "Floaty"},
-        {"frame": 900, "scene": "Breathing", "mood": "Floaty"},
-        {"frame": 1020, "scene": "Fire", "mood": "Intense"},
-        {"frame": 1140, "scene": "Plasma Drift", "mood": "Floaty"}
+        {"frame": 0, "scene": "Bass Pulse Storm", "mood": "Quiet"},
+        {"frame": 118, "scene": "Forest Canopy", "mood": "Quiet"},
+        {"frame": 248, "scene": "Lava Lamp 2", "mood": "Floaty"},
+        {"frame": 367, "scene": "Cosmic Beast", "mood": "Driving"},
+        {"frame": 533, "scene": "Lava Cyber Storm", "mood": "Heavy"},
+        {"frame": 652, "scene": "Gradient Wash", "mood": "Quiet"},
+        {"frame": 796, "scene": "Lava Lamp", "mood": "Floaty"},
+        {"frame": 946, "scene": "Neon Beat Tunnel", "mood": "Driving"},
+        {"frame": 1112, "scene": "Alien Breath", "mood": "Heavy"}
       ]
     }
   ]

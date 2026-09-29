@@ -205,10 +205,9 @@
 
 // ==== Structural detection ====
 //
-// Five moods name the shape of a passage rather than how loud it is, and each
-// answers a question the ladder cannot. They are evaluated before the ladder,
-// because a passage can be structurally a drop at any rung. SILENT, DROP and
-// TEASE are the ones that are events rather than levels, so their thresholds are
+// Five episodes name the shape of a passage rather than its character, and each
+// answers a question the moods cannot. A passage can be structurally a drop at
+// any level. Drop and tease are events rather than levels, so their thresholds are
 // about displacement and tension rather than about loudness.
 //
 // Every window here is in milliseconds rather than in blocks. The device analyses
@@ -288,9 +287,8 @@
 // The two are mirror images deliberately, including in their numbers, because
 // they are the same shape with the sign flipped and there is no reason for a
 // climb and a fall to be judged on different terms. The one asymmetry is in the
-// classifier rather than here: BUILDUP needs the ladder below ENERGETIC, since a
-// climb from the top is just loud music, and DESCENT needs it above CALM, since a
-// fall from the bottom is just quiet.
+// detector rather than here: a climb from the top of the range is just loud
+// music, and a fall from the bottom is just quiet.
 //
 // Barely reachable in the twelve seconds after a drop, because TEASE claims that
 // window and is evaluated first. What it catches is a wind-down that is not a
@@ -309,21 +307,29 @@
 // exactly what BEAT_BASS_RISE exploits to tell a rhythm from a voice. A kick
 // cannot light all three bands against their own recent maxima at once. A drop
 // does it by construction.
-#define DROP_BAND_LEVEL      0.60f
+#define DROP_BAND_LEVEL      0.55f
+#define DROP_MID_LEVEL       0.50f
+#define DROP_TREBLE_LEVEL    0.35f
 // The slam itself, as displacement above the slow mean in a single block. Strictly
 // larger than BUILDUP_LEVEL, so a passage that merely rises is not a drop.
 #define DROP_SCALE           0.35f
+#define DROP_BASS_SCALE      0.45f
 // And the seconds before it have to have been quiet, which is what stops a drop
 // firing mid-chorus. This encodes the musical fact that a drop follows a breakdown
-// or a buildup rather than arriving in the middle of a loud passage.
+// or a buildup (either broadband quiet or bass withdrawal) rather than arriving mid-chorus.
 #define DROP_QUIET_LEVEL     0.55f
-#define DROP_ARM_MS          400
-// At most one drop every eight seconds, so the mood cannot park there.
-#define DROP_COOLDOWN_MS     8000
-// How long the mood reads DROP after one fires. dropDetected is a single block's
-// pulse, which the confirmation window would reject before it could ever be shown,
-// so MoodHistory adopts it at once and holds the display for this long.
-#define DROP_PIN_MS          3000
+#define DROP_QUIET_BASS_LEVEL 0.25f
+// The follower time constant for bass tracking. Faster than BUILDUP_TAU_SEC (10s)
+// because rhythm sections and basslines drop out over 1-4 bars (2-4s), whereas
+// broadband energy builds over 16-32 bars.
+#define DROP_BASS_TAU_SEC    2.0f
+// Fast follower time constant (150ms) for transient jump discrimination. A drop slam is an explosive
+// edge that jumps above this fast baseline, whereas a gradual crescendo/swell moves with it.
+#define DROP_FAST_TAU_SEC    0.15f
+#define DROP_JUMP_SCALE      0.30f
+#define DROP_ARM_MS          250
+// At most one drop every five seconds, preventing re-triggering inside the payoff.
+#define DROP_COOLDOWN_MS     5000
 
 // Episode lifecycle (StructuralEpisodes). A detector flag says a condition holds
 // right now and an episode says a section began, went on and ended, so these are
@@ -360,10 +366,9 @@
 // and any one of three triggers is enough. A breakdown after a drop, a hush before
 // one, and a pulse that will not sustain are all the same thing to a listener.
 //
-// No cooldown and no hold of its own. The mood system already has both, at
-// confirmMs and minHoldMs, and a second pair here would open a dead zone where a
-// genuinely teasing passage is not reported at all. That is the failure mode the
-// ladder exists to remove.
+// No cooldown and no hold of its own. The episode lifecycle already has both, and a
+// second pair here would open a dead zone where a genuinely teasing passage is
+// not reported at all.
 //
 // The first cut of these numbers is a guess from the shape of a track rather than
 // from a measurement, and is the most likely thing here to need retuning once
@@ -385,8 +390,7 @@
 
 // WEIRD: two of three, each a rate of change or a band membership rather than a
 // level, so a stable passage scores zero whatever its spectrum is. A quiet
-// drifting ambient passage has to stay CALM rather than becoming this, which is
-// why the classifier also requires the ladder to be at DANCY or above.
+// drifting ambient passage must not become this.
 //
 // The centroid test is a distance from the middle of the window it has covered,
 // as a share of that window. The maximum such a distance can be is 0.5, since the
@@ -487,6 +491,30 @@
 #endif
 #define BUTTON_PIN_1         CONFIG_BTN1
 #define BUTTON_PIN_2         35
+
+// ==== History ====
+// Snapshots the audio history ring keeps, one per frame. The deepest reader is
+// MoodMemoryArcLayer, which averages the last 10, so 32 leaves headroom for a
+// reader of up to a second at 30 fps. The ring is allocated once at boot and
+// costs capacity * sizeof(AudioSnapshot) of heap (1.3KB at 32, 60KB at the old
+// 1500), so raise it only when a reader needs the depth.
+#define AUDIO_HISTORY_CAPACITY 32
+
+// Provisional heap guard. A 10-minute music run still has to log boot heap,
+// the steady-state minimum and the largest free block, and these numbers
+// move to match that. Until then they are only a net above the old 20KB stall.
+// Enter on whichever of free heap and largest 8-bit block is worse. Leave only
+// after the same 8KB climb, so a reading sitting on the line cannot flap.
+#define HEAP_DEGRADED_ENTER_BYTES (24u * 1024u)
+#define HEAP_DEGRADED_EXIT_BYTES  (32u * 1024u)
+#define HEAP_CRITICAL_ENTER_BYTES (12u * 1024u)
+#define HEAP_CRITICAL_EXIT_BYTES  (20u * 1024u)
+#define HEAP_CRITICAL_RESTART_MS  10000u
+// About a third of DEFAULT_BRIGHTNESS. The strip stays lit and draws less
+// current while the guard is in CRITICAL. Provisional, same as the thresholds.
+#define HEAP_CRITICAL_BRIGHTNESS  48
+// Host stand-in so the native and wasm ESP stubs look healthy. Not a threshold.
+#define SIM_HEAP_BYTES (200u * 1024u)
 
 // ==== OTHER ====
 #define ENABLE_WEB_UI      false        // Enable/disable WebUI

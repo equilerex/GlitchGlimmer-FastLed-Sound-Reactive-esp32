@@ -43,9 +43,7 @@ extern "C" uint32_t millis();
 #define sq(x) ((x) * (x))
 
 // FastLED's emulation has no ESP object and a browser has no such heap.
-// LEDStripController's memory check compares these against MIN_FREE_HEAP, so they
-// report a plausible fixed figure rather than zero, which would trip the warning
-// on every frame.
+// The device gate is MemoryGuard, fed from loop(), which this build does not run.
 struct SimEsp {
     uint32_t getFreeHeap() const;
     uint32_t getMinFreeHeap() const;

@@ -24,7 +24,6 @@
 #include "audio/AudioSnapshot.h"
 #include "audio/AudioHistoryTracker.h"
 #include "audio/AudioProcessor.h"
-#include "scenes/MoodHistory.h"
 #include "scenes/SceneRegistry.h"
 #include "scenes/SceneState.h"
 #include "scenes/LayerTypes.h"
@@ -51,12 +50,11 @@ CRGB ledStrip_1[LED_1_CAPACITY];
 //
 //  SimEsp is declared in sim/stubs/wasm/prelude.h, which this build force-includes
 //  into every translation unit, because FastLED's Arduino emulation has no ESP
-//  object. LEDStripController's memory check compares these against MIN_FREE_HEAP,
-//  so they report a plausible fixed figure rather than zero, which would trip the
-//  warning on every frame.
+//  object. The figures are a healthy stand-in. The device gate lives in
+//  MemoryGuard and is fed from loop(), which this entry point does not run.
 // -----------------------------------------------------------------------------
-uint32_t SimEsp::getFreeHeap() const { return 200u * 1024u; }
-uint32_t SimEsp::getMinFreeHeap() const { return 200u * 1024u; }
+uint32_t SimEsp::getFreeHeap() const { return SIM_HEAP_BYTES; }
+uint32_t SimEsp::getMinFreeHeap() const { return SIM_HEAP_BYTES; }
 
 SimEsp ESP;
 
@@ -66,9 +64,8 @@ SimEsp ESP;
 namespace {
 
 AudioFeatures       g_audio;
-MoodHistory         g_mood;
 AudioHistoryTracker g_history;
-LEDStripController  g_ctrl(g_audio, g_mood, g_history);
+LEDStripController  g_ctrl(g_audio, g_history);
 AudioProcessor      g_proc;
 AudioFeatures       g_last;          // what the controller was last stepped with
 
@@ -76,11 +73,10 @@ AudioFeatures       g_last;          // what the controller was last stepped wit
 // step is exactly one analysis window.
 float g_samples[NUM_SAMPLES];
 
-// getCurrentSceneName() and getCurrentMoodName() both return by value, so the
-// pointer would dangle if it were taken from the temporary. These statics hold
-// the copy that the returned c_str() points at.
+// getCurrentSceneName() returns by value, so the pointer would dangle if it were
+// taken from the temporary. This static holds the copy that the returned c_str()
+// points at.
 String g_sceneName = "—";
-String g_moodName  = "—";
 
 } // namespace
 
@@ -99,7 +95,6 @@ EMSCRIPTEN_KEEPALIVE
 void gg_init(void) {
     g_ctrl.begin();
     g_sceneName = g_ctrl.getCurrentSceneName();
-    g_moodName  = g_mood.getCurrentMoodName();
 }
 
 // Length of the window gg_sample_buffer() expects, so the page does not hardcode
@@ -117,14 +112,13 @@ int gg_sample_count(void) { return NUM_SAMPLES; }
 // including the one at load, so the first reading is of the source actually in
 // use rather than of whatever the default filled the references with.
 //
-// The mood classifier is reset with it and is the same defect. Its smoothed values,
-// its adaptive dynamics window and the 150-snapshot window predictNextMood averages
-// are all built from the input that was playing, so a switch left the mood on
-// display as a verdict on audio that had stopped, for as long as the ring held it.
+// The mood strengths are reset with it, inside resetTracking, and so is the
+// director's memory of the drop and the mood jump, which were measured against
+// audio that has stopped.
 EMSCRIPTEN_KEEPALIVE
 void gg_reset_analysis(void) {
     g_proc.resetTracking();
-    g_mood.reset();
+    g_ctrl.sceneDirectorForTuning().reset();
     g_last = AudioFeatures{};
 }
 
@@ -147,7 +141,6 @@ void gg_step(void) {
     g_ctrl.update();
 
     g_sceneName = g_ctrl.getCurrentSceneName();
-    g_moodName  = g_mood.getCurrentMoodName();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -188,11 +181,6 @@ int gg_scene_count(void) { return g_ctrl.getSceneCount(); }
 EMSCRIPTEN_KEEPALIVE
 const char* gg_scene_name_by_index(int index) {
     return g_ctrl.getSceneNameByIndex(index);
-}
-
-EMSCRIPTEN_KEEPALIVE
-const char* gg_scene_mood_by_index(int index) {
-    return g_ctrl.getSceneMoodByIndex(index);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -239,9 +227,6 @@ EMSCRIPTEN_KEEPALIVE
 int gg_current_scene_index(void) {
     return g_ctrl.getCurrentSceneIndex();
 }
-
-EMSCRIPTEN_KEEPALIVE
-const char* gg_mood_name(void) { return g_moodName.c_str(); }
 
 // The feature values the HUD shows. Exposed as one call rather than a field per
 // accessor because the page reads them together and this keeps the boundary from
@@ -315,6 +300,20 @@ float gg_feature(int index) {
         case 83: return g_last.arming;
         case 84: return g_last.dropConfidence;
         case 85: return g_last.dropConfirmed ? 1.0f : 0.0f;
+        // Mood readings appended after 85 so no index moves: tilt, evenness, punch,
+        // body, each value then confidence then trend.
+        case 86: return g_last.music.tilt.value;
+        case 87: return g_last.music.tilt.confidence;
+        case 88: return g_last.music.tilt.trend;
+        case 89: return g_last.music.evenness.value;
+        case 90: return g_last.music.evenness.confidence;
+        case 91: return g_last.music.evenness.trend;
+        case 92: return g_last.music.punch.value;
+        case 93: return g_last.music.punch.confidence;
+        case 94: return g_last.music.punch.trend;
+        case 95: return g_last.music.body.value;
+        case 96: return g_last.music.body.confidence;
+        case 97: return g_last.music.body.trend;
         default:
             if (index >= 52 && index < 52 + 6 * SIG_COUNT) {
                 const EpisodeStatus& e = g_last.episode[(index - 52) / 6];
@@ -413,19 +412,11 @@ int gg_scene_changes(void) { return g_ctrl.getSceneChangeCount(); }
 // -----------------------------------------------------------------------------
 //  Derivations the state panel shows
 //
-//  The mood system's decisions are not visible in its inputs alone. What makes a
-//  mood flicker is the pair (instantaneous classification, classification of the
-//  averaged window), and what makes a scene change is the pair (elapsed time,
-//  the duration thresholds it is being compared against). Exposing only energy
-//  and bpm leaves the page unable to show why anything changed.
+//  What makes a scene change is the pair (elapsed time, the duration thresholds
+//  it is being compared against), and the score list and reason line below say
+//  which scene ranks where. Exposing only the features leaves the page unable to
+//  show why anything changed.
 // -----------------------------------------------------------------------------
-EMSCRIPTEN_KEEPALIVE
-const char* gg_mood_predicted_name(void) {
-    static String name;
-    name = g_mood.getPredictedMoodName();
-    return name.c_str();
-}
-
 EMSCRIPTEN_KEEPALIVE
 double gg_scene_elapsed_ms(void) { return double(g_ctrl.sceneElapsedMs()); }
 
@@ -443,34 +434,6 @@ float gg_spectrum_centroid(void) { return g_last.spectrumCentroid; }
 EMSCRIPTEN_KEEPALIVE
 int gg_dominant_band(void) { return g_last.dominantBand; }
 
-EMSCRIPTEN_KEEPALIVE
-int gg_history_size(void) { return int(g_mood.size()); }
-
-// Counted in the firmware, not derived from the page's trace. The trace only
-// records with ?debug=1 on, so a snapshot taken without it reported zero mood
-// changes however much the mood had moved.
-EMSCRIPTEN_KEEPALIVE
-int gg_mood_changes(void) { return g_mood.getMoodChangeCount(); }
-
-// The classifier's dynamics cut points, which move with the observed range. The
-// panel used to mark them at a fixed 0.2 and 0.5, which is exactly the claim the
-// moving thresholds were introduced to stop making. `active` is 0 when the input
-// has too little dynamic variation for the cut points to mean anything, and the
-// panel hides them rather than drawing a line through noise.
-EMSCRIPTEN_KEEPALIVE
-float gg_mood_dynamics_low(void) { return g_mood.getDynamicsLow(); }
-
-EMSCRIPTEN_KEEPALIVE
-float gg_mood_dynamics_high(void) { return g_mood.getDynamicsHigh(); }
-
-EMSCRIPTEN_KEEPALIVE
-float gg_mood_dynamics_active(void) {
-    return g_mood.dynamicsThresholdsActive() ? 1.0f : 0.0f;
-}
-
-EMSCRIPTEN_KEEPALIVE
-float gg_mood_min_hold_ms(void) { return float(g_mood.getMinHoldMs()); }
-
 // -----------------------------------------------------------------------------
 //  Live tuning
 //
@@ -487,32 +450,34 @@ namespace {
 constexpr int kTuneSceneMinBase   = 0;
 constexpr int kTuneSceneIdealBase = 1;
 constexpr int kTuneSceneIdealSpan = 2;
-constexpr int kTuneMoodHold       = 3;
-constexpr int kTuneMoodConfirm    = 4;
-constexpr int kTuneMoodSmoothing  = 5;
-constexpr int kTuneDynUp          = 6;
-constexpr int kTuneDynDown        = 7;
-constexpr int kTuneAudioDynDecay  = 8;
-constexpr int kTuneGainSmoothing  = 9;
-constexpr int kTuneDynGrowth      = 10;
-constexpr int kTuneSectionWindow  = 11;
-constexpr int kTuneTeaseWindow    = 12;
-constexpr int kTuneDropMax        = 13;
-constexpr int kTuneDropHold       = 14;
-constexpr int kTuneCount          = 15;
+constexpr int kTuneAudioDynDecay  = 3;
+constexpr int kTuneGainSmoothing  = 4;
+constexpr int kTuneDynGrowth      = 5;
+constexpr int kTuneSectionWindow  = 6;
+constexpr int kTuneTeaseWindow    = 7;
+constexpr int kTuneDropMax        = 8;
+constexpr int kTuneDropHold       = 9;
+// The selector: the bucket around the best score, the weight of an open buildup or
+// descent, and the drop base's hold.
+constexpr int kTuneBucketMargin   = 10;
+constexpr int kTuneBucketMin      = 11;
+constexpr int kTuneBucketMax      = 12;
+constexpr int kTuneEpisodeWeight  = 13;
+constexpr int kTuneDropHoldMin    = 14;
+constexpr int kTuneDropHoldCap    = 15;
+constexpr int kTuneDropSpacing    = 16;
+constexpr int kTuneToneWeight     = 17;
+constexpr int kTuneMoodCredit     = 18;
+constexpr int kTuneCount          = 19;
 }  // namespace
 
 EMSCRIPTEN_KEEPALIVE
 float gg_tuning(int which) {
+    const SceneDirector& dir = g_ctrl.sceneDirectorView();
     switch (which) {
         case kTuneSceneMinBase:   return g_ctrl.sceneStateForTuning().getMinBaseMs();
         case kTuneSceneIdealBase: return g_ctrl.sceneStateForTuning().getIdealBaseMs();
         case kTuneSceneIdealSpan: return g_ctrl.sceneStateForTuning().getIdealSpanMs();
-        case kTuneMoodHold:       return g_mood.getMinHoldMs();
-        case kTuneMoodConfirm:    return g_mood.getConfirmMs();
-        case kTuneMoodSmoothing:  return g_mood.getSmoothingRate();
-        case kTuneDynUp:          return g_mood.getDynUpPerSec();
-        case kTuneDynDown:        return g_mood.getDynDownPerSec();
         case kTuneAudioDynDecay:  return g_proc.getDynamicsDecayPerBlock();
         case kTuneGainSmoothing:  return g_proc.getGainSmoothing();
         case kTuneDynGrowth:      return g_proc.getDynamicsGrowthPerBlock();
@@ -520,36 +485,205 @@ float gg_tuning(int which) {
         case kTuneTeaseWindow:    return float(g_proc.structuralEpisodes().teaseWindowMs);
         case kTuneDropMax:        return float(g_proc.structuralEpisodes().dropMaxMs);
         case kTuneDropHold:       return g_proc.structuralEpisodes().dropHoldFraction;
+        case kTuneBucketMargin:   return dir.selectionParams().bucketMargin;
+        case kTuneBucketMin:      return float(dir.selectionParams().bucketMin);
+        case kTuneBucketMax:      return float(dir.selectionParams().bucketMax);
+        case kTuneEpisodeWeight:  return dir.selectionParams().episodeWeight;
+        case kTuneDropHoldMin:    return float(dir.dropParamsRef().holdMinMs);
+        case kTuneDropHoldCap:    return float(dir.dropParamsRef().holdCapMs);
+        case kTuneDropSpacing:    return float(dir.dropParamsRef().spacingMs);
+        case kTuneToneWeight:     return dir.selectionParams().toneWeight;
+        case kTuneMoodCredit:     return g_proc.moods().credit();
         default:                  return 0.0f;
     }
 }
 
 EMSCRIPTEN_KEEPALIVE
 void gg_set_tuning(int which, float value) {
+    SceneDirector& dir = g_ctrl.sceneDirectorForTuning();
+    const unsigned long ms = value < 0.0f ? 0 : (unsigned long)value;
     switch (which) {
         case kTuneSceneMinBase:   g_ctrl.sceneStateForTuning().setMinBaseMs(value);   break;
         case kTuneSceneIdealBase: g_ctrl.sceneStateForTuning().setIdealBaseMs(value); break;
         case kTuneSceneIdealSpan: g_ctrl.sceneStateForTuning().setIdealSpanMs(value); break;
-        case kTuneMoodHold:       g_mood.setMinHoldMs(value);       break;
-        case kTuneMoodConfirm:    g_mood.setConfirmMs(value);       break;
-        case kTuneMoodSmoothing:  g_mood.setSmoothingRate(value);   break;
-        case kTuneDynUp:          g_mood.setDynUpPerSec(value);     break;
-        case kTuneDynDown:        g_mood.setDynDownPerSec(value);   break;
         case kTuneAudioDynDecay:  g_proc.setDynamicsDecayPerBlock(value); break;
         case kTuneGainSmoothing:  g_proc.setGainSmoothing(value); break;
         case kTuneDynGrowth:      g_proc.setDynamicsGrowthPerBlock(value); break;
         // Clamped here so a slider cannot make a window negative or a fraction
         // above one. What the number means is decided in StructuralEpisodes.
-        case kTuneSectionWindow:  g_proc.structuralEpisodesForTuning().sectionWindowMs = value < 0.0f ? 0 : (unsigned long)value; break;
-        case kTuneTeaseWindow:    g_proc.structuralEpisodesForTuning().teaseWindowMs   = value < 0.0f ? 0 : (unsigned long)value; break;
-        case kTuneDropMax:        g_proc.structuralEpisodesForTuning().dropMaxMs       = value < 0.0f ? 0 : (unsigned long)value; break;
+        case kTuneSectionWindow:  g_proc.structuralEpisodesForTuning().sectionWindowMs = ms; break;
+        case kTuneTeaseWindow:    g_proc.structuralEpisodesForTuning().teaseWindowMs   = ms; break;
+        case kTuneDropMax:        g_proc.structuralEpisodesForTuning().dropMaxMs       = ms; break;
         case kTuneDropHold:       g_proc.structuralEpisodesForTuning().dropHoldFraction = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value); break;
+        case kTuneBucketMargin:   dir.selectionForTuning().bucketMargin = value < 0.0f ? 0.0f : value; break;
+        case kTuneBucketMin:      dir.selectionForTuning().bucketMin = value < 1.0f ? 1 : int(value + 0.5f); break;
+        case kTuneBucketMax:      dir.selectionForTuning().bucketMax = value < 1.0f ? 1 : int(value + 0.5f); break;
+        case kTuneEpisodeWeight:  dir.selectionForTuning().episodeWeight = value < 0.0f ? 0.0f : value; break;
+        case kTuneDropHoldMin:    dir.dropForTuning().holdMinMs = ms; break;
+        case kTuneDropHoldCap:    dir.dropForTuning().holdCapMs = ms; break;
+        case kTuneDropSpacing:    dir.dropForTuning().spacingMs = ms; break;
+        case kTuneToneWeight:     dir.selectionForTuning().toneWeight = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value); break;
+        case kTuneMoodCredit:     g_proc.moodsForTuning().setCredit(value); break;
         default: break;
     }
 }
 
 EMSCRIPTEN_KEEPALIVE
+
+// The selector, read back. Nothing here is computed on the page: the score of
+// every scene, the bucket, why the running scene is up and the drop base's hold
+// all come from the director.
+
+// field 0 mood term, 1 episode bonus, 2 recency penalty, 3 score, 4 in the bucket
+EMSCRIPTEN_KEEPALIVE
+float gg_scene_score(int index, int field) {
+    const std::vector<SceneScore>& all = g_ctrl.sceneDirectorView().sceneScores();
+    if (index < 0 || index >= int(all.size())) return 0.0f;
+    const SceneScore& s = all[size_t(index)];
+    switch (field) {
+        case 0: return s.mood;
+        case 1: return s.episode;
+        case 2: return s.recency;
+        case 3: return s.score;
+        case 4: return s.inBucket ? 1.0f : 0.0f;
+        default: return 0.0f;
+    }
+}
+
+// The bucket, best first: how many, and the scene index at a rank.
+EMSCRIPTEN_KEEPALIVE
+int gg_bucket_count(void) { return int(g_ctrl.sceneDirectorView().bucketIndices().size()); }
+
+EMSCRIPTEN_KEEPALIVE
+int gg_bucket_index(int rank) {
+    const std::vector<int>& b = g_ctrl.sceneDirectorView().bucketIndices();
+    return (rank >= 0 && rank < int(b.size())) ? b[size_t(rank)] : -1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_scene_reason(void) { return g_ctrl.sceneDirectorView().reasonText(); }
+
+// 0 holding, 1 a drastic shift seen, 2 ms left of the minimum, 3 ms left to the cap
+EMSCRIPTEN_KEEPALIVE
+double gg_drop_hold(int field) {
+    const SceneDirector::DropHoldStatus s = g_ctrl.sceneDirectorView().dropHold();
+    switch (field) {
+        case 0: return s.holding ? 1.0 : 0.0;
+        case 1: return s.shiftSeen ? 1.0 : 0.0;
+        case 2: return double(s.minLeftMs);
+        case 3: return double(s.capLeftMs);
+        default: return 0.0;
+    }
+}
+
+// The draw's seed, so a recording replays the same scenes.
+EMSCRIPTEN_KEEPALIVE
+void gg_scene_seed(unsigned int value) { g_ctrl.sceneDirectorForTuning().seed(value); }
+
+// Fit lists for the scene catalog. A key below the mood count is a mood, the rest
+// name an episode or the drop marker.
+EMSCRIPTEN_KEEPALIVE
+int gg_scene_fit_count(int index) { return g_ctrl.getSceneFitCount(index); }
+
+EMSCRIPTEN_KEEPALIVE
+int gg_scene_fit_key(int index, int entry) { return g_ctrl.getSceneFitKey(index, entry); }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_scene_fit_value(int index, int entry) { return g_ctrl.getSceneFitValue(index, entry); }
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_fit_key_name(int key) {
+    if (key >= 0 && key < MN_COUNT) return g_proc.moods().name(key);
+    if (key == FK_BUILDUP) return "buildup";
+    if (key == FK_DESCENT) return "descent";
+    if (key == FK_DROP) return "drop";
+    return "";
+}
+
+// Why a layer on a strip is up: scene, episode, edge, mood, beat or shift.
+EMSCRIPTEN_KEEPALIVE
+const char* gg_layer_why(int strip, int index) { return g_ctrl.getLayerWhy(strip, index); }
 int gg_tuning_count(void) { return kTuneCount; }
+
+// Moods. The page builds its strength panel and its tuning rows from these
+// calls and holds no mood name or breakpoint of its own.
+EMSCRIPTEN_KEEPALIVE
+int gg_mood_count(void) { return MN_COUNT; }
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_mood_name_by_index(int i) { return g_proc.moods().name(i); }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_mood_strength(int i) { return g_last.music.mood[(i >= 0 && i < MN_COUNT) ? i : 0]; }
+
+// 1 for a tone mood (warm, heavy, bright, full, sparse), 0 for a character mood.
+EMSCRIPTEN_KEEPALIVE
+int gg_mood_is_tone(int i) { return g_proc.moods().isTone(i) ? 1 : 0; }
+
+// 0 for a target the selector cannot read yet, which the page greys.
+EMSCRIPTEN_KEEPALIVE
+int gg_mood_in_selector(int i) { return g_proc.moods().inSelector(i) ? 1 : 0; }
+
+EMSCRIPTEN_KEEPALIVE
+int gg_mood_param_count(void) { return g_proc.moods().paramCount(); }
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_mood_param_name(int i) { return g_proc.moodsForTuning().paramName(i); }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_mood_param(int i) { return g_proc.moods().param(i); }
+
+EMSCRIPTEN_KEEPALIVE
+void gg_set_mood_param(int i, float v) { g_proc.moodsForTuning().setParam(i, v); }
+
+// Back to the table in Moods.h, for the page's reset.
+EMSCRIPTEN_KEEPALIVE
+void gg_mood_params_reset(void) { g_proc.moodsForTuning().loadDefaults(); }
+
+// The room calibration: a centre and a spread for each room-coloured reading,
+// measured from the music playing and read as 0.5 = what this device usually hears.
+EMSCRIPTEN_KEEPALIVE
+int gg_room_param_count(void) { return g_proc.moods().roomParamCount(); }
+
+EMSCRIPTEN_KEEPALIVE
+const char* gg_room_param_name(int i) { return g_proc.moodsForTuning().roomParamName(i); }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_room_param(int i) { return g_proc.moods().roomParam(i); }
+
+EMSCRIPTEN_KEEPALIVE
+void gg_set_room_param(int i, float v) { g_proc.moodsForTuning().setRoomParam(i, v); }
+
+EMSCRIPTEN_KEEPALIVE
+void gg_room_reset(void) { g_proc.moodsForTuning().loadRoomDefaults(); }
+
+// 1 starts measuring, 0 ends it and returns the frames used (0 if it was not on).
+EMSCRIPTEN_KEEPALIVE
+int gg_room_measure(int on) {
+    MoodModel& model = g_proc.moodsForTuning();
+    if (on) { model.measureBegin(); return 0; }
+    return model.measuring() ? model.measureEnd() : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int gg_room_measured_frames(void) { return g_proc.moods().measuredFrames(); }
+
+// Where the calibration came from: 0 defaults and waiting for music, 1 the
+// firmware is measuring the first seconds, 2 the firmware measured it, 3 the
+// owner set it. And how many of the auto seconds have passed.
+EMSCRIPTEN_KEEPALIVE
+int gg_room_status(void) { return int(g_proc.moods().roomMode()); }
+
+EMSCRIPTEN_KEEPALIVE
+float gg_room_auto_seconds(void) { return g_proc.moods().roomAutoSeconds(); }
+
+// The current values as the rows of kMoodTable, for `Copy mood table`.
+EMSCRIPTEN_KEEPALIVE
+const char* gg_mood_table_text(void) {
+    static char text[4096];
+    g_proc.moods().formatTable(text, sizeof(text));
+    return text;
+}
 
 EMSCRIPTEN_KEEPALIVE
 float gg_average(void) { return g_last.average; }

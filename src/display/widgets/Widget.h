@@ -211,36 +211,3 @@ private:
     bool isStringValue;
     bool highlight;
 };
-
-
-
-
-class ScrollingTextWidget : public Widget {
-public:
-    ScrollingTextWidget(std::function<String()> textFn)
-        : getText(textFn) {}
-
-    void draw(TFT_eSPI& tft, int x, int y, int width, int height) override {
-        String text = getText();
-        tft.setTextSize(1);
-        tft.setTextColor(TFT_GREEN);
-        tft.setCursor(x + scrollOffset, y + (height / 2) - 4);
-        tft.print(text);
-
-        // Scroll offset update
-        scrollCounter++;
-        if (scrollCounter > 5) {
-            scrollOffset--;
-            if (scrollOffset < -text.length() * 6) scrollOffset = width;
-            scrollCounter = 0;
-        }
-    }
-
-    int getMinWidth() const override { return 100; }
-    int getMinHeight() const override { return 20; }
-
-private:
-    std::function<String()> getText;
-    int scrollOffset = 0;
-    int scrollCounter = 0;
-};

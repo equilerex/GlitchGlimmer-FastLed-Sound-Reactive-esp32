@@ -3,7 +3,6 @@
 #include <array>
 #include <functional>
 #include <vector>
-#include "../scenes/MoodHistory.h"
 #include "Animation.h"
 
 // Animation headers stay in AnimationCatalog.cpp. FastLED's fx/1d/pacifica.h
@@ -75,8 +74,6 @@ enum class AnimationType {
 struct AnimationMeta {
     AnimationType type;
     const char* name;
-    MoodType mood;
-    float preferredTempo;
     float intensity;
     std::function<Animation*()> create;
 };
@@ -90,9 +87,5 @@ inline const char* animationTypeToString(AnimationType type) {
 
 inline std::function<Animation*()> animationFactory(AnimationType type) {
     return animationCatalog[static_cast<size_t>(type)].create;
-}
-
-inline MoodType animationMood(AnimationType type) {
-    return animationCatalog[static_cast<size_t>(type)].mood;
 }
 
